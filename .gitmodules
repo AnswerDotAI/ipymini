@@ -1,0 +1,4 @@
+[submodule "xeus-python"]
+	path = xeus-python
+	url = https://github.com/jupyter-xeus/xeus-python.git
+	branch = main
