@@ -1,0 +1,6 @@
+{
+  "argv": ["ipyrust", "-f", "{connection_file}"],
+  "display_name": "IPyRust",
+  "language": "python",
+  "interrupt_mode": "message"
+}
