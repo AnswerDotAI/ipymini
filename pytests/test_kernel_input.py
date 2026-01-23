@@ -19,7 +19,7 @@ def test_input_request() -> None:
         assert reply["content"]["status"] == "ok"
 
         output_msgs = drain_iopub(kc, msg_id)
-        streams = iopub_streams(output_msgs).map(lambda m: (m["content"]["name"], m["content"]["text"]))
+        streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
         assert ("stdout", text + "\n") in streams
 
 
@@ -55,8 +55,7 @@ def test_input_request_disallowed() -> None:
         try:
             _ = kc.get_stdin_msg(timeout=1)
             assert False, "expected no stdin message"
-        except Exception:
-            pass
+        except Exception: pass
 
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "error"

@@ -1,6 +1,5 @@
 import time, os, random, pytest
-from .kernel_utils import (collect_iopub_outputs, collect_shell_replies, drain_iopub, get_shell_reply,
-    iopub_msgs, iopub_streams, start_kernel)
+from .kernel_utils import collect_iopub_outputs, collect_shell_replies, drain_iopub, get_shell_reply, iopub_msgs, iopub_streams, start_kernel
 
 
 TIMEOUT = 10
@@ -238,8 +237,7 @@ def test_subshell_stop_on_error_isolated(are_subshells) -> None:
         drain_iopub(kc, msg["header"]["msg_id"])
 
         for subshell_id in subshell_ids:
-            if subshell_id:
-                _delete_subshell(kc, subshell_id)
+            if subshell_id: _delete_subshell(kc, subshell_id)
 
 
 def test_stdin_concurrent_subshells() -> None:
@@ -465,5 +463,4 @@ def test_subshell_fuzz_short() -> None:
                 streams = iopub_streams(outputs[msg_id])
                 assert streams, f"missing stream output for {msg_id}"
 
-        for sid in subshells:
-            _delete_subshell(kc, sid)
+        for sid in subshells: _delete_subshell(kc, sid)

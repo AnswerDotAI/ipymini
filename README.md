@@ -172,15 +172,19 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 - `stop_on_error` aborts queued *execute* requests only; non-execute requests still return replies.
 - Subshells run in per‑subshell threads with a shared user namespace and thread‑local IO routing.
 
+## Style notes (fastcore)
+
+- Prefer `store_attr()` with no args when storing all params (except `self`).
+- If most params are stored and only a few are excluded, use `store_attr(but='a,b')`.
+- Pass an explicit list (e.g. `store_attr("a,b")`) only when storing a subset of params.
+
 ---
 
-## Known gaps / TODO (high level)
+## Known gaps / TODO
 
-- Expand debugger/DAP coverage (step/next/stepOut, exception breakpoints, disconnect/terminate semantics)
+- Binary buffer support (needed for ipywidgets) + richer display metadata
 - Interrupt handling while blocked on input
-- Binary buffer support (might not be needed) + richer display metadata
-
-For the full detailed plan, see `DEVLOG.md`.
+- Expand debugger/DAP coverage (step/next/stepOut, exception breakpoints, disconnect/terminate semantics)
 
 ---
 
@@ -205,19 +209,13 @@ For the full detailed plan, see `DEVLOG.md`.
 
 ## Coding style
 
-We follow the fastai style guide (not PEP8). A local copy lives in `style.md`, with the canonical version here:
-
-- https://docs.fast.ai/dev/style.html
-
-Key points from the style guide:
+We follow the fastai style guide (not PEP8). A summary lives in `style.md`. Key points from the style guide:
 
 - Favor brevity and clarity: aim for one idea per line; use single-line `if`/`def` when the body is a single statement.
 - Keep code readable at a glance: wrap at ~140 chars and avoid unnecessary vertical whitespace (e.g., group imports).
 - Use short, conventional names and align similar statements where it helps scanning.
 - Avoid auto-formatters/linters that fight this style.
-
-Repo conventions applied so far:
-
 - Dicts with 3+ identifier keys use `dict(...)` instead of `{...}`.
 - Repeated request/response plumbing is factored into small helpers (e.g., subshell send, DAP breakpoint helpers).
 - No semicolons for chaining; only single-statement bodies are one-liners.
+

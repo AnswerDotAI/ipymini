@@ -6,8 +6,7 @@ try:
     from IPython.core.completer import rectify_completions as _rectify_completions
 
     _EXPERIMENTAL_AVAILABLE = True
-except Exception:
-    _EXPERIMENTAL_AVAILABLE = False
+except Exception: _EXPERIMENTAL_AVAILABLE = False
 
 
 def _execute_plain(kc, code: str) -> str:

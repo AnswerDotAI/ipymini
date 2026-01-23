@@ -28,8 +28,8 @@ def wait_for_debug_request(kernel, command, arguments=None, full_reply=False):
 def get_stack_frames(kernel, thread_id):
     return wait_for_debug_request(kernel, "stackTrace", dict(threadId=thread_id))["body"]["stackFrames"]
 
-def get_scopes(kernel, frame_id):
-    return wait_for_debug_request(kernel, "scopes", dict(frameId=frame_id))["body"]["scopes"]
+def get_scopes(kernel, frame_id): return wait_for_debug_request(
+    kernel, "scopes", dict(frameId=frame_id))["body"]["scopes"]
 
 def get_scope_ref(scopes, name): return next(s for s in scopes if s["name"] == name)["variablesReference"]
 
@@ -72,8 +72,7 @@ def kernel_with_debug(kernel):
     wait_for_debug_request(kernel, "initialize", DEBUG_INIT_ARGS)
     wait_for_debug_request(kernel, "attach")
     try: yield kernel
-    finally:
-        wait_for_debug_request(kernel, "disconnect", {"restart": False, "terminateDebuggee": True})
+    finally: wait_for_debug_request(kernel, "disconnect", {"restart": False, "terminateDebuggee": True})
 
 
 def test_debug_initialize(kernel):

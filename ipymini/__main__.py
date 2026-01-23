@@ -5,6 +5,7 @@ from .kernel import run_kernel
 
 
 def _run_kernel_from_cli(argv: list[str]) -> None:
+    "Parse CLI args and run the kernel."
     parser = argparse.ArgumentParser(prog="ipymini")
     parser.add_argument("-f", "--connection-file", required=True)
     args = parser.parse_args(argv)
@@ -12,6 +13,7 @@ def _run_kernel_from_cli(argv: list[str]) -> None:
 
 
 def _install_kernelspec(argv: list[str]) -> None:
+    "Install the ipymini kernelspec into user/sys/prefix location."
     parser = argparse.ArgumentParser(prog="ipymini install")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--user", action="store_true", help="Install into user Jupyter dir")
@@ -31,6 +33,7 @@ def _install_kernelspec(argv: list[str]) -> None:
 
 
 def _ensure_frozen_modules_flag(kernel_json: Path) -> None:
+    "Ensure kernelspec argv includes -Xfrozen_modules=off when needed."
     if sys.implementation.name != "cpython" or sys.version_info < (3, 11): return
     with open(kernel_json, encoding="utf-8") as f: data = json.load(f)
     argv = list(data.get("argv") or [])
@@ -42,6 +45,7 @@ def _ensure_frozen_modules_flag(kernel_json: Path) -> None:
 
 
 def main() -> None:
+    "CLI entry point."
     argv = sys.argv[1:]
     commands = {"install": _install_kernelspec, "run": _run_kernel_from_cli}
     if argv and argv[0] in commands: commands[argv[0]](argv[1:])

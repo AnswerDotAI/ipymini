@@ -2,7 +2,6 @@ import json, os, time
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Empty
-from fastcore.foundation import L
 from jupyter_client import KernelManager
 
 TIMEOUT = 10
@@ -22,12 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ensure_jupyter_path() -> str:
+    "Ensure jupyter path."
     share = str(ROOT / "share" / "jupyter")
     current = os.environ.get("JUPYTER_PATH", "")
     return f"{share}{os.pathsep}{current}" if current else share
 
 
 def _build_env() -> dict:
+    "Build env."
     current = os.environ.get("PYTHONPATH", "")
     pythonpath = f"{ROOT}{os.pathsep}{current}" if current else str(ROOT)
     return {
@@ -38,6 +39,7 @@ def _build_env() -> dict:
 
 
 def build_env(extra_env: dict | None = None) -> dict:
+    "Build env."
     env = _build_env()
     if extra_env: env = {**env, **extra_env}
     return env
@@ -48,6 +50,7 @@ def load_connection(km) -> dict:
 
 
 def ensure_separate_process(km: KernelManager) -> None:
+    "Ensure separate process."
     pid = None
     provisioner = getattr(km, "provisioner", None)
     if provisioner is not None: pid = getattr(provisioner, "pid", None)
@@ -59,6 +62,7 @@ def ensure_separate_process(km: KernelManager) -> None:
 
 @contextmanager
 def start_kernel(extra_env: dict | None = None):
+    "Start kernel."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="ipymini")
@@ -74,6 +78,7 @@ def start_kernel(extra_env: dict | None = None):
 
 
 def drain_iopub(kc, msg_id):
+    "Drain iopub."
     deadline = time.time() + TIMEOUT
     outputs = []
     while time.time() < deadline:
@@ -85,6 +90,7 @@ def drain_iopub(kc, msg_id):
 
 
 def execute_and_drain(kc, code, timeout: float | None = None, **exec_kwargs):
+    "Execute and drain."
     msg_id = kc.execute(code, **exec_kwargs)
     reply = get_shell_reply(kc, msg_id, timeout=timeout)
     outputs = drain_iopub(kc, msg_id)
@@ -92,6 +98,7 @@ def execute_and_drain(kc, code, timeout: float | None = None, **exec_kwargs):
 
 
 def debug_request(kc, command, arguments=None, timeout: float | None = None, full_reply: bool = False):
+    "Debug request."
     seq = getattr(kc, "_debug_seq", 1)
     setattr(kc, "_debug_seq", seq + 1)
     msg = kc.session.msg(
@@ -108,29 +115,30 @@ def debug_request(kc, command, arguments=None, timeout: float | None = None, ful
     raise AssertionError("timeout waiting for debug reply")
 
 
-def debug_dump_cell(kc, code):
-    return debug_request(kc, "dumpCell", dict(code=code))
+def debug_dump_cell(kc, code): return debug_request(kc, "dumpCell", dict(code=code))
 
 
 def debug_set_breakpoints(kc, source, line):
+    "Debug set breakpoints."
     args = dict(breakpoints=[dict(line=line)], source=dict(path=source), sourceModified=False)
     return debug_request(kc, "setBreakpoints", args)
 
 
-def debug_info(kc):
-    return debug_request(kc, "debugInfo")
+def debug_info(kc): return debug_request(kc, "debugInfo")
 
 
-def debug_configuration_done(kc, full_reply: bool = False):
-    return debug_request(kc, "configurationDone", full_reply=full_reply)
+def debug_configuration_done(kc, full_reply: bool = False): return debug_request(
+    kc, "configurationDone", full_reply=full_reply)
 
 
 def debug_continue(kc, thread_id: int | None = None):
+    "Debug continue."
     args = dict(threadId=thread_id) if thread_id is not None else {}
     return debug_request(kc, "continue", args)
 
 
 def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
+    "Wait for debug event."
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
         try: msg = kc.get_iopub_msg(timeout=0.5)
@@ -140,6 +148,7 @@ def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> d
 
 
 def wait_for_stop(kc, timeout: float | None = None) -> dict:
+    "Wait for stop."
     timeout = timeout or TIMEOUT
     try: return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
     except AssertionError:
@@ -154,6 +163,7 @@ def wait_for_stop(kc, timeout: float | None = None) -> dict:
 
 
 def get_shell_reply(kc, msg_id, timeout: float | None = None):
+    "Get shell reply."
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
         reply = kc.get_shell_msg(timeout=TIMEOUT)
@@ -162,6 +172,7 @@ def get_shell_reply(kc, msg_id, timeout: float | None = None):
 
 
 def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -> dict[str, dict]:
+    "Collect shell replies."
     deadline = time.time() + (timeout or TIMEOUT)
     replies: dict[str, dict] = {}
     while time.time() < deadline and len(replies) < len(msg_ids):
@@ -179,6 +190,7 @@ def collect_iopub_outputs(
     msg_ids: set[str],
     timeout: float | None = None,
 ) -> dict[str, list[dict]]:
+    "Collect iopub outputs."
     deadline = time.time() + (timeout or TIMEOUT)
     outputs: dict[str, list[dict]] = {msg_id: [] for msg_id in msg_ids}
     idle = set()
@@ -195,6 +207,7 @@ def collect_iopub_outputs(
 
 
 def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
+    "Wait for status."
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
         msg = kc.get_iopub_msg(timeout=TIMEOUT)
@@ -202,11 +215,12 @@ def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
     raise AssertionError(f"timeout waiting for status: {state}")
 
 
-def iopub_msgs(outputs: list[dict], msg_type: str | None = None) -> L:
-    msgs = L(outputs)
-    return msgs if msg_type is None else msgs.filter(lambda m: m["msg_type"] == msg_type)
+def iopub_msgs(outputs: list[dict], msg_type: str | None = None) -> list[dict]:
+    "Iopub msgs."
+    return outputs if msg_type is None else [m for m in outputs if m["msg_type"] == msg_type]
 
 
-def iopub_streams(outputs: list[dict], name: str | None = None) -> L:
+def iopub_streams(outputs: list[dict], name: str | None = None) -> list[dict]:
+    "Iopub streams."
     streams = iopub_msgs(outputs, "stream")
-    return streams if name is None else streams.filter(lambda m: m["content"].get("name") == name)
+    return streams if name is None else [m for m in streams if m["content"].get("name") == name]

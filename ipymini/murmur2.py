@@ -1,4 +1,5 @@
 def murmur2_x86(data: str, seed: int) -> int:
+    "Return Murmur2 x86 hash of UTF-8 `data` with `seed`."
     m = 0x5BD1E995
     data_bytes = [chr(d) for d in data.encode("utf-8")]
     length = len(data_bytes)

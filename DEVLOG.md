@@ -1,6 +1,6 @@
 # DEVLOG
 
-Fresh start. This is a living, condensed log of what matters about ipymini: architecture, protocol behavior, tests, style, and current conventions. Update it as the project evolves.
+This is a living, condensed log of what matters about ipymini: architecture, protocol behavior, tests, style, and current conventions. Update it as the project evolves.
 
 ## Project snapshot
 - `ipymini` is a small, Python‑only Jupyter kernel with IPython parity as the goal.

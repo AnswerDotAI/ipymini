@@ -19,16 +19,14 @@ def test_iopub_welcome() -> None:
         deadline = time.time() + 5
         msg = None
         while time.time() < deadline:
-            try:
-                frames = sub.recv_multipart(flags=zmq.NOBLOCK)
+            try: frames = sub.recv_multipart(flags=zmq.NOBLOCK)
             except zmq.Again:
                 time.sleep(0.05)
                 continue
             if b"<IDS|MSG>" in frames:
                 idx = frames.index(b"<IDS|MSG>")
                 msg = session.deserialize(frames[idx + 1 :])
-            else:
-                msg = session.deserialize(frames)
+            else: msg = session.deserialize(frames)
             if msg.get("header", {}).get("msg_type") == "iopub_welcome": break
         sub.close(0)
 

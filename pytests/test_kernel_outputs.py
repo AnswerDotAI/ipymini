@@ -9,7 +9,7 @@ def test_stream_ordering() -> None:
             store_history=False,
         )
         assert reply["content"]["status"] == "ok"
-        streams = iopub_streams(output_msgs).map(lambda m: (m["content"]["name"], m["content"]["text"]))
+        streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
         assert streams == [("stdout", "out1\n"), ("stderr", "err1\n"), ("stdout", "out2\n")]
 
 
@@ -21,7 +21,7 @@ def test_clear_output_wait() -> None:
             store_history=False,
         )
         assert reply["content"]["status"] == "ok"
-        waits = iopub_msgs(output_msgs, "clear_output").map(lambda m: m["content"]["wait"])
+        waits = [m["content"]["wait"] for m in iopub_msgs(output_msgs, "clear_output")]
         assert True in waits
 
 
@@ -30,9 +30,7 @@ def test_display_id_update() -> None:
         code = "from IPython.display import display\nh = display('first', display_id=True)\nh.update('second')\n"
         _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        displays = iopub_msgs(output_msgs).filter(
-            lambda m: m["msg_type"] in ("display_data", "update_display_data")
-        )
+        displays = [m for m in iopub_msgs(output_msgs) if m["msg_type"] in ("display_data", "update_display_data")]
         assert len(displays) >= 2
         first, second = displays[0], displays[1]
         assert first["msg_type"] == "display_data"
