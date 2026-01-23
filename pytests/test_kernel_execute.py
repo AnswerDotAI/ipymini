@@ -1,13 +1,10 @@
-from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
+from .kernel_utils import execute_and_drain, get_shell_reply, iopub_msgs, start_kernel
 
 
 def test_execute_silent_no_output() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("print('hi')", silent=True)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, "print('hi')", silent=True)
         assert reply["content"]["status"] == "ok"
-
-        output_msgs = drain_iopub(kc, msg_id)
         assert not any(
             msg["msg_type"] in {"stream", "execute_result", "display_data"} for msg in output_msgs
         )
@@ -15,22 +12,16 @@ def test_execute_silent_no_output() -> None:
 
 def test_store_history_false() -> None:
     with start_kernel() as (_, kc):
-        msg_id1 = kc.execute("1+1")
-        reply1 = get_shell_reply(kc, msg_id1)
+        msg_id1, reply1, _ = execute_and_drain(kc, "1+1")
         assert reply1["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id1)
         count1 = reply1["content"]["execution_count"]
 
-        msg_id2 = kc.execute("2+2", store_history=False)
-        reply2 = get_shell_reply(kc, msg_id2)
+        msg_id2, reply2, _ = execute_and_drain(kc, "2+2", store_history=False)
         assert reply2["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id2)
         count2 = reply2["content"]["execution_count"]
 
-        msg_id3 = kc.execute("3+3")
-        reply3 = get_shell_reply(kc, msg_id3)
+        msg_id3, reply3, _ = execute_and_drain(kc, "3+3")
         assert reply3["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id3)
         count3 = reply3["content"]["execution_count"]
 
         assert count2 == count1 + 1
@@ -39,10 +30,8 @@ def test_store_history_false() -> None:
 
 def test_execute_result() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("1+2+3", store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, "1+2+3", store_history=False)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         results = iopub_msgs(output_msgs, "execute_result")
         assert results
         data = results[-1]["content"].get("data", {})
@@ -51,10 +40,8 @@ def test_execute_result() -> None:
 
 def test_user_expressions() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("a = 10", user_expressions={"x": "a+1", "bad": "1/0"})
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, _ = execute_and_drain(kc, "a = 10", user_expressions={"x": "a+1", "bad": "1/0"})
         assert reply["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id)
         expr = reply["content"]["user_expressions"]
         assert expr["x"]["status"] == "ok"
         assert expr["x"]["data"]["text/plain"] == "11"
@@ -63,10 +50,8 @@ def test_user_expressions() -> None:
 
 def test_execute_error() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("1/0", store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, "1/0", store_history=False)
         assert reply["content"]["status"] == "error"
-        output_msgs = drain_iopub(kc, msg_id)
         errors = iopub_msgs(output_msgs, "error")
         assert errors
 

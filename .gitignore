@@ -1,5 +1,6 @@
 REVIEW.md
 gateway.py
+style.md
 Untitled*.ipynb
 _proc/
 sidebar.yml
@@ -147,3 +148,11 @@ checklink/cookies.txt
 .gitconfig
 
 _docs
+DAP.md
+DEBUG.md
+DEVLOG.md
+SUBSHELL.md
+ipykernel
+jupyter_kernel_test
+xeus
+xeus-python

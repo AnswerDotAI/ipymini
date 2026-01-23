@@ -1,5 +1,4 @@
 import zmq
-
 from .kernel_utils import load_connection, start_kernel
 
 

@@ -1,5 +1,4 @@
 import pytest
-
 from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
 
 try:

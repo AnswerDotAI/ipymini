@@ -8,7 +8,6 @@ def test_connect_request() -> None:
         msg_id = msg["header"]["msg_id"]
         reply = get_shell_reply(kc, msg_id)
         content = reply["content"]
-
         conn = load_connection(km)
 
         assert content["shell_port"] == conn["shell_port"]

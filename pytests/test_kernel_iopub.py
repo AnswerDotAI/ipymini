@@ -1,10 +1,6 @@
-import time
-
-import pytest
-import zmq
+import time, pytest, zmq
 from jupyter_client.session import Session
-
-from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, load_connection, start_kernel
+from .kernel_utils import execute_and_drain, iopub_msgs, load_connection, start_kernel
 
 
 def test_iopub_welcome() -> None:
@@ -52,10 +48,8 @@ def test_display_image_png() -> None:
             ")\n"
             "display(Image(data=data))\n"
         )
-        msg_id = kc.execute(code, store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from image display"
         data = displays[0]["content"].get("data", {})
@@ -71,10 +65,8 @@ def test_matplotlib_enable_gui_no_error() -> None:
             "backend = matplotlib.get_backend()\n"
             "assert 'inline' in backend.lower()\n"
         )
-        msg_id = kc.execute(code, store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, _ = execute_and_drain(kc, code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id)
 
 
 def test_matplotlib_inline_default_backend() -> None:
@@ -85,10 +77,8 @@ def test_matplotlib_inline_default_backend() -> None:
             "plt.plot([1, 2, 3], [1, 4, 9])\n"
             "plt.gcf()\n"
         )
-        msg_id = kc.execute(code, store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from matplotlib inline backend"
         data = displays[-1]["content"].get("data", {})

@@ -1,28 +1,26 @@
-from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, iopub_streams, start_kernel
+from .kernel_utils import execute_and_drain, iopub_msgs, iopub_streams, start_kernel
 
 
 def test_stream_ordering() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute(
+        _, reply, output_msgs = execute_and_drain(
+            kc,
             "import sys; print('out1'); print('err1', file=sys.stderr); print('out2')",
             store_history=False,
         )
-        reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         streams = iopub_streams(output_msgs).map(lambda m: (m["content"]["name"], m["content"]["text"]))
         assert streams == [("stdout", "out1\n"), ("stderr", "err1\n"), ("stdout", "out2\n")]
 
 
 def test_clear_output_wait() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute(
+        _, reply, output_msgs = execute_and_drain(
+            kc,
             "from IPython.display import clear_output; clear_output(wait=True)",
             store_history=False,
         )
-        reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         waits = iopub_msgs(output_msgs, "clear_output").map(lambda m: m["content"]["wait"])
         assert True in waits
 
@@ -30,10 +28,8 @@ def test_clear_output_wait() -> None:
 def test_display_id_update() -> None:
     with start_kernel() as (_, kc):
         code = "from IPython.display import display\nh = display('first', display_id=True)\nh.update('second')\n"
-        msg_id = kc.execute(code, store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         displays = iopub_msgs(output_msgs).filter(
             lambda m: m["msg_type"] in ("display_data", "update_display_data")
         )
@@ -53,10 +49,8 @@ def test_display_metadata_transient() -> None:
             "from IPython.display import display\n"
             "display({'text/plain': 'hi'}, raw=True, metadata={'foo': 'bar'}, transient={'display_id': 'xyz'})\n"
         )
-        msg_id = kc.execute(code, store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        output_msgs = drain_iopub(kc, msg_id)
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected at least one display_data message"
         content = displays[0]["content"]

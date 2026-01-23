@@ -1,19 +1,6 @@
-import time
-
-import os
-import random
-
-import pytest
-
-from .kernel_utils import (
-    collect_iopub_outputs,
-    collect_shell_replies,
-    drain_iopub,
-    get_shell_reply,
-    iopub_msgs,
-    iopub_streams,
-    start_kernel,
-)
+import time, os, random, pytest
+from .kernel_utils import (collect_iopub_outputs, collect_shell_replies, drain_iopub, get_shell_reply,
+    iopub_msgs, iopub_streams, start_kernel)
 
 
 TIMEOUT = 10
@@ -51,9 +38,7 @@ def _execute(kc, code: str, subshell_id: str | None = None, **content):
     payload = {"code": code}
     payload.update(content)
     msg = kc.session.msg("execute_request", payload)
-    if subshell_id is not None:
-        msg["header"]["subshell_id"] = subshell_id
-    kc.shell_channel.send(msg)
+    _send_subshell(kc, msg, subshell_id)
     reply = get_shell_reply(kc, msg["header"]["msg_id"])
     outputs = drain_iopub(kc, msg["header"]["msg_id"])
     return msg, reply, outputs
@@ -63,27 +48,23 @@ def _send_execute(kc, code: str, subshell_id: str | None = None, **content):
     payload = {"code": code}
     payload.update(content)
     msg = kc.session.msg("execute_request", payload)
-    if subshell_id is not None:
-        msg["header"]["subshell_id"] = subshell_id
-    kc.shell_channel.send(msg)
+    _send_subshell(kc, msg, subshell_id)
     return msg
 
 
 def _history_tail(kc, subshell_id: str | None, n: int = 1):
     msg = kc.session.msg(
         "history_request",
-        {
-            "hist_access_type": "tail",
-            "n": n,
-            "output": False,
-            "raw": True,
-        },
+        dict(hist_access_type="tail", n=n, output=False, raw=True),
     )
-    if subshell_id is not None:
-        msg["header"]["subshell_id"] = subshell_id
-    kc.shell_channel.send(msg)
+    _send_subshell(kc, msg, subshell_id)
     reply = get_shell_reply(kc, msg["header"]["msg_id"])
     return reply
+
+
+def _send_subshell(kc, msg, subshell_id: str | None) -> None:
+    if subshell_id is not None: msg["header"]["subshell_id"] = subshell_id
+    kc.shell_channel.send(msg)
 
 
 def _last_history_input(reply: dict) -> str | None:
@@ -309,9 +290,7 @@ def test_subshell_concurrency_barrier() -> None:
 
         def _send(code: str, subshell_id: str | None = None) -> str:
             msg = kc.session.msg("execute_request", {"code": code})
-            if subshell_id is not None:
-                msg["header"]["subshell_id"] = subshell_id
-            kc.shell_channel.send(msg)
+            _send_subshell(kc, msg, subshell_id)
             return msg["header"]["msg_id"]
 
         msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
@@ -370,7 +349,6 @@ def test_subshell_stress_interleaved_executes() -> None:
             _delete_subshell(kc, sid)
 
 
-@pytest.mark.skipif(os.environ.get("IPYMINI_FUZZ") != "1", reason="fuzz test disabled")
 def test_subshell_fuzz_stdin_interrupt_short() -> None:
     rng = random.Random(1)
     with start_kernel() as (km, kc):
@@ -419,28 +397,17 @@ def test_subshell_fuzz_stdin_interrupt_short() -> None:
             elif action == "complete":
                 code = "rang"
                 msg = kc.session.msg("complete_request", {"code": code, "cursor_pos": len(code)})
-                if sid is not None:
-                    msg["header"]["subshell_id"] = sid
-                kc.shell_channel.send(msg)
+                _send_subshell(kc, msg, sid)
             elif action == "inspect":
                 code = "print"
                 msg = kc.session.msg("inspect_request", {"code": code, "cursor_pos": len(code)})
-                if sid is not None:
-                    msg["header"]["subshell_id"] = sid
-                kc.shell_channel.send(msg)
+                _send_subshell(kc, msg, sid)
             else:
                 msg = kc.session.msg(
                     "history_request",
-                    {
-                        "hist_access_type": "tail",
-                        "n": 1,
-                        "output": False,
-                        "raw": True,
-                    },
+                    dict(hist_access_type="tail", n=1, output=False, raw=True),
                 )
-                if sid is not None:
-                    msg["header"]["subshell_id"] = sid
-                kc.shell_channel.send(msg)
+                _send_subshell(kc, msg, sid)
             msg_ids.add(msg["header"]["msg_id"])
 
         for _ in range(len(stdin_expected)):
@@ -464,7 +431,6 @@ def test_subshell_fuzz_stdin_interrupt_short() -> None:
             _delete_subshell(kc, sid)
 
 
-@pytest.mark.skipif(os.environ.get("IPYMINI_FUZZ") != "1", reason="fuzz test disabled")
 def test_subshell_fuzz_short() -> None:
     rng = random.Random(0)
     with start_kernel() as (_, kc):
@@ -487,16 +453,9 @@ def test_subshell_fuzz_short() -> None:
             else:
                 msg = kc.session.msg(
                     "history_request",
-                    {
-                        "hist_access_type": "tail",
-                        "n": 1,
-                        "output": False,
-                        "raw": True,
-                    },
+                    dict(hist_access_type="tail", n=1, output=False, raw=True),
                 )
-            if subshell_id is not None:
-                msg["header"]["subshell_id"] = subshell_id
-            kc.shell_channel.send(msg)
+            _send_subshell(kc, msg, subshell_id)
             requests.append((msg["header"]["msg_id"], action))
 
         msg_ids = {msg_id for msg_id, _ in requests}

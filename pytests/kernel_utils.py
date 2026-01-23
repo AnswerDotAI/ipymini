@@ -1,34 +1,30 @@
-import json
-import os
-import time
+import json, os, time
 from contextlib import contextmanager
 from pathlib import Path
-
+from queue import Empty
 from fastcore.foundation import L
 from jupyter_client import KernelManager
 
 TIMEOUT = 10
-DEBUG_INIT_ARGS = {
-    "clientID": "test-client",
-    "clientName": "testClient",
-    "adapterID": "",
-    "pathFormat": "path",
-    "linesStartAt1": True,
-    "columnsStartAt1": True,
-    "supportsVariableType": True,
-    "supportsVariablePaging": True,
-    "supportsRunInTerminalRequest": True,
-    "locale": "en",
-}
+DEBUG_INIT_ARGS = dict(
+    clientID="test-client",
+    clientName="testClient",
+    adapterID="",
+    pathFormat="path",
+    linesStartAt1=True,
+    columnsStartAt1=True,
+    supportsVariableType=True,
+    supportsVariablePaging=True,
+    supportsRunInTerminalRequest=True,
+    locale="en",
+)
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ensure_jupyter_path() -> str:
     share = str(ROOT / "share" / "jupyter")
     current = os.environ.get("JUPYTER_PATH", "")
-    if current:
-        return f"{share}{os.pathsep}{current}"
-    return share
+    return f"{share}{os.pathsep}{current}" if current else share
 
 
 def _build_env() -> dict:
@@ -43,8 +39,7 @@ def _build_env() -> dict:
 
 def build_env(extra_env: dict | None = None) -> dict:
     env = _build_env()
-    if extra_env:
-        env = {**env, **extra_env}
+    if extra_env: env = {**env, **extra_env}
     return env
 
 
@@ -93,6 +88,80 @@ def drain_iopub(kc, msg_id):
         if msg["msg_type"] == "status" and msg["content"].get("execution_state") == "idle":
             break
     return outputs
+
+
+def execute_and_drain(kc, code, timeout: float | None = None, **exec_kwargs):
+    msg_id = kc.execute(code, **exec_kwargs)
+    reply = get_shell_reply(kc, msg_id, timeout=timeout)
+    outputs = drain_iopub(kc, msg_id)
+    return msg_id, reply, outputs
+
+
+def debug_request(kc, command, arguments=None, timeout: float | None = None, full_reply: bool = False):
+    seq = getattr(kc, "_debug_seq", 1)
+    setattr(kc, "_debug_seq", seq + 1)
+    msg = kc.session.msg(
+        "debug_request",
+        dict(type="request", seq=seq, command=command, arguments=arguments or {}),
+    )
+    kc.control_channel.send(msg)
+    deadline = time.time() + (timeout or TIMEOUT)
+    while time.time() < deadline:
+        reply = kc.control_channel.get_msg(timeout=TIMEOUT)
+        if reply["parent_header"].get("msg_id") == msg["header"]["msg_id"]:
+            assert reply["header"]["msg_type"] == "debug_reply"
+            return reply if full_reply else reply["content"]
+    raise AssertionError("timeout waiting for debug reply")
+
+
+def debug_dump_cell(kc, code):
+    return debug_request(kc, "dumpCell", dict(code=code))
+
+
+def debug_set_breakpoints(kc, source, line):
+    args = dict(breakpoints=[dict(line=line)], source=dict(path=source), sourceModified=False)
+    return debug_request(kc, "setBreakpoints", args)
+
+
+def debug_info(kc):
+    return debug_request(kc, "debugInfo")
+
+
+def debug_configuration_done(kc, full_reply: bool = False):
+    return debug_request(kc, "configurationDone", full_reply=full_reply)
+
+
+def debug_continue(kc, thread_id: int | None = None):
+    args = dict(threadId=thread_id) if thread_id is not None else {}
+    return debug_request(kc, "continue", args)
+
+
+def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
+    deadline = time.time() + (timeout or TIMEOUT)
+    while time.time() < deadline:
+        try:
+            msg = kc.get_iopub_msg(timeout=0.5)
+        except Empty:
+            continue
+        if msg.get("msg_type") == "debug_event" and msg.get("content", {}).get("event") == event_name:
+            return msg
+    raise AssertionError(f"debug_event {event_name} not received")
+
+
+def wait_for_stop(kc, timeout: float | None = None) -> dict:
+    timeout = timeout or TIMEOUT
+    try:
+        return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
+    except AssertionError:
+        deadline = time.time() + timeout
+        last = None
+        while time.time() < deadline:
+            reply = debug_request(kc, "stackTrace", dict(threadId=1))
+            if reply.get("success"):
+                return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
+            last = reply
+            time.sleep(0.1)
+        raise AssertionError(f"stopped debug_event not received: {last}")
 
 
 def get_shell_reply(kc, msg_id, timeout: float | None = None):

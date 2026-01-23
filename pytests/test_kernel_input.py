@@ -1,5 +1,4 @@
 import time
-
 from .kernel_utils import drain_iopub, get_shell_reply, iopub_streams, start_kernel
 
 TIMEOUT = 10

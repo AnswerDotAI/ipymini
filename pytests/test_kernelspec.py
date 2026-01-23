@@ -1,8 +1,5 @@
-import json
-import os
-
+import json, os
 from jupyter_client.kernelspec import KernelSpecManager
-
 from .kernel_utils import ROOT, _build_env
 
 

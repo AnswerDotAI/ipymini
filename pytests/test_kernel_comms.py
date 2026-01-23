@@ -27,17 +27,17 @@ def test_comm_lifecycle() -> None:
         _send_comm(
             kc,
             "comm_open",
-            {"comm_id": comm_id, "target_name": "test_target", "data": {"value": 1}, "metadata": {}},
+            dict(comm_id=comm_id, target_name="test_target", data={"value": 1}, metadata={}),
         )
         _send_comm(
             kc,
             "comm_msg",
-            {"comm_id": comm_id, "data": {"value": 2}, "metadata": {}},
+            dict(comm_id=comm_id, data={"value": 2}, metadata={}),
         )
         _send_comm(
             kc,
             "comm_close",
-            {"comm_id": comm_id, "data": {}, "metadata": {}},
+            dict(comm_id=comm_id, data={}, metadata={}),
         )
 
         got = []
@@ -70,7 +70,7 @@ def test_comm_info() -> None:
         _send_comm(
             kc,
             "comm_open",
-            {"comm_id": comm_id, "target_name": "test_target", "data": {}, "metadata": {}},
+            dict(comm_id=comm_id, target_name="test_target", data={}, metadata={}),
         )
         msg_id = kc.comm_info()
         reply = get_shell_reply(kc, msg_id)

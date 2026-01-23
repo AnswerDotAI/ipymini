@@ -1,5 +1,4 @@
 from importlib.metadata import PackageNotFoundError, version
-
 from .kernel import run_kernel
 
 try:

@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import execute_and_drain, get_shell_reply, start_kernel
 
 
 def test_inspect_open() -> None:
@@ -13,15 +13,11 @@ def test_inspect_open() -> None:
 
 def test_history_tail_search() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("1+1")
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, _ = execute_and_drain(kc, "1+1")
         assert reply["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id)
 
-        msg_id = kc.execute("2+2")
-        reply = get_shell_reply(kc, msg_id)
+        _, reply, _ = execute_and_drain(kc, "2+2")
         assert reply["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id)
 
         msg_id = kc.history(hist_access_type="tail", n=2, output=False, raw=True)
         reply = get_shell_reply(kc, msg_id)
@@ -36,10 +32,8 @@ def test_history_tail_search() -> None:
 def test_history_search_unique_and_n() -> None:
     with start_kernel() as (_, kc):
         for code in ("1+1", "1+2", "1+3", "1+1"):
-            msg_id = kc.execute(code)
-            reply = get_shell_reply(kc, msg_id)
+            _, reply, _ = execute_and_drain(kc, code)
             assert reply["content"]["status"] == "ok"
-            drain_iopub(kc, msg_id)
 
         msg_id = kc.history(hist_access_type="search", pattern="1+*", output=False, raw=True, unique=True)
         reply = get_shell_reply(kc, msg_id)

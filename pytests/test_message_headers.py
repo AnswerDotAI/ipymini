@@ -12,8 +12,7 @@ def _assert_header(msg: dict, msg_type: str | None = None) -> None:
     assert header.get("session")
     assert header.get("username")
     assert header.get("version")
-    if msg_type:
-        assert header["msg_type"] == msg_type
+    if msg_type: assert header["msg_type"] == msg_type
     assert _version_tuple(header["version"]) >= (5, 0)
 
 
