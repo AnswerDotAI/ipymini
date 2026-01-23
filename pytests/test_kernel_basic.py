@@ -1,0 +1,18 @@
+from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+
+
+def test_kernel_info() -> None:
+    with start_kernel() as (_, kc):
+        msg_id = kc.kernel_info()
+        reply = get_shell_reply(kc, msg_id)
+        assert reply["parent_header"]["msg_id"] == msg_id
+        assert reply["content"]["status"] == "ok"
+
+
+def test_execute_stream() -> None:
+    with start_kernel() as (_, kc):
+        msg_id = kc.execute("print('hello')", store_history=False)
+        outputs = drain_iopub(kc, msg_id)
+        stream = [m for m in outputs if m["msg_type"] == "stream"]
+        assert stream, "expected stream output"
+        assert stream[-1]["content"]["text"].strip() == "hello"
