@@ -180,14 +180,6 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 - If most params are stored and only a few are excluded, use `store_attr(but='a,b')`.
 - Pass an explicit list (e.g. `store_attr("a,b")`) only when storing a subset of params.
 
----
-
-## Known gaps / TODO
-
-- None currently tracked.
-
----
-
 ## Completion configuration (no traitlets required)
 
 `ipymini` reads simple environment flags at startup:
@@ -211,10 +203,14 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 
 We follow the fastai style guide (not PEP8). A summary lives in `style.md`. Key points from the style guide:
 
-- Favor brevity and clarity: aim for one idea per line; use single-line `if`/`def` when the body is a single statement.
-- Keep code readable at a glance: wrap at ~140 chars and avoid unnecessary vertical whitespace (e.g., group imports).
+- Favor brevity and clarity: aim for one idea per line
+  - Use single-line `if`/`def` when the body is a single statement.
+- Keep code readable at a glance: wrap at ~140 chars and avoid unnecessary vertical whitespace
+  - e.g., group imports
 - Use short, conventional names and align similar statements where it helps scanning.
 - Avoid auto-formatters/linters that fight this style.
 - Dicts with 3+ identifier keys use `dict(...)` instead of `{...}`.
-- Repeated request/response plumbing is factored into small helpers (e.g., subshell send, DAP breakpoint helpers).
+- Repeated request/response plumbing is factored into small helpers
+  - e.g., subshell send, DAP breakpoint helpers
 - No semicolons for chaining; only single-statement bodies are one-liners.
+

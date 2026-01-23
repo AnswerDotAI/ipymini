@@ -23,12 +23,14 @@ test = [
   "matplotlib>=3.8",
   "ipykernel>=6.29",
   "debugpy>=1.8",
+  "murmurhash2",
 ]
 dev = [
   "pytest>=7.4",
   "matplotlib>=3.8",
   "ipykernel>=6.29",
   "debugpy>=1.8",
+  "murmurhash2",
 ]
 
 [project.scripts]
