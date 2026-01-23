@@ -43,8 +43,7 @@ def test_comm_lifecycle() -> None:
         got = []
         while len(got) < 3:
             msg = kc.iopub_channel.get_msg(timeout=2)
-            if msg["msg_type"] in {"comm_open", "comm_msg", "comm_close"}:
-                got.append(msg["msg_type"])
+            if msg["msg_type"] in {"comm_open", "comm_msg", "comm_close"}: got.append(msg["msg_type"])
         assert got == ["comm_open", "comm_msg", "comm_close"]
 
         msg_id = kc.execute(

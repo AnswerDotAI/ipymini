@@ -44,20 +44,17 @@ def build_env(extra_env: dict | None = None) -> dict:
 
 
 def load_connection(km) -> dict:
-    with open(km.connection_file, encoding="utf-8") as f:
-        return json.load(f)
+    with open(km.connection_file, encoding="utf-8") as f: return json.load(f)
 
 
 def ensure_separate_process(km: KernelManager) -> None:
     pid = None
     provisioner = getattr(km, "provisioner", None)
-    if provisioner is not None:
-        pid = getattr(provisioner, "pid", None)
+    if provisioner is not None: pid = getattr(provisioner, "pid", None)
     if pid is None:
         proc = getattr(provisioner, "process", None)
         pid = getattr(proc, "pid", None) if proc is not None else None
-    if pid is None or pid == os.getpid():
-        raise RuntimeError("kernel must run in a separate process")
+    if pid is None or pid == os.getpid(): raise RuntimeError("kernel must run in a separate process")
 
 
 @contextmanager
@@ -70,8 +67,7 @@ def start_kernel(extra_env: dict | None = None):
     kc = km.client()
     kc.start_channels()
     kc.wait_for_ready(timeout=TIMEOUT)
-    try:
-        yield km, kc
+    try: yield km, kc
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=True)
@@ -82,11 +78,9 @@ def drain_iopub(kc, msg_id):
     outputs = []
     while time.time() < deadline:
         msg = kc.get_iopub_msg(timeout=TIMEOUT)
-        if msg["parent_header"].get("msg_id") != msg_id:
-            continue
+        if msg["parent_header"].get("msg_id") != msg_id: continue
         outputs.append(msg)
-        if msg["msg_type"] == "status" and msg["content"].get("execution_state") == "idle":
-            break
+        if msg["msg_type"] == "status" and msg["content"].get("execution_state") == "idle": break
     return outputs
 
 
@@ -139,26 +133,21 @@ def debug_continue(kc, thread_id: int | None = None):
 def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
-        try:
-            msg = kc.get_iopub_msg(timeout=0.5)
-        except Empty:
-            continue
-        if msg.get("msg_type") == "debug_event" and msg.get("content", {}).get("event") == event_name:
-            return msg
+        try: msg = kc.get_iopub_msg(timeout=0.5)
+        except Empty: continue
+        if msg.get("msg_type") == "debug_event" and msg.get("content", {}).get("event") == event_name: return msg
     raise AssertionError(f"debug_event {event_name} not received")
 
 
 def wait_for_stop(kc, timeout: float | None = None) -> dict:
     timeout = timeout or TIMEOUT
-    try:
-        return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
+    try: return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
     except AssertionError:
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
             reply = debug_request(kc, "stackTrace", dict(threadId=1))
-            if reply.get("success"):
-                return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
+            if reply.get("success"): return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
             last = reply
             time.sleep(0.1)
         raise AssertionError(f"stopped debug_event not received: {last}")
@@ -168,8 +157,7 @@ def get_shell_reply(kc, msg_id, timeout: float | None = None):
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
         reply = kc.get_shell_msg(timeout=TIMEOUT)
-        if reply["parent_header"].get("msg_id") == msg_id:
-            return reply
+        if reply["parent_header"].get("msg_id") == msg_id: return reply
     raise AssertionError("timeout waiting for matching shell reply")
 
 
@@ -179,8 +167,7 @@ def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -
     while time.time() < deadline and len(replies) < len(msg_ids):
         reply = kc.get_shell_msg(timeout=TIMEOUT)
         parent_id = reply.get("parent_header", {}).get("msg_id")
-        if parent_id in msg_ids:
-            replies[parent_id] = reply
+        if parent_id in msg_ids: replies[parent_id] = reply
     if len(replies) != len(msg_ids):
         missing = msg_ids - set(replies)
         raise AssertionError(f"timeout waiting for shell replies: {sorted(missing)}")
@@ -198,11 +185,9 @@ def collect_iopub_outputs(
     while time.time() < deadline and len(idle) < len(msg_ids):
         msg = kc.get_iopub_msg(timeout=TIMEOUT)
         parent_id = msg.get("parent_header", {}).get("msg_id")
-        if parent_id not in outputs:
-            continue
+        if parent_id not in outputs: continue
         outputs[parent_id].append(msg)
-        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle":
-            idle.add(parent_id)
+        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle": idle.add(parent_id)
     if len(idle) != len(msg_ids):
         missing = msg_ids - idle
         raise AssertionError(f"timeout waiting for iopub idle: {sorted(missing)}")
@@ -213,8 +198,7 @@ def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
         msg = kc.get_iopub_msg(timeout=TIMEOUT)
-        if msg["msg_type"] == "status" and msg["content"].get("execution_state") == state:
-            return msg
+        if msg["msg_type"] == "status" and msg["content"].get("execution_state") == state: return msg
     raise AssertionError(f"timeout waiting for status: {state}")
 
 

@@ -5,11 +5,6 @@ from .kernel_utils import (DEBUG_INIT_ARGS, TIMEOUT, build_env, debug_configurat
     execute_and_drain, drain_iopub, ensure_separate_process, get_shell_reply, iopub_msgs,
     iopub_streams, wait_for_status, wait_for_stop)
 
-try:
-    import debugpy  # noqa: F401
-except Exception:
-    debugpy = None
-
 
 def _reset_kernel(kc) -> None:
     msg_id = kc.execute(
@@ -30,10 +25,8 @@ class E2EKernel:
 
     def reset_client(self) -> None:
         if self.kc is not None:
-            try:
-                self.kc.stop_channels()
-            except Exception:
-                pass
+            try: self.kc.stop_channels()
+            except Exception: pass
         self.kc = self.km.client()
         self.kc.start_channels()
         self.kc.wait_for_ready(timeout=TIMEOUT)
@@ -45,13 +38,8 @@ class E2EKernel:
         self.reset_client()
 
     def ensure_debug(self) -> None:
-        if debugpy is None: return
         if self._debug_initialized: return
-        reply = debug_request(
-            self.kc,
-            "initialize",
-            DEBUG_INIT_ARGS,
-        )
+        reply = debug_request(self.kc, "initialize", DEBUG_INIT_ARGS)
         assert reply.get("success")
         attach = debug_request(self.kc, "attach")
         if attach and attach.get("success") is False:
@@ -60,10 +48,7 @@ class E2EKernel:
         self._debug_initialized = True
 
     def debug_config_done(self) -> None:
-        if debugpy is None:
-            return
-        if self._debug_config_done:
-            return
+        if self._debug_config_done: return
         debug_configuration_done(self.kc)
         self._debug_config_done = True
 
@@ -80,11 +65,9 @@ def e2e_kernel():
     ensure_separate_process(km)
     kernel = E2EKernel(km)
     kernel.reset_client()
-    try:
-        yield kernel
+    try: yield kernel
     finally:
-        if kernel.kc is not None:
-            kernel.kc.stop_channels()
+        if kernel.kc is not None: kernel.kc.stop_channels()
         km.shutdown_kernel(now=True)
 
 
@@ -132,21 +115,11 @@ def test_e2e_restart(e2e_kernel) -> None:
 
 def test_e2e_debug_roundtrip(kernel) -> None:
     kc = kernel.kc
-    if debugpy is None:
-        reply = debug_request(
-            kc,
-            "initialize",
-            DEBUG_INIT_ARGS,
-        )
-        assert reply == {}
-        return
     kernel.ensure_debug()
     kernel.debug_config_done()
     reply = debug_request(kc, "evaluate", {"expression": "'a' + 'b'", "context": "repl"})
     assert reply.get("success")
 
-
-@pytest.mark.skipif(debugpy is None, reason="debugpy not available")
 def test_e2e_debug_breakpoint_stop(kernel) -> None:
     kernel.restart()
     kc = kernel.kc
@@ -170,7 +143,6 @@ f(2, 3)"""
     drain_iopub(kc, msg_id)
 
 
-@pytest.mark.skipif(debugpy is None, reason="debugpy not available")
 def test_e2e_debug_breakpoint_leading_lines(kernel) -> None:
     kernel.restart()
     kc = kernel.kc

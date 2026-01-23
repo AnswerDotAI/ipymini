@@ -45,8 +45,7 @@ class _ThreadLocalStream:
 
     def writelines(self, lines) -> int:
         total = 0
-        for line in lines:
-            total += self.write(line) or 0
+        for line in lines: total += self.write(line) or 0
         return total
 
     def flush(self) -> None:
@@ -162,8 +161,7 @@ class DebugpyMessageQueue:
     def put_tcp_frame(self, frame: str) -> None:
         self.tcp_buffer += frame
         while True:
-            if self.header_pos == -1:
-                self.header_pos = self.tcp_buffer.find(DebugpyMessageQueue.HEADER)
+            if self.header_pos == -1: self.header_pos = self.tcp_buffer.find(DebugpyMessageQueue.HEADER)
             if self.header_pos == -1: return
 
             if self.separator_pos == -1:
@@ -278,8 +276,7 @@ class MiniDebugpyClient:
             req_seq = self.next_internal_seq()
             msg["seq"] = req_seq
         waiter: queue.Queue = queue.Queue()
-        with self._pending_lock:
-            self._pending[req_seq] = waiter
+        with self._pending_lock: self._pending[req_seq] = waiter
         self._outgoing.put(msg)
         return req_seq, waiter
 
@@ -362,8 +359,7 @@ class MiniDebugger:
             code = request.get("arguments", {}).get("code", "")
             file_name = _debug_file_name(code)
             os.makedirs(os.path.dirname(file_name), exist_ok=True)
-            with open(file_name, "w", encoding="utf-8") as f:
-                f.write(code)
+            with open(file_name, "w", encoding="utf-8") as f: f.write(code)
             return (
                 dict(type="response", request_seq=request.get("seq"), success=True, command=command, body={"sourcePath": file_name}),
                 self.events,
@@ -472,10 +468,8 @@ class MiniDebugger:
         if not _DEBUGPY_AVAILABLE or not self.started: return
         thread_id = threading.get_ident()
         if thread_id in self._traced_threads: return
-        try:
-            debugpy.trace_this_thread(True)
-        except Exception:
-            return
+        try: debugpy.trace_this_thread(True)
+        except Exception: return
         self._traced_threads.add(thread_id)
 
     def _remove_cleanup_transforms(self) -> None:
@@ -519,11 +513,13 @@ class MiniDebugger:
     def _rich_inspect_variables(self, request: dict) -> dict:
         args = request.get("arguments", {}) if isinstance(request.get("arguments"), dict) else {}
         var_name = args.get("variableName")
-        if not isinstance(var_name, str): return self._response(request, False, body={"data": {}, "metadata": {}}, message="invalid variable name")
+        if not isinstance(var_name, str):
+            return self._response(request, False, body={"data": {}, "metadata": {}}, message="invalid variable name")
 
         if not var_name.isidentifier():
             body = {"data": {}, "metadata": {}}
-            if var_name in {"special variables", "function variables"}: return self._response(request, True, body=body)
+            if var_name in {"special variables", "function variables"}:
+                return self._response(request, True, body=body)
             return self._response(request, False, body=body, message="invalid variable name")
 
         ip = get_ipython()
@@ -531,7 +527,8 @@ class MiniDebugger:
 
         if self.stopped_threads and args.get("frameId") is not None:
             frame_id = args.get("frameId")
-            if not isinstance(frame_id, int): return self._response(request, False, body={"data": {}, "metadata": {}}, message="invalid frame")
+            if not isinstance(frame_id, int):
+                return self._response(request, False, body={"data": {}, "metadata": {}}, message="invalid frame")
             code = f"get_ipython().display_formatter.format({var_name})"
             try:
                 reply = self.client.send_request(
@@ -685,8 +682,7 @@ class MiniCommManager:
         msg = {"content": dict(comm_id=comm_id, target_name=target_name, data=data, metadata=metadata)}
         self.events.append(dict(type="open", comm_id=comm_id, target_name=target_name, data=data))
         handler = self.targets.get(target_name)
-        if handler is not None:
-            handler(comm_id, msg)
+        if handler is not None: handler(comm_id, msg)
 
     def comm_msg(self, comm_id: str, data=None, metadata=None) -> None:
         data = data or {}
@@ -931,8 +927,7 @@ class KernelBridge:
 
             name = token_at_cursor(code, cursor_pos)
             bundle = self.shell.object_inspect_mime(name, detail_level=detail_level)
-            if not self.shell.enable_html_pager:
-                bundle.pop("text/html", None)
+            if not self.shell.enable_html_pager: bundle.pop("text/html", None)
             return dict(status="ok", found=True, data=bundle, metadata={})
         except Exception: return dict(status="ok", found=False, data={}, metadata={})
 

@@ -171,10 +171,8 @@ class StdinRouterThread(threading.Thread):
 
     def _drain_requests(self, sock: zmq.Socket) -> None:
         while True:
-            try:
-                prompt, password, parent, ident, waiter = self._requests.get_nowait()
-            except queue.Empty:
-                return
+            try: prompt, password, parent, ident, waiter = self._requests.get_nowait()
+            except queue.Empty: return
             msg = self.session.send( sock, "input_request", {"prompt": prompt, "password": password},
                 parent=parent, ident=ident,)
             msg_id = msg.get("header", {}).get("msg_id")
@@ -476,8 +474,7 @@ class SubshellManager:
 
     def get(self, subshell_id: str | None) -> Subshell | None:
         if subshell_id is None: return self.parent
-        with self._lock:
-            return self._subs.get(subshell_id)
+        with self._lock: return self._subs.get(subshell_id)
 
     def create(self) -> str:
         subshell_id = str(uuid.uuid4())

@@ -69,11 +69,9 @@ def _send_subshell(kc, msg, subshell_id: str | None) -> None:
 
 def _last_history_input(reply: dict) -> str | None:
     hist = reply.get("content", {}).get("history") or []
-    if not hist:
-        return None
+    if not hist: return None
     item = hist[-1]
-    if isinstance(item, (list, tuple)) and len(item) >= 3:
-        return item[2]
+    if isinstance(item, (list, tuple)) and len(item) >= 3: return item[2]
     return None
 
 
@@ -345,8 +343,7 @@ def test_subshell_stress_interleaved_executes() -> None:
             streams = iopub_streams(msgs)
             assert streams, f"missing stream output for {msg_id}"
 
-        for sid in subshells:
-            _delete_subshell(kc, sid)
+        for sid in subshells: _delete_subshell(kc, sid)
 
 
 def test_subshell_fuzz_stdin_interrupt_short() -> None:
@@ -427,8 +424,7 @@ def test_subshell_fuzz_stdin_interrupt_short() -> None:
                 streams = iopub_streams(outputs[msg_id])
                 assert any(f"got:{expected}" in m["content"].get("text", "") for m in streams)
 
-        for sid in subshells:
-            _delete_subshell(kc, sid)
+        for sid in subshells: _delete_subshell(kc, sid)
 
 
 def test_subshell_fuzz_short() -> None:

@@ -29,8 +29,7 @@ def test_iopub_welcome() -> None:
                 msg = session.deserialize(frames[idx + 1 :])
             else:
                 msg = session.deserialize(frames)
-            if msg.get("header", {}).get("msg_type") == "iopub_welcome":
-                break
+            if msg.get("header", {}).get("msg_type") == "iopub_welcome": break
         sub.close(0)
 
         assert msg is not None, "did not receive any iopub messages"
