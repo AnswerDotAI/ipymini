@@ -12,12 +12,8 @@ from IPython.core.displaypub import DisplayPublisher
 from IPython.core.getipython import get_ipython
 from IPython.core.interactiveshell import InteractiveShell
 
-try:
-    import debugpy
-    _DEBUGPY_AVAILABLE = True
-except Exception:
-    debugpy = None
-    _DEBUGPY_AVAILABLE = False
+try: import debugpy
+except Exception: debugpy = None
 
 try:
     from IPython.core.completer import provisionalcompleter as _provisionalcompleter
@@ -254,7 +250,7 @@ class MiniDebugpyClient:
     def _reader_loop(self) -> None:
         "Read debugpy frames from ZMQ and feed the parser."
         if self._endpoint is None: return
-        if _DEBUGPY_AVAILABLE:
+        if debugpy:
             try: debugpy.trace_this_thread(False)
             except Exception: pass
         sock = self.context.socket(zmq.STREAM)
@@ -360,7 +356,7 @@ class MiniDebugger:
     def _ensure_started(self) -> None:
         "Start debugpy adapter and connect client once."
         if self.started: return
-        if not _DEBUGPY_AVAILABLE: raise RuntimeError("debugpy not available")
+        if not debugpy: raise RuntimeError("debugpy not available")
         port = self._get_free_port()
         debugpy.listen((self.host, port))
         self.client.connect(self.host, port)
@@ -383,7 +379,7 @@ class MiniDebugger:
         "Handle a DAP request and return response plus queued events."
         self.events = []
         command = request.get("command")
-        if not _DEBUGPY_AVAILABLE: return {}, []
+        if not debugpy: return {}, []
         self._ensure_started()
         if "seq" in request: self.client.next_seq = max(self.client.next_seq, int(request["seq"]) + 1)
 
@@ -494,7 +490,7 @@ class MiniDebugger:
 
     def trace_current_thread(self) -> None:
         "Enable debugpy tracing on the current thread if needed."
-        if not _DEBUGPY_AVAILABLE or not self.started: return
+        if not debugpy or not self.started: return
         thread_id = threading.get_ident()
         if thread_id in self._traced_threads: return
         try: debugpy.trace_this_thread(True)
@@ -908,10 +904,7 @@ class KernelBridge:
             display=list(self.shell.display_pub.events),
             result=self.shell.displayhook.last,
             result_metadata=self.shell.displayhook.last_metadata or {},
-            execution_count=exec_count,
-            error=error,
-            user_expressions=user_expr,
-            payload=payload,
+            execution_count=exec_count, error=error, user_expressions=user_expr, payload=payload
         )
 
     def set_stream_sender(self, sender: Callable[[str, str], None] | None) -> None: self._stream_sender = sender
@@ -948,9 +941,7 @@ class KernelBridge:
                 cursor_end = cursor_pos
                 matches = []
             return dict(
-                matches=matches,
-                cursor_start=cursor_start,
-                cursor_end=cursor_end,
+                matches=matches, cursor_start=cursor_start, cursor_end=cursor_end,
                 metadata={
                     _EXPERIMENTAL_COMPLETIONS_KEY: [
                         dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature)
@@ -1017,7 +1008,7 @@ class KernelBridge:
 
     def comm_info(self) -> dict: return {"status": "ok", "comms": _COMM_MANAGER.comm_info()}
 
-    def debug_available(self) -> bool: return bool(_DEBUGPY_AVAILABLE)
+    def debug_available(self) -> bool: return bool(debugpy)
 
     def debug_request(self, request_json: str) -> dict:
         "Handle a debug_request DAP message in JSON."
