@@ -4,15 +4,16 @@
 
 The design goal is: **a small, readable, testable kernel** with **first‑class IPython behavior**.
 
+This was almost entirely implemented by AI, closely referencing the `ipykernel`, `xeus`, `xeus-python`, and `jupyter_kernel_test` projects during development. So all credit for this project belongs to the authors of those packages, and to authors of the excellent documentation and specifications referred to (e.g DAP spec; JEPs; etc).
+
 ---
 
-## What we’re aiming to do
+## What we’ve aimed to do
 
 - Implement a full Jupyter kernel in pure Python.
 - Match `ipykernel` behavior where it matters (IOPub ordering, message shapes, history, inspect, etc.).
 - Use IPython instead of re‑implementing Python semantics.
 - Expand protocol‑level tests (IOPub, interrupts, completions, etc.) to approach upstream parity.
-- **Explicit non‑goal:** raw mode is not implemented.
 
 ---
 
@@ -25,7 +26,6 @@ The design goal is: **a small, readable, testable kernel** with **first‑class 
 - `ipymini_bridge.py`: comm manager surface for tests
 - `pytests/`: protocol + behavior tests
 - `share/jupyter/kernels/ipymini/kernel.json`: kernel spec
-- `ipykernel/`, `xeus/`, `xeus-python/`: reference implementations kept for comparison
 
 ---
 
@@ -38,7 +38,7 @@ The design goal is: **a small, readable, testable kernel** with **first‑class 
 - `ipykernel` is a test-only dependency (used by some e2e/debug harnesses)
 
 ### ZMQ
-`pyzmq` bundles or links against `libzmq`. If you need to install system libs:
+`pyzmq` bundles or links against `libzmq`. If you need to install system libs on MacOS:
 
 ```
 brew install libzmq
@@ -64,20 +64,7 @@ pip install -e ".[test]"
 
 You have a few options:
 
-### Option A: Use the repo’s `JUPYTER_PATH`
-Set `JUPYTER_PATH` to include the repo’s `share/jupyter`:
-
-```
-export JUPYTER_PATH=/path/to/ipymini/share/jupyter:$JUPYTER_PATH
-```
-
-### Option B: Install the spec into your user Jupyter dir
-
-```
-jupyter kernelspec install --user /path/to/ipymini/share/jupyter/kernels/ipymini
-```
-
-### Option C: Use the built-in installer
+### Option A: Use the built-in installer
 
 ```
 python -m ipymini install --user
@@ -93,6 +80,19 @@ After either option, you should see it in:
 
 ```
 jupyter kernelspec list
+```
+
+### Option B: Install the spec into your user Jupyter dir
+
+```
+jupyter kernelspec install --user /path/to/ipymini/share/jupyter/kernels/ipymini
+```
+
+### Option C: Use the repo’s `JUPYTER_PATH`
+Set `JUPYTER_PATH` to include the repo’s `share/jupyter`:
+
+```
+export JUPYTER_PATH=/path/to/ipymini/share/jupyter:$JUPYTER_PATH
 ```
 
 ---
@@ -143,33 +143,33 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 
 ## Behavior implemented so far
 
-- kernel_info replies
-- connect_request replies
+- `kernel_info` replies
+- `connect_request` replies
 - stdout/stderr stream messages
-- execute_result
-- display_data + update_display_data
-- clear_output
+- `execute_result`
+- `display_data` + `update_display_data`
+- `clear_output`
 - comms (open/msg/close/info)
 - history (tail/search/range)
 - inspect
-- is_complete
+- `is_complete`
 - completion (IPython-based; can use Jedi and the experimental completion API)
 - interrupts (signal‑based)
-- stop_on_error (aborts queued execute requests by default)
+- `stop_on_error` (aborts queued execute requests by default)
 - stdin input requests
 - kernel subshells (create/list/delete; concurrent shell handling; per‑subshell execution counts/history)
 - pager payloads (`?` / `help`)
-- set_next_input payloads (coalesced to one per execute)
-- iopub_welcome (XPUB)
-- debug_request (debugpy in-process adapter: initialize/attach/evaluate, breakpoints, stackTrace/scopes/variables, continue)
+- `set_next_input` payloads (coalesced to one per execute)
+- `iopub_welcome` (XPUB)
+- `debug_request` (debugpy in-process adapter: initialize/attach/evaluate, breakpoints, stackTrace/scopes/variables, continue)
 
 ---
 
 ## Design notes
 
 - Interrupts use the kernelspec `interrupt_mode = signal`; the kernel restores the default SIGINT handler so IPython turns interrupts into `KeyboardInterrupt`.
-- `set_next_input` is injected onto the IPython shell to emit the expected payloads.
-- stop_on_error aborts queued *execute* requests only; non-execute requests still return replies.
+- ``set_next_input`` is injected onto the IPython shell to emit the expected payloads.
+- `stop_on_error` aborts queued *execute* requests only; non-execute requests still return replies.
 - Subshells run in per‑subshell threads with a shared user namespace and thread‑local IO routing.
 
 ---
