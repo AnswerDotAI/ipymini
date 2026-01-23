@@ -5,18 +5,8 @@ from queue import Empty
 from jupyter_client import KernelManager
 
 TIMEOUT = 10
-DEBUG_INIT_ARGS = dict(
-    clientID="test-client",
-    clientName="testClient",
-    adapterID="",
-    pathFormat="path",
-    linesStartAt1=True,
-    columnsStartAt1=True,
-    supportsVariableType=True,
-    supportsVariablePaging=True,
-    supportsRunInTerminalRequest=True,
-    locale="en",
-)
+DEBUG_INIT_ARGS = dict(clientID="test-client", clientName="testClient", adapterID="", pathFormat="path", linesStartAt1=True,
+    columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -31,11 +21,7 @@ def _build_env() -> dict:
     "Build env."
     current = os.environ.get("PYTHONPATH", "")
     pythonpath = f"{ROOT}{os.pathsep}{current}" if current else str(ROOT)
-    return {
-        **os.environ,
-        "PYTHONPATH": pythonpath,
-        "JUPYTER_PATH": _ensure_jupyter_path(),
-    }
+    return dict(os.environ) | dict(PYTHONPATH=pythonpath, JUPYTER_PATH=_ensure_jupyter_path())
 
 
 def build_env(extra_env: dict | None = None) -> dict:
@@ -97,14 +83,13 @@ def execute_and_drain(kc, code, timeout: float | None = None, **exec_kwargs):
     return msg_id, reply, outputs
 
 
-def debug_request(kc, command, arguments=None, timeout: float | None = None, full_reply: bool = False):
+def debug_request(kc, command, arguments=None, timeout: float | None = None, full_reply: bool = False, **kwargs):
     "Debug request."
+    if arguments is None: arguments = {}
+    if kwargs: arguments |= kwargs
     seq = getattr(kc, "_debug_seq", 1)
     setattr(kc, "_debug_seq", seq + 1)
-    msg = kc.session.msg(
-        "debug_request",
-        dict(type="request", seq=seq, command=command, arguments=arguments or {}),
-    )
+    msg = kc.session.msg("debug_request", dict(type="request", seq=seq, command=command, arguments=arguments or {}))
     kc.control_channel.send(msg)
     deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
@@ -115,7 +100,7 @@ def debug_request(kc, command, arguments=None, timeout: float | None = None, ful
     raise AssertionError("timeout waiting for debug reply")
 
 
-def debug_dump_cell(kc, code): return debug_request(kc, "dumpCell", dict(code=code))
+def debug_dump_cell(kc, code): return debug_request(kc, "dumpCell", code=code)
 
 
 def debug_set_breakpoints(kc, source, line):
@@ -127,14 +112,13 @@ def debug_set_breakpoints(kc, source, line):
 def debug_info(kc): return debug_request(kc, "debugInfo")
 
 
-def debug_configuration_done(kc, full_reply: bool = False): return debug_request(
-    kc, "configurationDone", full_reply=full_reply)
+def debug_configuration_done(kc, full_reply: bool = False): return debug_request(kc, "configurationDone", full_reply=full_reply)
 
 
 def debug_continue(kc, thread_id: int | None = None):
     "Debug continue."
-    args = dict(threadId=thread_id) if thread_id is not None else {}
-    return debug_request(kc, "continue", args)
+    if thread_id is None: return debug_request(kc, "continue")
+    return debug_request(kc, "continue", threadId=thread_id)
 
 
 def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
@@ -155,7 +139,7 @@ def wait_for_stop(kc, timeout: float | None = None) -> dict:
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
-            reply = debug_request(kc, "stackTrace", dict(threadId=1))
+            reply = debug_request(kc, "stackTrace", threadId=1)
             if reply.get("success"): return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
             last = reply
             time.sleep(0.1)
@@ -171,10 +155,10 @@ def get_shell_reply(kc, msg_id, timeout: float | None = None):
     raise AssertionError("timeout waiting for matching shell reply")
 
 
-def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -> dict[str, dict]:
+def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
     "Collect shell replies."
     deadline = time.time() + (timeout or TIMEOUT)
-    replies: dict[str, dict] = {}
+    replies = {}
     while time.time() < deadline and len(replies) < len(msg_ids):
         reply = kc.get_shell_msg(timeout=TIMEOUT)
         parent_id = reply.get("parent_header", {}).get("msg_id")
@@ -185,14 +169,10 @@ def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -
     return replies
 
 
-def collect_iopub_outputs(
-    kc,
-    msg_ids: set[str],
-    timeout: float | None = None,
-) -> dict[str, list[dict]]:
+def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
     "Collect iopub outputs."
     deadline = time.time() + (timeout or TIMEOUT)
-    outputs: dict[str, list[dict]] = {msg_id: [] for msg_id in msg_ids}
+    outputs = {msg_id: [] for msg_id in msg_ids}
     idle = set()
     while time.time() < deadline and len(idle) < len(msg_ids):
         msg = kc.get_iopub_msg(timeout=TIMEOUT)

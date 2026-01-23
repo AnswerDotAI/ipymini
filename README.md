@@ -171,6 +171,8 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 - ``set_next_input`` is injected onto the IPython shell to emit the expected payloads.
 - `stop_on_error` aborts queued *execute* requests only; non-execute requests still return replies.
 - Subshells run in per‑subshell threads with a shared user namespace and thread‑local IO routing.
+- IOPub forwards `buffers` for display and comm messages when provided; comm handlers also accept binary buffers.
+- Interrupts while blocked on input cancel pending input waits and surface `KeyboardInterrupt`.
 
 ## Style notes (fastcore)
 
@@ -182,9 +184,7 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 
 ## Known gaps / TODO
 
-- Binary buffer support (needed for ipywidgets) + richer display metadata
-- Interrupt handling while blocked on input
-- Expand debugger/DAP coverage (step/next/stepOut, exception breakpoints, disconnect/terminate semantics)
+- None currently tracked.
 
 ---
 
@@ -218,4 +218,3 @@ We follow the fastai style guide (not PEP8). A summary lives in `style.md`. Key 
 - Dicts with 3+ identifier keys use `dict(...)` instead of `{...}`.
 - Repeated request/response plumbing is factored into small helpers (e.g., subshell send, DAP breakpoint helpers).
 - No semicolons for chaining; only single-statement bodies are one-liners.
-

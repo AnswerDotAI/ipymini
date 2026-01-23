@@ -1,12 +1,10 @@
+meta/
 REVIEW.md
 _docs
 DAP.md
 DEBUG.md
 SUBSHELL.md
-ipykernel
-jupyter_kernel_test
-xeus
-xeus-python
+links/
 gateway.py
 style.md
 Untitled*.ipynb

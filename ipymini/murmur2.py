@@ -1,17 +1,12 @@
 def murmur2_x86(data: str, seed: int) -> int:
     "Return Murmur2 x86 hash of UTF-8 `data` with `seed`."
     m = 0x5BD1E995
-    data_bytes = [chr(d) for d in data.encode("utf-8")]
+    data_bytes = data.encode("utf-8")
     length = len(data_bytes)
     h = seed ^ length
     rounded_end = length & 0xFFFFFFFC
     for i in range(0, rounded_end, 4):
-        k = (
-            (ord(data_bytes[i]) & 0xFF)
-            | ((ord(data_bytes[i + 1]) & 0xFF) << 8)
-            | ((ord(data_bytes[i + 2]) & 0xFF) << 16)
-            | (ord(data_bytes[i + 3]) & 0xFF) << 24
-        )
+        k = int.from_bytes(data_bytes[i : i + 4], "little")
         k = (k * m) & 0xFFFFFFFF
         k ^= k >> 24
         k = (k * m) & 0xFFFFFFFF
@@ -21,10 +16,10 @@ def murmur2_x86(data: str, seed: int) -> int:
 
     val = length & 0x03
     k = 0
-    if val == 3: k = (ord(data_bytes[rounded_end + 2]) & 0xFF) << 16
-    if val in [2, 3]: k |= (ord(data_bytes[rounded_end + 1]) & 0xFF) << 8
-    if val in [1, 2, 3]:
-        k |= ord(data_bytes[rounded_end]) & 0xFF
+    if val >= 3: k = data_bytes[rounded_end + 2] << 16
+    if val >= 2: k |= data_bytes[rounded_end + 1] << 8
+    if val >= 1:
+        k |= data_bytes[rounded_end]
         h ^= k
         h = (h * m) & 0xFFFFFFFF
 

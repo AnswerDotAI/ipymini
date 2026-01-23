@@ -7,11 +7,7 @@ from .kernel_utils import (DEBUG_INIT_ARGS, TIMEOUT, build_env, debug_configurat
 
 
 def _reset_kernel(kc) -> None:
-    msg_id = kc.execute(
-        "get_ipython().run_line_magic('reset', '-f')",
-        silent=True,
-        store_history=False,
-    )
+    msg_id = kc.execute("get_ipython().run_line_magic('reset', '-f')", silent=True, store_history=False)
     get_shell_reply(kc, msg_id)
     drain_iopub(kc, msg_id)
 
@@ -103,11 +99,7 @@ def test_e2e_restart(e2e_kernel) -> None:
     e2e_kernel.restart()
     kc = e2e_kernel.kc
 
-    _, reply, outputs = execute_and_drain(
-        kc,
-        "try:\n    x\nexcept NameError:\n    print('missing')",
-        store_history=False,
-    )
+    _, reply, outputs = execute_and_drain(kc, "try:\n    x\nexcept NameError:\n    print('missing')", store_history=False)
     assert reply["content"]["status"] == "ok"
     streams = iopub_streams(outputs)
     assert any("missing" in m["content"].get("text", "") for m in streams)
@@ -117,7 +109,7 @@ def test_e2e_debug_roundtrip(kernel) -> None:
     kc = kernel.kc
     kernel.ensure_debug()
     kernel.debug_config_done()
-    reply = debug_request(kc, "evaluate", {"expression": "'a' + 'b'", "context": "repl"})
+    reply = debug_request(kc, "evaluate", expression="'a' + 'b'", context="repl")
     assert reply.get("success")
 
 def test_e2e_debug_breakpoint_stop(kernel) -> None:

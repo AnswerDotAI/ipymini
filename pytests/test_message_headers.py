@@ -1,8 +1,7 @@
 from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
 
 
-def _version_tuple(value: str) -> tuple[int, ...]: return tuple(
-    int(part) if part.isdigit() else 0 for part in value.split("."))
+def _version_tuple(value: str) -> tuple[int, ...]: return tuple(int(part) if part.isdigit() else 0 for part in value.split("."))
 
 
 def _assert_header(msg: dict, msg_type: str | None = None) -> None:

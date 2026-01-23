@@ -7,6 +7,7 @@ from fastcore.basics import store_attr
 import zmq
 from jupyter_client.session import Session
 from .bridge import KernelBridge
+from .comms import comm_context, get_comm_manager
 
 
 @dataclass
@@ -25,11 +26,9 @@ class ConnectionInfo:
     def from_file(cls, path: str) -> "ConnectionInfo":
         "Load connection info from JSON connection file at `path`."
         with open(path, encoding="utf-8") as f: data = json.load(f)
-        return cls( transport=data["transport"], ip=data["ip"], shell_port=int(data["shell_port"]),
-            iopub_port=int(data["iopub_port"]), stdin_port=int(data["stdin_port"]),
-            control_port=int(data["control_port"]), hb_port=int(data["hb_port"]),
-            key=data.get("key", ""), signature_scheme=data.get("signature_scheme", "hmac-sha256"),
-        )
+        return cls(transport=data["transport"], ip=data["ip"], shell_port=int(data["shell_port"]),
+            iopub_port=int(data["iopub_port"]), stdin_port=int(data["stdin_port"]), control_port=int(data["control_port"]),
+            hb_port=int(data["hb_port"]), key=data.get("key", ""), signature_scheme=data.get("signature_scheme", "hmac-sha256"))
 
     def addr(self, port: int) -> str: return f"{self.transport}://{self.ip}:{port}"
 
@@ -38,8 +37,7 @@ def _raise_async_exception(thread_id: int, exc_type: type[BaseException]) -> boo
     "Inject `exc_type` into a thread by id; returns success."
     try: import ctypes
     except Exception: return False
-    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-        ctypes.c_ulong(thread_id), ctypes.py_object(exc_type),)
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), ctypes.py_object(exc_type))
     if res == 0: return False
     if res > 1:
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), None)
@@ -77,11 +75,14 @@ class IOPubThread(threading.Thread):
         "Initialize IOPub sender thread."
         super().__init__(daemon=True)
         store_attr()
-        self.queue: queue.Queue[tuple[str, dict, dict | None]] = queue.Queue()
+        self.queue = queue.Queue()
         self._stop_event = threading.Event()
-        self._socket: zmq.Socket | None = None
+        self._socket = None
 
-    def send(self, msg_type: str, content: dict, parent: dict | None) -> None: self.queue.put((msg_type, content, parent))
+    def send(self, msg_type: str, content: dict, parent: dict | None, metadata: dict | None = None,
+        ident: bytes | list[bytes] | None = None, buffers: list[bytes | memoryview] | None = None) -> None:
+        "Queue an IOPub message for async send."
+        self.queue.put((msg_type, content, parent, metadata, ident, buffers))
 
     def run(self) -> None:
         "Send queued IOPub messages and handle subscription handshake."
@@ -105,11 +106,15 @@ class IOPubThread(threading.Thread):
         "Send queued IOPub messages to the socket."
         if self._socket is None: return
         while True:
-            try: msg_type, content, parent = self.queue.get_nowait()
+            try: msg_type, content, parent, metadata, ident, buffers = self.queue.get_nowait()
             except queue.Empty: break
-            self.session.send(self._socket, msg_type, content, parent=parent)
+            self.session.send(self._socket, msg_type, content, parent=parent, metadata=metadata, ident=ident,
+                buffers=buffers)
 
     def stop(self) -> None: self._stop_event.set()
+
+
+_INPUT_INTERRUPTED = object()
 
 
 class StdinRouterThread(threading.Thread):
@@ -118,26 +123,34 @@ class StdinRouterThread(threading.Thread):
         super().__init__(daemon=True)
         store_attr()
         self._stop_event = threading.Event()
-        self._requests: queue.Queue[
-            tuple[str, bool, dict | None, list[bytes] | None, queue.Queue[str]]
-        ] = queue.Queue()
-        self._pending: dict[str, tuple[tuple[bytes, ...], queue.Queue[str]]] = {}
-        self._pending_by_ident: dict[tuple[bytes, ...], deque[queue.Queue[str]]] = {}
-        self._socket: zmq.Socket | None = None
+        self._interrupt_event = threading.Event()
+        self._pending_lock = threading.Lock()
+        self._requests = queue.Queue()
+        self._pending = {}
+        self._pending_by_ident = {}
+        self._socket = None
 
     def request_input( self, prompt: str, password: bool, parent: dict | None,
         ident: list[bytes] | None, timeout: float | None = None,) -> str:
         "Send input_request and wait for input_reply; honors `timeout`."
-        response_queue: queue.Queue[str] = queue.Queue()
+        response_queue = queue.Queue()
         self._requests.put((prompt, password, parent, ident, response_queue))
         deadline = None if timeout is None else time.time() + timeout
         while True:
+            if self._interrupt_event.is_set():
+                self._interrupt_event.clear()
+                raise KeyboardInterrupt
             if self._stop_event.is_set(): raise RuntimeError("stdin router stopped")
             try:
-                if deadline is None: return response_queue.get(timeout=0.1)
-                remaining = max(0.0, deadline - time.time())
-                if remaining == 0.0: raise TimeoutError("timed out waiting for input reply")
-                return response_queue.get(timeout=min(0.1, remaining))
+                if deadline is None: value = response_queue.get(timeout=0.1)
+                else:
+                    remaining = max(0.0, deadline - time.time())
+                    if remaining == 0.0: raise TimeoutError("timed out waiting for input reply")
+                    value = response_queue.get(timeout=min(0.1, remaining))
+                if value is _INPUT_INTERRUPTED:
+                    self._interrupt_event.clear()
+                    raise KeyboardInterrupt
+                return value
             except queue.Empty: continue
 
     def run(self) -> None:
@@ -160,20 +173,22 @@ class StdinRouterThread(threading.Thread):
                     msg_id = parent.get("msg_id")
                     waiter = None
                     if msg_id:
-                        pending = self._pending.pop(msg_id, None)
-                        if pending is not None:
-                            ident_key, waiter = pending
-                            waiters = self._pending_by_ident.get(ident_key)
-                            if waiters:
-                                try: waiters.remove(waiter)
-                                except ValueError: pass
-                                if not waiters: self._pending_by_ident.pop(ident_key, None)
+                        with self._pending_lock:
+                            pending = self._pending.pop(msg_id, None)
+                            if pending is not None:
+                                ident_key, waiter = pending
+                                waiters = self._pending_by_ident.get(ident_key)
+                                if waiters:
+                                    try: waiters.remove(waiter)
+                                    except ValueError: pass
+                                    if not waiters: self._pending_by_ident.pop(ident_key, None)
                     if waiter is None:
                         key = tuple(idents or [])
-                        waiters = self._pending_by_ident.get(key)
-                        if waiters:
-                            waiter = waiters.popleft()
-                            if not waiters: self._pending_by_ident.pop(key, None)
+                        with self._pending_lock:
+                            waiters = self._pending_by_ident.get(key)
+                            if waiters:
+                                waiter = waiters.popleft()
+                                if not waiters: self._pending_by_ident.pop(key, None)
                     if waiter is not None:
                         value = msg.get("content", {}).get("value", "")
                         waiter.put(value)
@@ -184,46 +199,53 @@ class StdinRouterThread(threading.Thread):
         while True:
             try: prompt, password, parent, ident, waiter = self._requests.get_nowait()
             except queue.Empty: return
-            msg = self.session.send( sock, "input_request", {"prompt": prompt, "password": password},
-                parent=parent, ident=ident,)
+            if self._interrupt_event.is_set():
+                waiter.put(_INPUT_INTERRUPTED)
+                continue
+            msg = self.session.send(sock, "input_request", {"prompt": prompt, "password": password},
+                parent=parent, ident=ident)
             msg_id = msg.get("header", {}).get("msg_id")
             key = tuple(ident or [])
-            if msg_id: self._pending[msg_id] = (key, waiter)
-            self._pending_by_ident.setdefault(key, deque()).append(waiter)
+            with self._pending_lock:
+                if msg_id: self._pending[msg_id] = (key, waiter)
+                self._pending_by_ident.setdefault(key, deque()).append(waiter)
 
     def stop(self) -> None: self._stop_event.set()
 
+    def interrupt_pending(self) -> None:
+        "Cancel pending input requests and wake any waiters."
+        self._interrupt_event.set()
+        waiters = []
+        with self._pending_lock:
+            waiters.extend(waiter for _, waiter in self._pending.values())
+            self._pending.clear()
+            self._pending_by_ident.clear()
+        while True:
+            try: _prompt, _password, _parent, _ident, waiter = self._requests.get_nowait()
+            except queue.Empty: break
+            waiters.append(waiter)
+        for waiter in waiters: waiter.put(_INPUT_INTERRUPTED)
+
 
 class Subshell:
-    def __init__( self, kernel: "MiniKernel", subshell_id: str | None, user_ns: dict,
-        use_singleton: bool = False,) -> None:
+    def __init__(self, kernel: "MiniKernel", subshell_id: str | None, user_ns: dict,
+        use_singleton: bool = False) -> None:
         "Create subshell worker thread and bridge for execution."
         store_attr("kernel,subshell_id")
-        self._queue: queue.Queue[tuple[dict, list[bytes] | None, zmq.Socket]] = queue.Queue()
+        self._queue = queue.Queue()
         self._stop = threading.Event()
         name = "subshell-parent" if subshell_id is None else f"subshell-{subshell_id}"
         self._thread = threading.Thread(target=self._run, daemon=True, name=name)
-        self.bridge = KernelBridge(
-            request_input=self.request_input, debug_event_callback=self._send_debug_event,
-            zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton,
-        )
+        self.bridge = KernelBridge(request_input=self.request_input, debug_event_callback=self._send_debug_event,
+            zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton)
         self.bridge.set_stream_sender(self._send_stream)
-        self._parent_header: dict[str, Any] | None = None
-        self._parent_idents: list[bytes] | None = None
+        self._parent_header = None
+        self._parent_idents = None
         self._executing = threading.Event()
-        self._shell_handlers = dict(
-            kernel_info_request=self._handle_kernel_info,
-            connect_request=self._handle_connect,
-            complete_request=self._handle_complete,
-            inspect_request=self._handle_inspect,
-            history_request=self._handle_history,
-            is_complete_request=self._handle_is_complete,
-            comm_info_request=self._handle_comm_info,
-            comm_open=self._handle_comm_open,
-            comm_msg=self._handle_comm_msg,
-            comm_close=self._handle_comm_close,
-            shutdown_request=self._handle_shutdown,
-        )
+        self._shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
+            complete_request=self._handle_complete, inspect_request=self._handle_inspect, history_request=self._handle_history,
+            is_complete_request=self._handle_is_complete, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm_open,
+            comm_msg=self._handle_comm_msg, comm_close=self._handle_comm_close, shutdown_request=self._handle_shutdown)
 
     def start(self) -> None: self._thread.start()
 
@@ -249,9 +271,7 @@ class Subshell:
             if os.sys.stdout is not None: os.sys.stdout.flush()
             if os.sys.stderr is not None: os.sys.stderr.flush()
         except Exception: pass
-        return self.kernel.stdin_router.request_input(
-            prompt, password, self._parent_header, self._parent_idents
-        )
+        return self.kernel.stdin_router.request_input(prompt, password, self._parent_header, self._parent_idents)
 
     def _send_stream(self, name: str, text: str) -> None:
         "Send stream output on IOPub for current parent message."
@@ -297,18 +317,15 @@ class Subshell:
 
     def _abort_pending_executes(self) -> None:
         "Abort queued execute requests and reply aborted."
-        drained: list[tuple[dict, list[bytes] | None, zmq.Socket]] = []
+        drained = []
         while True:
             try: drained.append(self._queue.get_nowait())
             except queue.Empty: break
         for msg, idents, sock in drained:
             msg_type = msg.get("header", {}).get("msg_type")
             if msg_type == "execute_request":
-                reply_content = dict(
-                    status="aborted",
-                    execution_count=self.bridge.shell.execution_count,
-                    user_expressions={}, payload=[],
-                )
+                reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count,
+                    user_expressions={}, payload=[])
                 self._send_reply(sock, "execute_reply", reply_content, msg, idents)
             elif msg_type: self._dispatch_shell_non_execute(msg, idents, sock)
 
@@ -321,13 +338,8 @@ class Subshell:
 
     def _handle_connect(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Reply to connect_request with port numbers."
-        content = dict(
-            shell_port=self.kernel.connection.shell_port,
-            iopub_port=self.kernel.connection.iopub_port,
-            stdin_port=self.kernel.connection.stdin_port,
-            control_port=self.kernel.connection.control_port,
-            hb_port=self.kernel.connection.hb_port,
-        )
+        content = dict(shell_port=self.kernel.connection.shell_port, iopub_port=self.kernel.connection.iopub_port,
+            stdin_port=self.kernel.connection.stdin_port, control_port=self.kernel.connection.control_port, hb_port=self.kernel.connection.hb_port)
         self._send_reply(sock, "connect_reply", content, msg, idents)
 
     def _handle_execute(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
@@ -347,26 +359,16 @@ class Subshell:
         try:
             self._send_status("busy", msg)
             try:
-                result = self.bridge.execute(
-                    code, silent=silent, store_history=store_history,
-                    user_expressions=user_expressions, allow_stdin=allow_stdin,
-                )
+                with comm_context(self.kernel._iopub_send, msg):
+                    result = self.bridge.execute(code, silent=silent, store_history=store_history,
+                        user_expressions=user_expressions, allow_stdin=allow_stdin)
             except BaseException as exc:
-                result = dict(
-                    streams=[], display=[], result=None, result_metadata={},
-                    execution_count=self.bridge.shell.execution_count,
-                    error=dict(
-                        ename=type(exc).__name__, evalue=str(exc),
-                        traceback=traceback.format_exception(type(exc), exc, exc.__traceback__),
-                    ),
-                    user_expressions={}, payload=[],
-                )
+                result = dict(streams=[], display=[], result=None, result_metadata={}, execution_count=self.bridge.shell.execution_count,
+                    error=dict(ename=type(exc).__name__, evalue=str(exc), traceback=traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    user_expressions={}, payload=[])
 
             exec_count = result.get("execution_count")
-            if not silent:
-                self.kernel._iopub_send(
-                    "execute_input", {"code": code, "execution_count": exec_count}, msg
-                )
+            if not silent: self.kernel._iopub_send("execute_input", {"code": code, "execution_count": exec_count}, msg)
 
             error = result.get("error")
             if not silent:
@@ -378,32 +380,19 @@ class Subshell:
                         continue
                     if event.get("type") == "display":
                         msg_type = "update_display_data" if event.get("update") else "display_data"
-                        self.kernel._iopub_send(
-                            msg_type,
-                            dict(data=event.get("data", {}), metadata=event.get("metadata", {}), transient=event.get("transient", {})),
-                            msg,
-                        )
+                        self.kernel._iopub_send(msg_type, dict(data=event.get("data", {}), metadata=event.get("metadata", {}),
+                            transient=event.get("transient", {})), msg, buffers=event.get("buffers"))
 
             if error:
-                self.kernel._iopub_send(
-                    "error",
-                    dict(ename=error["ename"], evalue=error["evalue"], traceback=error.get("traceback", [])),
-                    msg,
-                )
+                self.kernel._iopub_send("error", dict(ename=error["ename"], evalue=error["evalue"],
+                    traceback=error.get("traceback", [])), msg)
 
             if not silent and not error and result.get("result") is not None:
-                self.kernel._iopub_send(
-                    "execute_result",
-                    dict(execution_count=exec_count, data=result.get("result"), metadata=result.get("result_metadata", {})),
-                    msg,
-                )
+                self.kernel._iopub_send("execute_result", dict(execution_count=exec_count, data=result.get("result"),
+                    metadata=result.get("result_metadata", {})), msg)
 
-            reply_content: dict[str, Any] = dict(
-                status="ok" if not error else "error",
-                execution_count=exec_count,
-                user_expressions=result.get("user_expressions", {}),
-                payload=result.get("payload", []),
-            )
+            reply_content = dict(status="ok" if not error else "error", execution_count=exec_count,
+                user_expressions=result.get("user_expressions", {}), payload=result.get("payload", []))
             if error: reply_content.update(error)
 
             self._send_reply(sock, "execute_reply", reply_content, msg, idents)
@@ -423,27 +412,15 @@ class Subshell:
     def _handle_inspect(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Reply to inspect_request."
         content = msg.get("content", {})
-        reply = self.bridge.inspect(
-            content.get("code", ""),
-            content.get("cursor_pos"),
-            content.get("detail_level", 0),
-        )
+        reply = self.bridge.inspect(content.get("code", ""), content.get("cursor_pos"), content.get("detail_level", 0))
         self._send_reply(sock, "inspect_reply", reply, msg, idents)
 
     def _handle_history(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Reply to history_request."
         content = msg.get("content", {})
-        reply = self.bridge.history(
-            content.get("hist_access_type", ""),
-            bool(content.get("output", False)),
-            bool(content.get("raw", False)),
-            session=int(content.get("session", 0)),
-            start=int(content.get("start", 0)),
-            stop=content.get("stop"),
-            n=content.get("n"),
-            pattern=content.get("pattern"),
-            unique=bool(content.get("unique", False)),
-        )
+        reply = self.bridge.history(content.get("hist_access_type", ""), bool(content.get("output", False)),
+            bool(content.get("raw", False)), session=int(content.get("session", 0)), start=int(content.get("start", 0)),
+            stop=content.get("stop"), n=content.get("n"), pattern=content.get("pattern"), unique=bool(content.get("unique", False)))
         self._send_reply(sock, "history_reply", reply, msg, idents)
 
     def _handle_is_complete(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
@@ -454,39 +431,34 @@ class Subshell:
 
     def _handle_comm_info(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Reply to comm_info_request."
-        reply = self.bridge.comm_info()
+        content = msg.get("content", {})
+        target_name = content.get("target_name")
+        manager = get_comm_manager()
+        comms = {comm_id: dict(target_name=comm.target_name) for comm_id, comm in manager.comms.items()
+            if target_name is None or comm.target_name == target_name}
+        reply = dict(status="ok", comms=comms)
         self._send_reply(sock, "comm_info_reply", reply, msg, idents)
 
     def _handle_comm_open(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Handle comm_open request and broadcast on IOPub."
         content = msg.get("content", {})
-        self.bridge.comm_open(
-            content.get("comm_id"),
-            content.get("target_name"),
-            data=content.get("data"),
-            metadata=content.get("metadata"),
-        )
-        self.kernel._iopub_send("comm_open", content, msg)
+        manager = get_comm_manager()
+        manager.comm_open(None, None, msg)
+        self.kernel._iopub_send("comm_open", content, msg, metadata=msg.get("metadata"), buffers=msg.get("buffers"))
 
     def _handle_comm_msg(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Handle comm_msg request and broadcast on IOPub."
         content = msg.get("content", {})
-        self.bridge.comm_msg(
-            content.get("comm_id"),
-            data=content.get("data"),
-            metadata=content.get("metadata"),
-        )
-        self.kernel._iopub_send("comm_msg", content, msg)
+        manager = get_comm_manager()
+        manager.comm_msg(None, None, msg)
+        self.kernel._iopub_send("comm_msg", content, msg, metadata=msg.get("metadata"), buffers=msg.get("buffers"))
 
     def _handle_comm_close(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Handle comm_close request and broadcast on IOPub."
         content = msg.get("content", {})
-        self.bridge.comm_close(
-            content.get("comm_id"),
-            data=content.get("data"),
-            metadata=content.get("metadata"),
-        )
-        self.kernel._iopub_send("comm_close", content, msg)
+        manager = get_comm_manager()
+        manager.comm_close(None, None, msg)
+        self.kernel._iopub_send("comm_close", content, msg, metadata=msg.get("metadata"), buffers=msg.get("buffers"))
 
     def _handle_shutdown(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         self.kernel._handle_shutdown(msg, idents, sock)
@@ -496,9 +468,9 @@ class SubshellManager:
     def __init__(self, kernel: "MiniKernel") -> None:
         "Manage parent and child subshells sharing a user namespace."
         self.kernel = kernel
-        self._user_ns: dict = {}
+        self._user_ns = {}
         self.parent = Subshell(kernel, None, self._user_ns, use_singleton=True)
-        self._subs: dict[str, Subshell] = {}
+        self._subs = {}
         self._lock = threading.Lock()
 
     def start(self) -> None: self.parent.start()
@@ -557,16 +529,8 @@ class MiniKernel:
 
         self.shell_socket.bind(self.connection.addr(self.connection.shell_port))
         self.control_socket.bind(self.connection.addr(self.connection.control_port))
-        self.iopub_thread = IOPubThread(
-            self.context,
-            self.connection.addr(self.connection.iopub_port),
-            self.session,
-        )
-        self.stdin_router = StdinRouterThread(
-            self.context,
-            self.connection.addr(self.connection.stdin_port),
-            self.session,
-        )
+        self.iopub_thread = IOPubThread(self.context, self.connection.addr(self.connection.iopub_port), self.session)
+        self.stdin_router = StdinRouterThread(self.context, self.connection.addr(self.connection.stdin_port), self.session)
 
         self.poller = zmq.Poller()
         self.poller.register(self.shell_socket, zmq.POLLIN)
@@ -574,18 +538,13 @@ class MiniKernel:
         self.hb = HeartbeatThread(self.context, self.connection.addr(self.connection.hb_port))
         self.subshells = SubshellManager(self)
         self.bridge = self.subshells.parent.bridge
-        self._parent_header: dict[str, Any] | None = None
-        self._parent_idents: list[bytes] | None = None
-        self._shell_send_queue: queue.Queue[tuple[str, dict, dict, list[bytes] | None]] = queue.Queue()
+        self._parent_header = None
+        self._parent_idents = None
+        self._shell_send_queue = queue.Queue()
         self._running = True
-        self._control_handlers = dict(
-            shutdown_request=self._handle_shutdown,
-            debug_request=self._handle_debug,
-            interrupt_request=self._handle_interrupt,
-            create_subshell_request=self._handle_create_subshell,
-            list_subshell_request=self._handle_list_subshell,
-            delete_subshell_request=self._handle_delete_subshell,
-        )
+        self._control_handlers = dict(shutdown_request=self._handle_shutdown, debug_request=self._handle_debug,
+            interrupt_request=self._handle_interrupt, create_subshell_request=self._handle_create_subshell,
+            list_subshell_request=self._handle_list_subshell, delete_subshell_request=self._handle_delete_subshell)
 
     def start(self) -> None:
         "Start kernel threads and serve shell/control messages."
@@ -615,7 +574,10 @@ class MiniKernel:
     def _close_sockets(self) -> None:
         for sock in (self.shell_socket, self.control_socket): sock.close(0)
 
-    def _handle_sigint(self, signum, frame) -> None: self.subshells.interrupt_all()
+    def _handle_sigint(self, signum, frame) -> None:
+        "Handle SIGINT by interrupting subshells and input waits."
+        self.subshells.interrupt_all()
+        self.stdin_router.interrupt_pending()
 
     def _handle_control(self) -> None:
         "Handle control channel requests."
@@ -639,12 +601,11 @@ class MiniKernel:
             return
         subshell.submit(msg, idents, self.shell_socket)
 
-    def _send_reply( self, socket: zmq.Socket, msg_type: str, content: dict,
-        parent: dict, idents: list[bytes] | None,) -> None:
+    def _send_reply(self, socket: zmq.Socket, msg_type: str, content: dict, parent: dict,
+        idents: list[bytes] | None) -> None:
         self.session.send(socket, msg_type, content, parent=parent, ident=idents)
 
-    def _queue_shell_reply( self, msg_type: str, content: dict,
-        parent: dict, idents: list[bytes] | None,) -> None:
+    def _queue_shell_reply(self, msg_type: str, content: dict, parent: dict, idents: list[bytes] | None) -> None:
         payload = (msg_type, content, parent, idents)
         self._shell_send_queue.put(payload)
 
@@ -655,30 +616,25 @@ class MiniKernel:
             except queue.Empty: return
             self.session.send(self.shell_socket, msg_type, content, parent=parent, ident=idents)
 
-    def _send_status(self, state: str, parent: dict | None) -> None: self._iopub_send(
-        "status", {"execution_state": state}, parent)
+    def _send_status(self, state: str, parent: dict | None) -> None: self._iopub_send("status", {"execution_state": state}, parent)
 
     def _send_debug_event(self, event: dict) -> None:
         "Send a debug_event on IOPub using current parent header."
         parent = self._parent_header or {}
         self._iopub_send("debug_event", event, parent)
 
-    def _iopub_send(self, msg_type: str, content: dict, parent: dict | None) -> None:
-        self.iopub_thread.send(msg_type, content, parent)
+    def _iopub_send(self, msg_type: str, content: dict, parent: dict | None, metadata: dict | None = None,
+        ident: bytes | list[bytes] | None = None, buffers: list[bytes | memoryview] | None = None) -> None:
+        "Queue an IOPub message with optional metadata and buffers."
+        self.iopub_thread.send(msg_type, content, parent, metadata, ident, buffers)
 
     def _send_subshell_error(self, msg: dict, idents: list[bytes] | None) -> None:
         "Send SubshellNotFound error reply for unknown subshell."
         msg_type = msg.get("header", {}).get("msg_type", "")
         subshell_id = msg.get("header", {}).get("subshell_id")
         if not msg_type.endswith("_request"): return
-        content: dict[str, Any] = dict(
-            status="error", ename="SubshellNotFound",
-            evalue=f"Unknown subshell_id {subshell_id!r}", traceback=[],
-        )
-        if msg_type == "execute_request":
-            content.update(
-                dict(execution_count=0, user_expressions={}, payload=[])
-            )
+        content = dict(status="error", ename="SubshellNotFound", evalue=f"Unknown subshell_id {subshell_id!r}", traceback=[])
+        if msg_type == "execute_request": content.update(dict(execution_count=0, user_expressions={}, payload=[]))
         self._send_reply(self.shell_socket, msg_type.replace("_request", "_reply"), content, msg, idents)
 
     def _handle_create_subshell(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
@@ -711,24 +667,10 @@ class MiniKernel:
         except PackageNotFoundError: impl_version = "0.0.0+local"
         supported_features = ["kernel subshells"]
         if self.bridge.debug_available(): supported_features.append("debugger")
-        return dict(
-            status="ok",
-            protocol_version="5.3",
-            implementation="ipymini",
-            implementation_version=impl_version,
-            language_info=dict(
-                name="python",
-                version=self._python_version(),
-                mimetype="text/x-python",
-                file_extension=".py",
-                pygments_lexer="python",
-                codemirror_mode={"name": "ipython", "version": 3},
-                nbconvert_exporter="python",
-            ),
-            banner="ipymini",
-            help_links=[],
-            supported_features=supported_features,
-        )
+        return dict(status="ok", protocol_version="5.3", implementation="ipymini", implementation_version=impl_version,
+            language_info=dict(name="python", version=self._python_version(), mimetype="text/x-python",
+                file_extension=".py", pygments_lexer="python", codemirror_mode={"name": "ipython", "version": 3},
+                nbconvert_exporter="python"), banner="ipymini", help_links=[], supported_features=supported_features)
 
     def _python_version(self) -> str: return ".".join(str(x) for x in os.sys.version_info[:3])
 
@@ -749,6 +691,7 @@ class MiniKernel:
     def _handle_interrupt(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Handle interrupt_request by signaling subshells."
         self.subshells.interrupt_all()
+        self.stdin_router.interrupt_pending()
         self._send_reply(sock, "interrupt_reply", {"status": "ok"}, msg, idents)
 
     def _handle_shutdown(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:

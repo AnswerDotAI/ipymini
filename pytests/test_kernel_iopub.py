@@ -6,10 +6,7 @@ from .kernel_utils import execute_and_drain, iopub_msgs, load_connection, start_
 def test_iopub_welcome() -> None:
     with start_kernel() as (km, _kc):
         conn = load_connection(km)
-        session = Session(
-            key=conn.get("key", "").encode(),
-            signature_scheme=conn.get("signature_scheme", "hmac-sha256"),
-        )
+        session = Session(key=conn.get("key", "").encode(), signature_scheme=conn.get("signature_scheme", "hmac-sha256"))
 
         ctx = zmq.Context.instance()
         sub = ctx.socket(zmq.SUB)

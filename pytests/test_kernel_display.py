@@ -2,16 +2,8 @@ from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
 
 
 def test_display_data_samples() -> None:
-    samples = [
-        (
-            "from IPython.display import HTML, display; display(HTML('<b>test</b>'))",
-            "text/html",
-        ),
-        (
-            "from IPython.display import Math, display; display(Math('\\\\frac{1}{2}'))",
-            "text/latex",
-        ),
-    ]
+    samples = [("from IPython.display import HTML, display; display(HTML('<b>test</b>'))", "text/html"),
+        ("from IPython.display import Math, display; display(Math('\\\\frac{1}{2}'))", "text/latex")]
     with start_kernel() as (_, kc):
         for code, mime in samples:
             msg_id = kc.execute(code, store_history=False)

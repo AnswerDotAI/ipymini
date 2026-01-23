@@ -61,3 +61,32 @@ def test_input_request_disallowed() -> None:
         assert reply["content"]["status"] == "error"
         assert reply["content"]["ename"] == "StdinNotImplementedError"
         drain_iopub(kc, msg_id)
+
+
+def test_interrupt_while_waiting_for_input() -> None:
+    with start_kernel() as (_, kc):
+        msg_id = kc.execute("input('prompt> ')", allow_stdin=True)
+        stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
+        assert stdin_msg["msg_type"] == "input_request"
+
+        interrupt_msg = kc.session.msg("interrupt_request", {})
+        kc.control_channel.send(interrupt_msg)
+        deadline = time.time() + TIMEOUT
+        interrupt_reply = None
+        while time.time() < deadline:
+            reply = kc.control_channel.get_msg(timeout=TIMEOUT)
+            if reply["parent_header"].get("msg_id") == interrupt_msg["header"]["msg_id"]:
+                interrupt_reply = reply
+                break
+        assert interrupt_reply is not None
+        assert interrupt_reply["header"]["msg_type"] == "interrupt_reply"
+
+        reply = get_shell_reply(kc, msg_id)
+        assert reply["content"]["status"] == "error"
+        assert reply["content"]["ename"] == "KeyboardInterrupt"
+        drain_iopub(kc, msg_id)
+
+        ok_id = kc.execute("1+1", store_history=False)
+        ok_reply = get_shell_reply(kc, ok_id)
+        assert ok_reply["content"]["status"] == "ok"
+        drain_iopub(kc, ok_id)

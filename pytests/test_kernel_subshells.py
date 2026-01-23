@@ -52,10 +52,7 @@ def _send_execute(kc, code: str, subshell_id: str | None = None, **content):
 
 
 def _history_tail(kc, subshell_id: str | None, n: int = 1):
-    msg = kc.session.msg(
-        "history_request",
-        dict(hist_access_type="tail", n=n, output=False, raw=True),
-    )
+    msg = kc.session.msg("history_request", dict(hist_access_type="tail", n=n, output=False, raw=True))
     _send_subshell(kc, msg, subshell_id)
     reply = get_shell_reply(kc, msg["header"]["msg_id"])
     return reply
@@ -131,24 +128,17 @@ def test_subshells_can_run_concurrently() -> None:
         subshell_id = _create_subshell(kc)
         _execute(kc, "import threading; evt = threading.Event()")
 
-        msg_wait = kc.session.msg(
-            "execute_request",
-            {"code": "ok = evt.wait(1.0); print(ok)"},
-        )
+        msg_wait = kc.session.msg("execute_request", {"code": "ok = evt.wait(1.0); print(ok)"})
         msg_wait["header"]["subshell_id"] = subshell_id
         kc.shell_channel.send(msg_wait)
 
         msg_set = kc.session.msg("execute_request", {"code": "evt.set(); print('set')"})
         kc.shell_channel.send(msg_set)
 
-        replies = collect_shell_replies(
-            kc, {msg_wait["header"]["msg_id"], msg_set["header"]["msg_id"]}
-        )
+        replies = collect_shell_replies(kc, {msg_wait["header"]["msg_id"], msg_set["header"]["msg_id"]})
         reply_wait = replies[msg_wait["header"]["msg_id"]]
         reply_set = replies[msg_set["header"]["msg_id"]]
-        outputs = collect_iopub_outputs(
-            kc, {msg_wait["header"]["msg_id"], msg_set["header"]["msg_id"]}
-        )
+        outputs = collect_iopub_outputs(kc, {msg_wait["header"]["msg_id"], msg_set["header"]["msg_id"]})
         outputs_wait = outputs[msg_wait["header"]["msg_id"]]
         outputs_set = outputs[msg_set["header"]["msg_id"]]
 
@@ -193,17 +183,10 @@ def test_subshell_create_while_execute() -> None:
 @pytest.mark.parametrize("are_subshells", [(False, True), (True, False), (True, True)])
 def test_subshell_stop_on_error_isolated(are_subshells) -> None:
     with start_kernel() as (_, kc):
-        subshell_ids = [
-            _create_subshell(kc) if is_subshell else None
-            for is_subshell in are_subshells
-        ]
+        subshell_ids = [_create_subshell(kc) if is_subshell else None for is_subshell in are_subshells]
 
         msg_ids = []
-        msg = _send_execute(
-            kc,
-            "import asyncio; await asyncio.sleep(0.1); raise ValueError()",
-            subshell_id=subshell_ids[0],
-        )
+        msg = _send_execute(kc, "import asyncio; await asyncio.sleep(0.1); raise ValueError()", subshell_id=subshell_ids[0])
         msg_ids.append(msg["header"]["msg_id"])
         msg = _send_execute(kc, "print('hello')", subshell_id=subshell_ids[0])
         msg_ids.append(msg["header"]["msg_id"])
@@ -254,10 +237,7 @@ def test_stdin_concurrent_subshells() -> None:
         msg_b["header"]["subshell_id"] = subshell_b
         kc.shell_channel.send(msg_b)
 
-        values = {
-            msg_a["header"]["msg_id"]: "alpha",
-            msg_b["header"]["msg_id"]: "beta",
-        }
+        values = {msg_a["header"]["msg_id"]: "alpha", msg_b["header"]["msg_id"]: "beta"}
         stdin_msgs = [kc.get_stdin_msg(timeout=TIMEOUT) for _ in range(2)]
         for stdin_msg in stdin_msgs:
             assert stdin_msg["msg_type"] == "input_request"
@@ -310,26 +290,18 @@ def test_subshell_concurrency_barrier() -> None:
 def test_subshell_stress_interleaved_executes() -> None:
     with start_kernel() as (_, kc):
         subshells = [_create_subshell(kc) for _ in range(2)]
-        _execute(
-            kc,
-            "import time, warnings; from IPython.core import completer; "
-            "warnings.filterwarnings('ignore', category=completer.ProvisionalCompleterWarning)",
-        )
+        code = ("import time, warnings; from IPython.core import completer; "
+            "warnings.filterwarnings('ignore', category=completer.ProvisionalCompleterWarning)")
+        _execute(kc, code)
 
         msg_ids = set()
         for idx in range(4):
-            msg = kc.session.msg(
-                "execute_request",
-                {"code": f"time.sleep(0.02); print('parent:{idx}')"},
-            )
+            msg = kc.session.msg("execute_request", {"code": f"time.sleep(0.02); print('parent:{idx}')"})
             kc.shell_channel.send(msg)
             msg_ids.add(msg["header"]["msg_id"])
 
             for sid in subshells:
-                msg = kc.session.msg(
-                    "execute_request",
-                    {"code": f"time.sleep(0.02); print('{sid[:4]}:{idx}')"},
-                )
+                msg = kc.session.msg("execute_request", {"code": f"time.sleep(0.02); print('{sid[:4]}:{idx}')"})
                 msg["header"]["subshell_id"] = sid
                 kc.shell_channel.send(msg)
                 msg_ids.add(msg["header"]["msg_id"])
@@ -348,32 +320,21 @@ def test_subshell_fuzz_stdin_interrupt_short() -> None:
     rng = random.Random(1)
     with start_kernel() as (km, kc):
         subshells = [_create_subshell(kc) for _ in range(2)]
-        _execute(
-            kc,
-            "import time, warnings; from IPython.core import completer; "
-            "warnings.filterwarnings('ignore', category=completer.ProvisionalCompleterWarning)",
-        )
+        code = ("import time, warnings; from IPython.core import completer; "
+            "warnings.filterwarnings('ignore', category=completer.ProvisionalCompleterWarning)")
+        _execute(kc, code)
 
-        msg_ids: set[str] = set()
-        exec_ids: set[str] = set()
-        stdin_expected: dict[str, str] = {}
+        msg_ids = set()
+        exec_ids = set()
+        stdin_expected = {}
 
-        long_msg = _send_execute(
-            kc,
-            "import time; time.sleep(0.4); print('slept')",
-            subshell_id=rng.choice([None, *subshells]),
-        )
+        long_msg = _send_execute(kc, "import time; time.sleep(0.4); print('slept')", subshell_id=rng.choice([None, *subshells]))
         msg_ids.add(long_msg["header"]["msg_id"])
         exec_ids.add(long_msg["header"]["msg_id"])
 
         for idx in range(3):
             sid = rng.choice([None, *subshells])
-            msg = _send_execute(
-                kc,
-                "value = input('prompt> '); print(f'got:{value}')",
-                subshell_id=sid,
-                allow_stdin=True,
-            )
+            msg = _send_execute(kc, "value = input('prompt> '); print(f'got:{value}')", subshell_id=sid, allow_stdin=True)
             msg_id = msg["header"]["msg_id"]
             msg_ids.add(msg_id)
             exec_ids.add(msg_id)
@@ -383,26 +344,16 @@ def test_subshell_fuzz_stdin_interrupt_short() -> None:
             sid = rng.choice([None, *subshells])
             action = rng.choice(["execute", "complete", "inspect", "history"])
             if action == "execute":
-                msg = _send_execute(
-                    kc,
-                    "print('fast')",
-                    subshell_id=sid,
-                )
+                msg = _send_execute(kc, "print('fast')", subshell_id=sid)
                 exec_ids.add(msg["header"]["msg_id"])
             elif action == "complete":
                 code = "rang"
                 msg = kc.session.msg("complete_request", {"code": code, "cursor_pos": len(code)})
-                _send_subshell(kc, msg, sid)
             elif action == "inspect":
                 code = "print"
                 msg = kc.session.msg("inspect_request", {"code": code, "cursor_pos": len(code)})
-                _send_subshell(kc, msg, sid)
-            else:
-                msg = kc.session.msg(
-                    "history_request",
-                    dict(hist_access_type="tail", n=1, output=False, raw=True),
-                )
-                _send_subshell(kc, msg, sid)
+            else: msg = kc.session.msg("history_request", dict(hist_access_type="tail", n=1, output=False, raw=True))
+            if action != "execute": _send_subshell(kc, msg, sid)
             msg_ids.add(msg["header"]["msg_id"])
 
         for _ in range(len(stdin_expected)):
@@ -431,7 +382,7 @@ def test_subshell_fuzz_short() -> None:
         subshells = [_create_subshell(kc) for _ in range(3)]
         _execute(kc, "import time")
 
-        requests: list[tuple[str, str]] = []
+        requests = []
         for idx in range(20):
             subshell_id = rng.choice([None, *subshells])
             action = rng.choice(["execute", "complete", "inspect", "history"])
@@ -444,11 +395,7 @@ def test_subshell_fuzz_short() -> None:
             elif action == "inspect":
                 code = "print"
                 msg = kc.session.msg("inspect_request", {"code": code, "cursor_pos": len(code)})
-            else:
-                msg = kc.session.msg(
-                    "history_request",
-                    dict(hist_access_type="tail", n=1, output=False, raw=True),
-                )
+            else: msg = kc.session.msg("history_request", dict(hist_access_type="tail", n=1, output=False, raw=True))
             _send_subshell(kc, msg, subshell_id)
             requests.append((msg["header"]["msg_id"], action))
 

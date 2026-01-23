@@ -84,13 +84,9 @@ class _ThreadLocalIO:
 
     def push( self, shell, stdout, stderr, request_input: Callable[[str, bool], str], allow_stdin: bool) -> dict:
         "Set per-thread IO bindings; returns the previous bindings."
-        prev = dict(
-            shell=getattr(self.local, "shell", None),
-            stdout=getattr(self.local, "stdout", None),
-            stderr=getattr(self.local, "stderr", None),
-            request_input=getattr(self.local, "request_input", None),
-            allow_stdin=getattr(self.local, "allow_stdin", None),
-        )
+        prev = dict(shell=getattr(self.local, "shell", None), stdout=getattr(self.local, "stdout", None),
+            stderr=getattr(self.local, "stderr", None), request_input=getattr(self.local, "request_input", None),
+            allow_stdin=getattr(self.local, "allow_stdin", None))
         self.local.shell = shell
         self.local.stdout = stdout
         self.local.stderr = stderr
@@ -206,14 +202,14 @@ class MiniDebugpyClient:
         self.context = context
         self.next_seq = 1
         self._event_callback = event_callback
-        self._pending: dict[int, queue.Queue] = {}
+        self._pending = {}
         self._pending_lock = threading.Lock()
         self._stop = threading.Event()
-        self._reader_thread: threading.Thread | None = None
+        self._reader_thread = None
         self._initialized = threading.Event()
-        self._outgoing: queue.Queue[dict] = queue.Queue()
-        self._routing_id: bytes | None = None
-        self._endpoint: str | None = None
+        self._outgoing = queue.Queue()
+        self._routing_id = None
+        self._endpoint = None
         self._message_queue = DebugpyMessageQueue(self._handle_event, self._handle_response)
 
     def connect(self, host: str, port: int) -> None:
@@ -297,7 +293,7 @@ class MiniDebugpyClient:
         if not isinstance(req_seq, int) or req_seq <= 0:
             req_seq = self.next_internal_seq()
             msg["seq"] = req_seq
-        waiter: queue.Queue = queue.Queue()
+        waiter = queue.Queue()
         with self._pending_lock: self._pending[req_seq] = waiter
         self._outgoing.put(msg)
         return req_seq, waiter
@@ -320,27 +316,20 @@ class MiniDebugpyClient:
 
 
 class MiniDebugger:
-    def __init__(
-        self,
-        event_callback: Callable[[dict], None] | None = None,
-        *,
-        zmq_context: zmq.Context | None = None,
-        kernel_modules: list[str] | None = None,
-        debug_just_my_code: bool = False,
-        filter_internal_frames: bool = True,
-    ) -> None:
+    def __init__(self, event_callback: Callable[[dict], None] | None = None, *, zmq_context: zmq.Context | None = None,
+        kernel_modules: list[str] | None = None, debug_just_my_code: bool = False, filter_internal_frames: bool = True) -> None:
         "Initialize DAP handler and debugpy client state."
-        self.events: list[dict] = []
+        self.events = []
         self._event_callback = event_callback
         context = zmq_context or zmq.Context.instance()
         self.client = MiniDebugpyClient(context, self._handle_event)
         self.started = False
         self.host = "127.0.0.1"
         self.port = None
-        self.breakpoint_list: dict[str, list[dict]] = {}
-        self.stopped_threads: set[int] = set()
-        self._traced_threads: set[int] = set()
-        self._removed_cleanup: dict[int, Callable] = {}
+        self.breakpoint_list = {}
+        self.stopped_threads = set()
+        self._traced_threads = set()
+        self._removed_cleanup = {}
         self.kernel_modules = kernel_modules or []
         self.just_my_code = debug_just_my_code
         self.filter_internal_frames = filter_internal_frames
@@ -357,6 +346,11 @@ class MiniDebugger:
         "Start debugpy adapter and connect client once."
         if self.started: return
         if not debugpy: raise RuntimeError("debugpy not available")
+        if self.port is not None:
+            self.client.connect(self.host, self.port)
+            self._remove_cleanup_transforms()
+            self.started = True
+            return
         port = self._get_free_port()
         debugpy.listen((self.host, port))
         self.client.connect(self.host, port)
@@ -375,11 +369,20 @@ class MiniDebugger:
         if self._event_callback: self._event_callback(msg)
         else: self.events.append(msg)
 
-    def process_request(self, request: dict) -> tuple[dict, list[dict]]:
+    def process_request(self, request: dict) -> tuple[dict, list]:
         "Handle a DAP request and return response plus queued events."
         self.events = []
         command = request.get("command")
         if not debugpy: return {}, []
+        if command == "terminate":
+            if self.started:
+                self.client.close()
+                self.started = False
+                self.breakpoint_list = {}
+                self.stopped_threads = set()
+                self._traced_threads.clear()
+                self._restore_cleanup_transforms()
+            return self._response(request, True, body={}), self.events
         self._ensure_started()
         if "seq" in request: self.client.next_seq = max(self.client.next_seq, int(request["seq"]) + 1)
 
@@ -388,10 +391,7 @@ class MiniDebugger:
             file_name = _debug_file_name(code)
             os.makedirs(os.path.dirname(file_name), exist_ok=True)
             with open(file_name, "w", encoding="utf-8") as f: f.write(code)
-            return (
-                dict(type="response", request_seq=request.get("seq"), success=True, command=command, body={"sourcePath": file_name}),
-                self.events,
-            )
+            return dict(type="response", request_seq=request.get("seq"), success=True, command=command, body={"sourcePath": file_name}), self.events
 
         if command == "configurationDone":
             return (dict(type="response", request_seq=request.get("seq"), success=True, command=command, body={}), self.events)
@@ -399,27 +399,10 @@ class MiniDebugger:
         if command == "debugInfo":
             breakpoint_list = []
             for key, value in self.breakpoint_list.items(): breakpoint_list.append({"source": key, "breakpoints": value})
-            return (
-                dict(
-                    type="response",
-                    request_seq=request.get("seq"),
-                    success=True,
-                    command=command,
-                    body=dict(
-                        isStarted=self.started,
-                        hashMethod="Murmur2",
-                        hashSeed=DEBUG_HASH_SEED,
-                        tmpFilePrefix=_debug_tmp_directory() + os.sep,
-                        tmpFileSuffix=".py",
-                        breakpoints=breakpoint_list,
-                        stoppedThreads=list(self.stopped_threads),
-                        richRendering=True,
-                        exceptionPaths=["Python Exceptions"],
-                        copyToGlobals=True,
-                    ),
-                ),
-                self.events,
-            )
+            body = dict(isStarted=self.started, hashMethod="Murmur2", hashSeed=DEBUG_HASH_SEED,
+                tmpFilePrefix=_debug_tmp_directory() + os.sep, tmpFileSuffix=".py", breakpoints=breakpoint_list,
+                stoppedThreads=list(self.stopped_threads), richRendering=True, exceptionPaths=["Python Exceptions"], copyToGlobals=True)
+            return dict(type="response", request_seq=request.get("seq"), success=True, command=command, body=body), self.events
 
         if command == "inspectVariables":
             reply = self._inspect_variables(request)
@@ -460,7 +443,7 @@ class MiniDebugger:
             request["arguments"] = arguments
             req_seq, waiter = self.client.send_request_async(request)
             if self.client.wait_initialized(timeout=10.0):
-                config = dict(type="request", seq=self.client.next_internal_seq(), command="configurationDone")
+                config = self._request_payload("configurationDone")
                 try: self.client.send_request(config, timeout=10.0)
                 except TimeoutError: pass
             response = self.client.wait_for_response(req_seq, waiter, timeout=10.0)
@@ -471,11 +454,8 @@ class MiniDebugger:
             if response.get("success"):
                 src = request.get("arguments", {}).get("source", {}).get("path")
                 if src:
-                    self.breakpoint_list[src] = [
-                        {"line": bp["line"]}
-                        for bp in response.get("body", {}).get("breakpoints", [])
-                        if isinstance(bp, dict) and "line" in bp
-                    ]
+                    self.breakpoint_list[src] = [{"line": bp["line"]} for bp in response.get("body", {}).get("breakpoints", [])
+                        if isinstance(bp, dict) and "line" in bp]
             return response or {}, self.events
 
         response = self.client.send_request(request)
@@ -518,6 +498,12 @@ class MiniDebugger:
             func = self._removed_cleanup.pop(index)
             cleanup_transforms.insert(index, func)
 
+    def _request_payload(self, command: str, arguments: dict | None = None, seq: int | None = None) -> dict:
+        "Build a DAP request payload for `command`."
+        if seq is None: seq = self.client.next_internal_seq()
+        if arguments is None: arguments = {}
+        return dict(type="request", command=command, seq=seq, arguments=arguments)
+
     def _response(self, request: dict, success: bool, body: dict | None = None, message: str | None = None) -> dict:
         "Build a DAP response dict for `request`."
         reply = dict(type="response", request_seq=request.get("seq"), success=bool(success), command=request.get("command"))
@@ -532,9 +518,7 @@ class MiniDebugger:
         variables = []
         for name, value in ip.user_ns.items():
             if name.startswith("__") and name.endswith("__"): continue
-            variables.append(
-                dict(name=name, value=repr(value), type=type(value).__name__, evaluateName=name, variablesReference=0)
-            )
+            variables.append(dict(name=name, value=repr(value), type=type(value).__name__, evaluateName=name, variablesReference=0))
         return self._response(request, True, body={"variables": variables})
 
     def _rich_inspect_variables(self, request: dict) -> dict:
@@ -558,27 +542,19 @@ class MiniDebugger:
                 return self._response(request, False, body={"data": {}, "metadata": {}}, message="invalid frame")
             code = f"get_ipython().display_formatter.format({var_name})"
             try:
-                reply = self.client.send_request(
-                    dict(
-                        type="request",
-                        command="evaluate",
-                        seq=self.client.next_internal_seq(),
-                        arguments=dict(expression=code, frameId=frame_id, context="clipboard"),
-                    )
-                )
+                payload = self._request_payload("evaluate", dict(expression=code, frameId=frame_id, context="clipboard"))
+                reply = self.client.send_request(payload)
             except TimeoutError: return self._response(request, False, body={"data": {}, "metadata": {}}, message="timeout")
             if reply.get("success"):
                 try: repr_data, repr_metadata = eval(reply.get("body", {}).get("result", ""), {}, {})
                 except Exception: repr_data, repr_metadata = {}, {}
-                body = { "data": repr_data or {},
-                    "metadata": {k: v for k, v in (repr_metadata or {}).items() if k in (repr_data or {})}, }
+                body = dict(data=repr_data or {}, metadata={k: v for k, v in (repr_metadata or {}).items() if k in (repr_data or {})})
                 return self._response(request, True, body=body)
             return self._response(request, False, body={"data": {}, "metadata": {}}, message="evaluate failed")
 
         result = ip.user_expressions({var_name: var_name}).get(var_name, {})
         if result.get("status") == "ok":
-            body = { "data": result.get("data", {}),
-                "metadata": result.get("metadata", {}), }
+            body = dict(data=result.get("data", {}), metadata=result.get("metadata", {}))
             return self._response(request, True, body=body)
         return self._response(request, False, body={"data": {}, "metadata": {}}, message="not found")
 
@@ -592,14 +568,8 @@ class MiniDebugger:
             return self._response(request, False, body={}, message="invalid arguments")
         expression = f"globals()['{dst_var_name}']"
         try:
-            reply = self.client.send_request(
-                dict(
-                    type="request",
-                    command="setExpression",
-                    seq=self.client.next_internal_seq(),
-                    arguments=dict(expression=expression, value=src_var_name, frameId=src_frame_id),
-                )
-            )
+            payload = self._request_payload("setExpression", dict(expression=expression, value=src_var_name, frameId=src_frame_id))
+            reply = self.client.send_request(payload)
         except TimeoutError: return self._response(request, False, body={}, message="timeout")
         return reply
 
@@ -622,7 +592,7 @@ class MiniDebugger:
 
 
 class MiniStream:
-    def __init__( self, name: str, events: list[dict], sink: Callable[[str, str], None] | None = None,) -> None:
+    def __init__(self, name: str, events: list[dict], sink: Callable[[str, str], None] | None = None) -> None:
         "Buffer stream text and emit events to `events`/`sink`."
         self.name = name
         self.events = events
@@ -670,13 +640,13 @@ class MiniDisplayPublisher(DisplayPublisher):
     def __init__(self) -> None:
         "Collect display_pub events for IOPub."
         super().__init__()
-        self.events: list[dict] = []
+        self.events = []
 
     def publish(self, data, metadata=None, transient=None, update=False, **kwargs) -> None:
         "Record display data/update for later emission."
-        self.events.append(
-            dict(type="display", data=data, metadata=metadata or {}, transient=transient or {}, update=bool(update))
-        )
+        buffers = kwargs.get("buffers")
+        self.events.append(dict(type="display", data=data, metadata=metadata or {}, transient=transient or {},
+            update=bool(update), buffers=buffers))
 
     def clear_output(self, wait: bool = False) -> None: self.events.append({"type": "clear_output", "wait": bool(wait)})
 
@@ -699,56 +669,7 @@ class MiniDisplayHook(DisplayHook):
     def finish_displayhook(self) -> None: self._is_active = False
 
 
-class MiniCommManager:
-    def __init__(self) -> None:
-        "Initialize comm registry and event buffer."
-        self.comms: dict[str, dict] = {}
-        self.targets: dict[str, Callable[[str, dict], None]] = {}
-        self.events: list[dict] = []
-
-    def register_target(self, name: str, handler: Callable[[str, dict], None]) -> None: self.targets[name] = handler
-
-    def comm_open(self, comm_id: str, target_name: str, data=None, metadata=None) -> None:
-        "Record comm_open and dispatch to target handler."
-        data = data or {}
-        metadata = metadata or {}
-        self.comms[comm_id] = {"target_name": target_name}
-        msg = {"content": dict(comm_id=comm_id, target_name=target_name, data=data, metadata=metadata)}
-        self.events.append(dict(type="open", comm_id=comm_id, target_name=target_name, data=data))
-        handler = self.targets.get(target_name)
-        if handler is not None: handler(comm_id, msg)
-
-    def comm_msg(self, comm_id: str, data=None, metadata=None) -> None:
-        "Record comm_msg and dispatch to target handler."
-        data = data or {}
-        metadata = metadata or {}
-        msg = {"content": dict(comm_id=comm_id, data=data, metadata=metadata)}
-        self.events.append(dict(type="msg", comm_id=comm_id, data=data))
-        comm = self.comms.get(comm_id)
-        if comm is not None:
-            handler = self.targets.get(comm.get("target_name"))
-            if handler is not None: handler(comm_id, msg)
-
-    def comm_close(self, comm_id: str, data=None, metadata=None) -> None:
-        "Record comm_close and remove the comm."
-        data = data or {}
-        metadata = metadata or {}
-        self.events.append(dict(type="close", comm_id=comm_id, data=data))
-        self.comms.pop(comm_id, None)
-
-    def comm_info(self) -> dict: return {comm_id: {"target_name": info["target_name"]} for comm_id, info in self.comms.items()}
-
-    def clear_events(self) -> None: self.events.clear()
-
-
-_COMM_MANAGER = MiniCommManager()
-
-
 class StdinNotImplementedError(RuntimeError): pass
-
-
-def get_comm_manager() -> MiniCommManager: return _COMM_MANAGER
-
 
 def _maybe_json(value):
     "Parse JSON strings to objects; return {} on decode errors."
@@ -781,15 +702,8 @@ def _debug_file_name(code: str) -> str:
 
 
 class KernelBridge:
-    def __init__(
-        self,
-        request_input: Callable[[str, bool], str],
-        debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None,
-        *,
-        user_ns: dict | None = None,
-        use_singleton: bool = True,
-    ) -> None:
+    def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
+        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True) -> None:
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
 
@@ -810,8 +724,8 @@ class KernelBridge:
         self.shell.display_pub = MiniDisplayPublisher()
         self.shell.displayhook = MiniDisplayHook(shell=self.shell)
         self.shell.display_trap.hook = self.shell.displayhook
-        self._stream_events: list[dict] = []
-        self._stream_sender: Callable[[str, str], None] | None = None
+        self._stream_events = []
+        self._stream_sender = None
         self._stream_live = False
         self._stdout = MiniStream("stdout", self._stream_events, sink=self._emit_stream)
         self._stderr = MiniStream("stderr", self._stream_events, sink=self._emit_stream)
@@ -835,18 +749,9 @@ class KernelBridge:
             self.shell.payload_manager.write_payload(payload)
 
         self.shell.set_next_input = _set_next_input  # type: ignore[assignment]
-        kernel_modules = [
-            module.__file__
-            for module in sys.modules.values()
-            if hasattr(module, "__file__") and module.__file__
-        ]
-        self._debugger = MiniDebugger(
-            debug_event_callback,
-            zmq_context=zmq_context,
-            kernel_modules=kernel_modules,
-            debug_just_my_code=False,
-            filter_internal_frames=True,
-        )
+        kernel_modules = [module.__file__ for module in sys.modules.values() if getattr(module, "__file__", None)]
+        self._debugger = MiniDebugger(debug_event_callback, zmq_context=zmq_context, kernel_modules=kernel_modules,
+            debug_just_my_code=False, filter_internal_frames=True)
 
     def _payloadpage_page(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None) -> None:
         "Send pager output as a payload starting at `start`."
@@ -864,8 +769,8 @@ class KernelBridge:
         self.shell._last_traceback = None
         self._stream_events.clear()
 
-    def execute( self, code: str, silent: bool = False, store_history: bool = True,
-        user_expressions=None, allow_stdin: bool = False,) -> dict:
+    def execute(self, code: str, silent: bool = False, store_history: bool = True,
+        user_expressions=None, allow_stdin: bool = False) -> dict:
         "Execute `code` in IPython and return captured outputs/errors."
         self._reset_capture_state()
         self._stream_live = not silent and self._stream_sender is not None
@@ -899,13 +804,10 @@ class KernelBridge:
 
         exec_count = getattr(result, "execution_count", self.shell.execution_count)
 
-        return dict(
-            streams=[] if self._stream_sender is not None else list(self._stream_events),
-            display=list(self.shell.display_pub.events),
-            result=self.shell.displayhook.last,
-            result_metadata=self.shell.displayhook.last_metadata or {},
-            execution_count=exec_count, error=error, user_expressions=user_expr, payload=payload
-        )
+        streams = [] if self._stream_sender is not None else list(self._stream_events)
+        result_meta = self.shell.displayhook.last_metadata or {}
+        return dict(streams=streams, display=list(self.shell.display_pub.events), result=self.shell.displayhook.last, result_metadata=result_meta,
+            execution_count=exec_count, error=error, user_expressions=user_expr, payload=payload)
 
     def set_stream_sender(self, sender: Callable[[str, str], None] | None) -> None: self._stream_sender = sender
 
@@ -916,7 +818,7 @@ class KernelBridge:
         "Deduplicate set_next_input payloads, keeping the newest."
         if not payload: return payload
         seen = False
-        deduped: list[dict] = []
+        deduped = []
         for item in reversed(payload):
             if isinstance(item, dict) and item.get("source") == "set_next_input":
                 if seen: continue
@@ -929,9 +831,7 @@ class KernelBridge:
         if self._use_experimental_completions and _EXPERIMENTAL_COMPLETIONS_AVAILABLE:
             if cursor_pos is None: cursor_pos = len(code)
             with _provisionalcompleter():
-                completions = list(
-                    _rectify_completions(code, self.shell.Completer.completions(code, cursor_pos))
-                )
+                completions = list(_rectify_completions(code, self.shell.Completer.completions(code, cursor_pos)))
             if completions:
                 cursor_start = completions[0].start
                 cursor_end = completions[0].end
@@ -940,16 +840,9 @@ class KernelBridge:
                 cursor_start = cursor_pos
                 cursor_end = cursor_pos
                 matches = []
-            return dict(
-                matches=matches, cursor_start=cursor_start, cursor_end=cursor_end,
-                metadata={
-                    _EXPERIMENTAL_COMPLETIONS_KEY: [
-                        dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature)
-                        for c in completions
-                    ]
-                },
-                status="ok",
-            )
+            return dict(matches=matches, cursor_start=cursor_start, cursor_end=cursor_end, metadata={
+                _EXPERIMENTAL_COMPLETIONS_KEY: [dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature)
+                    for c in completions]}, status="ok")
         if cursor_pos is None: cursor_pos = len(code)
         from IPython.utils.tokenutil import line_at_cursor
 
@@ -989,24 +882,6 @@ class KernelBridge:
             hist = self.shell.history_manager.search( pattern, raw=raw, output=output, n=n, unique=unique)
         else: hist = []
         return {"status": "ok", "history": list(hist)}
-
-    def _comm_action(self, action, *args, data=None, metadata=None) -> dict:
-        "Run comm manager action and return ok reply."
-        data = _maybe_json(data)
-        metadata = _maybe_json(metadata)
-        action(*args, data, metadata)
-        return {"status": "ok"}
-
-    def comm_open(self, comm_id: str, target_name: str, data=None, metadata=None) -> dict:
-        return self._comm_action(_COMM_MANAGER.comm_open, comm_id, target_name, data=data, metadata=metadata)
-
-    def comm_msg(self, comm_id: str, data=None, metadata=None) -> dict:
-        return self._comm_action(_COMM_MANAGER.comm_msg, comm_id, data=data, metadata=metadata)
-
-    def comm_close(self, comm_id: str, data=None, metadata=None) -> dict:
-        return self._comm_action(_COMM_MANAGER.comm_close, comm_id, data=data, metadata=metadata)
-
-    def comm_info(self) -> dict: return {"status": "ok", "comms": _COMM_MANAGER.comm_info()}
 
     def debug_available(self) -> bool: return bool(debugpy)
 

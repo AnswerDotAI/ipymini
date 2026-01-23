@@ -17,5 +17,5 @@ def test_debug_evaluate() -> None:
     with start_kernel() as (_, kc):
         debug_request(kc, "initialize", DEBUG_INIT_ARGS)
         debug_request(kc, "attach")
-        reply = debug_request(kc, "evaluate", {"expression": "'a' + 'b'", "context": "repl"})
+        reply = debug_request(kc, "evaluate", expression="'a' + 'b'", context="repl")
         assert reply.get("success")
