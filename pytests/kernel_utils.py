@@ -1,8 +1,10 @@
+import json
 import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from fastcore.foundation import L
 from jupyter_client import KernelManager
 
 TIMEOUT = 10
@@ -44,6 +46,11 @@ def build_env(extra_env: dict | None = None) -> dict:
     if extra_env:
         env = {**env, **extra_env}
     return env
+
+
+def load_connection(km) -> dict:
+    with open(km.connection_file, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def ensure_separate_process(km: KernelManager) -> None:
@@ -88,8 +95,8 @@ def drain_iopub(kc, msg_id):
     return outputs
 
 
-def get_shell_reply(kc, msg_id):
-    deadline = time.time() + TIMEOUT
+def get_shell_reply(kc, msg_id, timeout: float | None = None):
+    deadline = time.time() + (timeout or TIMEOUT)
     while time.time() < deadline:
         reply = kc.get_shell_msg(timeout=TIMEOUT)
         if reply["parent_header"].get("msg_id") == msg_id:
@@ -131,3 +138,22 @@ def collect_iopub_outputs(
         missing = msg_ids - idle
         raise AssertionError(f"timeout waiting for iopub idle: {sorted(missing)}")
     return outputs
+
+
+def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
+    deadline = time.time() + (timeout or TIMEOUT)
+    while time.time() < deadline:
+        msg = kc.get_iopub_msg(timeout=TIMEOUT)
+        if msg["msg_type"] == "status" and msg["content"].get("execution_state") == state:
+            return msg
+    raise AssertionError(f"timeout waiting for status: {state}")
+
+
+def iopub_msgs(outputs: list[dict], msg_type: str | None = None) -> L:
+    msgs = L(outputs)
+    return msgs if msg_type is None else msgs.filter(lambda m: m["msg_type"] == msg_type)
+
+
+def iopub_streams(outputs: list[dict], name: str | None = None) -> L:
+    streams = iopub_msgs(outputs, "stream")
+    return streams if name is None else streams.filter(lambda m: m["content"].get("name") == name)

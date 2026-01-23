@@ -109,6 +109,24 @@ python -m ipymini -f /path/to/connection.json
 
 ---
 
+## Configuring env and working directory
+
+For per-launch configuration, rely on the kernel launcher:
+
+- **KernelManager**: pass `env` and `cwd` to `start_kernel(...)`.
+- **Kernelspec**: add an `"env"` dict to `share/jupyter/kernels/ipymini/kernel.json` for static defaults.
+
+Example (KernelManager):
+
+```
+from jupyter_client import KernelManager
+
+km = KernelManager(kernel_name="ipymini")
+km.start_kernel(env={"MY_FLAG": "1"}, cwd="/path/to/workdir")
+```
+
+---
+
 ## Tests
 
 All tests must pass before changes are considered complete:

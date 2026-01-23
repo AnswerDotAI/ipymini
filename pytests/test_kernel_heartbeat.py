@@ -1,14 +1,11 @@
-import json
-
 import zmq
 
-from .kernel_utils import start_kernel
+from .kernel_utils import load_connection, start_kernel
 
 
 def test_heartbeat_echo() -> None:
     with start_kernel() as (km, _kc):
-        with open(km.connection_file, encoding="utf-8") as f:
-            conn = json.load(f)
+        conn = load_connection(km)
 
         ctx = zmq.Context.instance()
         sock = ctx.socket(zmq.REQ)

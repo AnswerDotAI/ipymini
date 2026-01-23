@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_streams, start_kernel
 
 
 def test_execute_stdout() -> None:
@@ -7,12 +7,9 @@ def test_execute_stdout() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        for msg in output_msgs:
-            if msg["msg_type"] == "stream" and msg["content"]["name"] == "stdout":
-                assert "hello, world" in msg["content"]["text"]
-                break
-        else:
-            assert False, "expected stdout stream message"
+        stdout = iopub_streams(output_msgs, "stdout")
+        assert stdout, "expected stdout stream message"
+        assert "hello, world" in stdout[-1]["content"]["text"]
 
 
 def test_execute_stderr() -> None:
@@ -21,8 +18,5 @@ def test_execute_stderr() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        for msg in output_msgs:
-            if msg["msg_type"] == "stream" and msg["content"]["name"] == "stderr":
-                break
-        else:
-            assert False, "expected stderr stream message"
+        stderr = iopub_streams(output_msgs, "stderr")
+        assert stderr, "expected stderr stream message"

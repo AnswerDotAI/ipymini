@@ -1,6 +1,6 @@
 import time
 
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_streams, start_kernel
 
 TIMEOUT = 10
 
@@ -20,11 +20,7 @@ def test_input_request() -> None:
         assert reply["content"]["status"] == "ok"
 
         output_msgs = drain_iopub(kc, msg_id)
-        streams = [
-            (msg["content"]["name"], msg["content"]["text"])
-            for msg in output_msgs
-            if msg["msg_type"] == "stream"
-        ]
+        streams = iopub_streams(output_msgs).map(lambda m: (m["content"]["name"], m["content"]["text"]))
         assert ("stdout", text + "\n") in streams
 
 

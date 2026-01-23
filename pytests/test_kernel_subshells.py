@@ -10,6 +10,8 @@ from .kernel_utils import (
     collect_shell_replies,
     drain_iopub,
     get_shell_reply,
+    iopub_msgs,
+    iopub_streams,
     start_kernel,
 )
 
@@ -120,7 +122,7 @@ def test_subshell_execution_counts_and_shared_namespace() -> None:
 
         _, reply2, outputs2 = _execute(kc, "a", subshell_id=subshell_id)
         assert reply2["content"]["execution_count"] == 1
-        results = [m for m in outputs2 if m["msg_type"] == "execute_result"]
+        results = iopub_msgs(outputs2, "execute_result")
         assert results, "expected execute_result"
         assert results[0]["content"]["data"].get("text/plain") == "10"
         assert results[0]["parent_header"].get("subshell_id") == subshell_id
@@ -174,9 +176,9 @@ def test_subshells_can_run_concurrently() -> None:
 
         assert reply_wait["content"]["status"] == "ok"
         assert reply_set["content"]["status"] == "ok"
-        streams_wait = [m for m in outputs_wait if m["msg_type"] == "stream"]
+        streams_wait = iopub_streams(outputs_wait)
         assert any("True" in m["content"].get("text", "") for m in streams_wait)
-        streams_set = [m for m in outputs_set if m["msg_type"] == "stream"]
+        streams_set = iopub_streams(outputs_set)
         assert any("set" in m["content"].get("text", "") for m in streams_set)
 
         _delete_subshell(kc, subshell_id)
@@ -292,7 +294,7 @@ def test_stdin_concurrent_subshells() -> None:
 
         assert all(reply["content"]["status"] == "ok" for reply in replies.values())
         for msg_id, expected in values.items():
-            streams = [m for m in outputs[msg_id] if m["msg_type"] == "stream"]
+            streams = iopub_streams(outputs[msg_id])
             assert any(f"got:{expected}" in m["content"].get("text", "") for m in streams)
 
         _delete_subshell(kc, subshell_a)
@@ -323,7 +325,7 @@ def test_subshell_concurrency_barrier() -> None:
         assert all(reply["content"]["status"] == "ok" for reply in replies.values())
         expected = {msg_parent: "parent", msg_a: "a", msg_b: "b"}
         for msg_id, text in expected.items():
-            streams = [m for m in outputs[msg_id] if m["msg_type"] == "stream"]
+            streams = iopub_streams(outputs[msg_id])
             assert any(text in m["content"].get("text", "") for m in streams)
 
         _delete_subshell(kc, subshell_a)
@@ -361,7 +363,7 @@ def test_subshell_stress_interleaved_executes() -> None:
         outputs = collect_iopub_outputs(kc, msg_ids)
         assert all(reply["content"]["status"] == "ok" for reply in replies.values())
         for msg_id, msgs in outputs.items():
-            streams = [m for m in msgs if m["msg_type"] == "stream"]
+            streams = iopub_streams(msgs)
             assert streams, f"missing stream output for {msg_id}"
 
         for sid in subshells:
@@ -455,7 +457,7 @@ def test_subshell_fuzz_stdin_interrupt_short() -> None:
         if exec_ids:
             outputs = collect_iopub_outputs(kc, exec_ids)
             for msg_id, expected in stdin_expected.items():
-                streams = [m for m in outputs[msg_id] if m["msg_type"] == "stream"]
+                streams = iopub_streams(outputs[msg_id])
                 assert any(f"got:{expected}" in m["content"].get("text", "") for m in streams)
 
         for sid in subshells:
@@ -505,7 +507,7 @@ def test_subshell_fuzz_short() -> None:
         if exec_ids:
             outputs = collect_iopub_outputs(kc, exec_ids)
             for msg_id in exec_ids:
-                streams = [m for m in outputs[msg_id] if m["msg_type"] == "stream"]
+                streams = iopub_streams(outputs[msg_id])
                 assert streams, f"missing stream output for {msg_id}"
 
         for sid in subshells:

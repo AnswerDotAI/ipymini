@@ -1,6 +1,4 @@
-import json
-
-from .kernel_utils import get_shell_reply, start_kernel
+from .kernel_utils import get_shell_reply, load_connection, start_kernel
 
 
 def test_connect_request() -> None:
@@ -11,8 +9,7 @@ def test_connect_request() -> None:
         reply = get_shell_reply(kc, msg_id)
         content = reply["content"]
 
-        with open(km.connection_file, encoding="utf-8") as f:
-            conn = json.load(f)
+        conn = load_connection(km)
 
         assert content["shell_port"] == conn["shell_port"]
         assert content["iopub_port"] == conn["iopub_port"]

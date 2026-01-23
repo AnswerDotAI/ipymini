@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, iopub_streams, start_kernel
 
 
 def test_stream_ordering() -> None:
@@ -10,11 +10,7 @@ def test_stream_ordering() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        streams = [
-            (msg["content"]["name"], msg["content"]["text"])
-            for msg in output_msgs
-            if msg["msg_type"] == "stream"
-        ]
+        streams = iopub_streams(output_msgs).map(lambda m: (m["content"]["name"], m["content"]["text"]))
         assert streams == [("stdout", "out1\n"), ("stderr", "err1\n"), ("stdout", "out2\n")]
 
 
@@ -27,7 +23,7 @@ def test_clear_output_wait() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        waits = [msg["content"]["wait"] for msg in output_msgs if msg["msg_type"] == "clear_output"]
+        waits = iopub_msgs(output_msgs, "clear_output").map(lambda m: m["content"]["wait"])
         assert True in waits
 
 
@@ -38,7 +34,9 @@ def test_display_id_update() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        displays = [m for m in output_msgs if m["msg_type"] in ("display_data", "update_display_data")]
+        displays = iopub_msgs(output_msgs).filter(
+            lambda m: m["msg_type"] in ("display_data", "update_display_data")
+        )
         assert len(displays) >= 2
         first, second = displays[0], displays[1]
         assert first["msg_type"] == "display_data"
@@ -59,7 +57,7 @@ def test_display_metadata_transient() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        displays = [m for m in output_msgs if m["msg_type"] == "display_data"]
+        displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected at least one display_data message"
         content = displays[0]["content"]
         assert content.get("metadata", {}).get("foo") == "bar"

@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
 
 
 def test_execute_silent_no_output() -> None:
@@ -43,7 +43,7 @@ def test_execute_result() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        results = [m for m in output_msgs if m["msg_type"] == "execute_result"]
+        results = iopub_msgs(output_msgs, "execute_result")
         assert results
         data = results[-1]["content"].get("data", {})
         assert data.get("text/plain") == "6"
@@ -67,7 +67,7 @@ def test_execute_error() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "error"
         output_msgs = drain_iopub(kc, msg_id)
-        errors = [m for m in output_msgs if m["msg_type"] == "error"]
+        errors = iopub_msgs(output_msgs, "error")
         assert errors
 
 

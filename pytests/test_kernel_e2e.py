@@ -11,6 +11,9 @@ from .kernel_utils import (
     drain_iopub,
     ensure_separate_process,
     get_shell_reply,
+    iopub_msgs,
+    iopub_streams,
+    wait_for_status,
 )
 
 try:
@@ -157,7 +160,7 @@ def test_e2e_execute_roundtrip(kernel) -> None:
     reply = get_shell_reply(kc, msg_id)
     assert reply["content"]["status"] == "ok"
     outputs = drain_iopub(kc, msg_id)
-    results = [m for m in outputs if m["msg_type"] == "execute_result"]
+    results = iopub_msgs(outputs, "execute_result")
     assert results, "expected execute_result"
 
 
@@ -165,10 +168,7 @@ def test_e2e_interrupt(kernel) -> None:
     km = kernel.km
     kc = kernel.kc
     msg_id = kc.execute("import time; time.sleep(2)")
-    while True:
-        msg = kc.get_iopub_msg(timeout=2)
-        if msg["msg_type"] == "status" and msg["content"]["execution_state"] == "busy":
-            break
+    wait_for_status(kc, "busy")
     km.interrupt_kernel()
     reply = get_shell_reply(kc, msg_id)
     assert reply["content"]["status"] == "error"
@@ -190,7 +190,7 @@ def test_e2e_restart(e2e_kernel) -> None:
     reply = get_shell_reply(kc, msg_id)
     assert reply["content"]["status"] == "ok"
     outputs = drain_iopub(kc, msg_id)
-    streams = [m for m in outputs if m["msg_type"] == "stream"]
+    streams = iopub_streams(outputs)
     assert any("missing" in m["content"].get("text", "") for m in streams)
 
 

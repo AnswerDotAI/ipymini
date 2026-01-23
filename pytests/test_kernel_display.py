@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
 
 
 def test_display_data_samples() -> None:
@@ -18,12 +18,9 @@ def test_display_data_samples() -> None:
             reply = get_shell_reply(kc, msg_id)
             assert reply["content"]["status"] == "ok"
             output_msgs = drain_iopub(kc, msg_id)
-            found = False
-            for msg in output_msgs:
-                if msg["msg_type"] == "display_data":
-                    found = True
-                    assert mime in msg["content"]["data"]
-            assert found, "display_data message not found"
+            displays = iopub_msgs(output_msgs, "display_data")
+            assert displays, "display_data message not found"
+            assert any(mime in msg["content"]["data"] for msg in displays)
 
 
 def test_pager_payload() -> None:

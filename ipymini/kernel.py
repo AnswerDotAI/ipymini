@@ -11,6 +11,7 @@ from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass
 from typing import Any
 
+from fastcore.basics import store_attr
 import zmq
 from jupyter_client.session import Session
 
@@ -69,8 +70,7 @@ def _raise_async_exception(thread_id: int, exc_type: type[BaseException]) -> boo
 class HeartbeatThread(threading.Thread):
     def __init__(self, context: zmq.Context, addr: str) -> None:
         super().__init__(daemon=True)
-        self.context = context
-        self.addr = addr
+        store_attr("context,addr")
         self._stop_event = threading.Event()
 
     def run(self) -> None:
@@ -95,9 +95,7 @@ class HeartbeatThread(threading.Thread):
 class IOPubThread(threading.Thread):
     def __init__(self, context: zmq.Context, addr: str, session: Session) -> None:
         super().__init__(daemon=True)
-        self.context = context
-        self.addr = addr
-        self.session = session
+        store_attr("context,addr,session")
         self.queue: queue.Queue[tuple[str, dict, dict | None]] = queue.Queue()
         self._stop_event = threading.Event()
         self._socket: zmq.Socket | None = None
@@ -141,9 +139,7 @@ class IOPubThread(threading.Thread):
 class StdinRouterThread(threading.Thread):
     def __init__(self, context: zmq.Context, addr: str, session: Session) -> None:
         super().__init__(daemon=True)
-        self.context = context
-        self.addr = addr
-        self.session = session
+        store_attr("context,addr,session")
         self._stop_event = threading.Event()
         self._requests: queue.Queue[
             tuple[str, bool, dict | None, list[bytes] | None, queue.Queue[str]]
@@ -252,8 +248,7 @@ class Subshell:
         user_ns: dict,
         use_singleton: bool = False,
     ) -> None:
-        self.kernel = kernel
-        self.subshell_id = subshell_id
+        store_attr("kernel,subshell_id")
         self._queue: queue.Queue[tuple[dict, list[bytes] | None, zmq.Socket]] = queue.Queue()
         self._stop = threading.Event()
         name = "subshell-parent" if subshell_id is None else f"subshell-{subshell_id}"
@@ -269,6 +264,19 @@ class Subshell:
         self._parent_header: dict[str, Any] | None = None
         self._parent_idents: list[bytes] | None = None
         self._executing = threading.Event()
+        self._shell_handlers = {
+            "kernel_info_request": self._handle_kernel_info,
+            "connect_request": self._handle_connect,
+            "complete_request": self._handle_complete,
+            "inspect_request": self._handle_inspect,
+            "history_request": self._handle_history,
+            "is_complete_request": self._handle_is_complete,
+            "comm_info_request": self._handle_comm_info,
+            "comm_open": self._handle_comm_open,
+            "comm_msg": self._handle_comm_msg,
+            "comm_close": self._handle_comm_close,
+            "shutdown_request": self._handle_shutdown,
+        }
 
     def start(self) -> None:
         self._thread.start()
@@ -344,19 +352,7 @@ class Subshell:
 
     def _dispatch_shell_non_execute(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         msg_type = msg["header"]["msg_type"]
-        handler = {
-            "kernel_info_request": self._handle_kernel_info,
-            "connect_request": self._handle_connect,
-            "complete_request": self._handle_complete,
-            "inspect_request": self._handle_inspect,
-            "history_request": self._handle_history,
-            "is_complete_request": self._handle_is_complete,
-            "comm_info_request": self._handle_comm_info,
-            "comm_open": self._handle_comm_open,
-            "comm_msg": self._handle_comm_msg,
-            "comm_close": self._handle_comm_close,
-            "shutdown_request": self._handle_shutdown,
-        }.get(msg_type)
+        handler = self._shell_handlers.get(msg_type)
         if handler is None:
             self._send_reply(sock, msg_type.replace("_request", "_reply"), {}, msg, idents)
             return
@@ -665,6 +661,14 @@ class MiniKernel:
         self._parent_idents: list[bytes] | None = None
         self._shell_send_queue: queue.Queue[tuple[str, dict, dict, list[bytes] | None]] = queue.Queue()
         self._running = True
+        self._control_handlers = {
+            "shutdown_request": self._handle_shutdown,
+            "debug_request": self._handle_debug,
+            "interrupt_request": self._handle_interrupt,
+            "create_subshell_request": self._handle_create_subshell,
+            "list_subshell_request": self._handle_list_subshell,
+            "delete_subshell_request": self._handle_delete_subshell,
+        }
 
     def start(self) -> None:
         self.iopub_thread.start()
@@ -704,14 +708,7 @@ class MiniKernel:
         if msg is None:
             return
         msg_type = msg["header"]["msg_type"]
-        handler = {
-            "shutdown_request": self._handle_shutdown,
-            "debug_request": self._handle_debug,
-            "interrupt_request": self._handle_interrupt,
-            "create_subshell_request": self._handle_create_subshell,
-            "list_subshell_request": self._handle_list_subshell,
-            "delete_subshell_request": self._handle_delete_subshell,
-        }.get(msg_type)
+        handler = self._control_handlers.get(msg_type)
         if handler is None:
             self._send_reply(self.control_socket, msg_type.replace("_request", "_reply"), {}, msg, idents)
             return

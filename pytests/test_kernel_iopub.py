@@ -1,17 +1,15 @@
-import json
 import time
 
 import pytest
 import zmq
 from jupyter_client.session import Session
 
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, load_connection, start_kernel
 
 
 def test_iopub_welcome() -> None:
     with start_kernel() as (km, _kc):
-        with open(km.connection_file, encoding="utf-8") as f:
-            conn = json.load(f)
+        conn = load_connection(km)
         session = Session(
             key=conn.get("key", "").encode(),
             signature_scheme=conn.get("signature_scheme", "hmac-sha256"),
@@ -58,7 +56,7 @@ def test_display_image_png() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        displays = [m for m in output_msgs if m["msg_type"] == "display_data"]
+        displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from image display"
         data = displays[0]["content"].get("data", {})
         assert "image/png" in data
@@ -91,7 +89,7 @@ def test_matplotlib_inline_default_backend() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        displays = [m for m in output_msgs if m["msg_type"] == "display_data"]
+        displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from matplotlib inline backend"
         data = displays[-1]["content"].get("data", {})
         assert any(key in data for key in ("image/png", "image/svg+xml"))

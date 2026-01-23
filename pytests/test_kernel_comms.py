@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
 
 
 def _send_comm(kc, msg_type, content):
@@ -55,7 +55,7 @@ def test_comm_lifecycle() -> None:
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
         output_msgs = drain_iopub(kc, msg_id)
-        streams = [m for m in output_msgs if m["msg_type"] == "stream"]
+        streams = iopub_msgs(output_msgs, "stream")
         assert streams
         events = streams[-1]["content"]["text"]
         assert "open" in events

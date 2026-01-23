@@ -1110,18 +1110,15 @@ class KernelBridge:
     def _dedupe_set_next_input(self, payload: list[dict]) -> list[dict]:
         if not payload:
             return payload
-        last_idx = None
-        for idx, item in enumerate(payload):
+        seen = False
+        deduped: list[dict] = []
+        for item in reversed(payload):
             if isinstance(item, dict) and item.get("source") == "set_next_input":
-                last_idx = idx
-        if last_idx is None:
-            return payload
-        deduped = []
-        for idx, item in enumerate(payload):
-            if isinstance(item, dict) and item.get("source") == "set_next_input" and idx != last_idx:
-                continue
+                if seen:
+                    continue
+                seen = True
             deduped.append(item)
-        return deduped
+        return list(reversed(deduped))
 
     def complete(self, code: str, cursor_pos: int | None = None) -> dict:
         if self._use_experimental_completions and _EXPERIMENTAL_COMPLETIONS_AVAILABLE:
