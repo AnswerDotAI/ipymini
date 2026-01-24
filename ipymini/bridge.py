@@ -1,5 +1,6 @@
-import builtins, getpass, json, os, queue, socket, sys, tempfile, threading
+import builtins, getpass, glob, json, logging, os, queue, socket, sys, tempfile, threading
 from contextlib import contextmanager
+from itertools import chain
 from typing import Callable
 import zmq
 from .murmur2 import DEBUG_HASH_SEED, murmur2_x86
@@ -11,6 +12,11 @@ from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
 from IPython.core.getipython import get_ipython
 from IPython.core.interactiveshell import InteractiveShell
+from IPython.core.shellapp import InteractiveShellApp
+from IPython.core.application import ENV_CONFIG_DIRS, SYSTEM_CONFIG_DIRS
+from IPython.utils.contexts import preserve_keys
+from traitlets.config import Config
+from traitlets.config.loader import PyFileConfigLoader, ConfigFileNotFound
 
 try: import debugpy
 except Exception: debugpy = None
@@ -22,6 +28,8 @@ try:
 except Exception: _EXPERIMENTAL_COMPLETIONS_AVAILABLE = False
 
 _EXPERIMENTAL_COMPLETIONS_KEY = "_jupyter_types_experimental"
+_LOG = logging.getLogger("ipymini.startup")
+_STARTUP_DONE = False
 
 
 class _ThreadLocalStream:
@@ -688,6 +696,109 @@ def _env_flag(name: str) -> bool | None:
     if value in {"0", "false", "no", "off", "n", "f"}: return False
     return None
 
+def _load_config_file(name: str, paths: list[str]) -> Config:
+    "Load config file `name` from `paths`."
+    try: return PyFileConfigLoader(name, paths).load_config()
+    except ConfigFileNotFound: return Config()
+    except Exception:
+        _LOG.warning("Error loading config file: %s", name, exc_info=True)
+        return Config()
+
+def _load_ipython_config(profile_dir) -> Config:
+    "Load ipython_config.py and ipython_kernel_config.py."
+    paths = []
+    if profile_dir is not None:
+        location = getattr(profile_dir, "location", None) or str(profile_dir)
+        paths.append(location)
+    paths.extend(ENV_CONFIG_DIRS)
+    paths.extend(SYSTEM_CONFIG_DIRS)
+    config = Config()
+    config.merge(_load_config_file("ipython_config.py", paths))
+    config.merge(_load_config_file("ipython_kernel_config.py", paths))
+    return config
+
+def _exec_file(shell, fname: str) -> None:
+    "Execute file `fname` in the shell namespace."
+    if not os.path.isfile(fname):
+        _LOG.warning("File not found: %r", fname)
+        return
+    save_argv = sys.argv
+    sys.argv = [fname]
+    try:
+        with preserve_keys(shell.user_ns, "__file__"):
+            shell.user_ns["__file__"] = fname
+            if fname.endswith((".ipy", ".ipynb")): shell.safe_execfile_ipy(fname, shell_futures=False)
+            else: shell.safe_execfile(fname, shell.user_ns, raise_exceptions=True)
+    finally: sys.argv = save_argv
+
+def _run_startup_files(shell, profile_dir, exec_pythonstartup: bool) -> None:
+    "Run startup files from profile/env/system startup dirs."
+    if exec_pythonstartup and os.environ.get("PYTHONSTARTUP"):
+        python_startup = os.environ["PYTHONSTARTUP"]
+        try: _exec_file(shell, python_startup)
+        except Exception: _LOG.warning("Error running PYTHONSTARTUP: %s", python_startup, exc_info=True)
+    startup_dirs = []
+    if profile_dir is not None:
+        startup_dirs.append(getattr(profile_dir, "startup_dir", os.path.join(str(profile_dir), "startup")))
+    startup_dirs += [os.path.join(p, "startup") for p in chain(ENV_CONFIG_DIRS, SYSTEM_CONFIG_DIRS)]
+    startup_files = []
+    for startup_dir in startup_dirs[::-1]:
+        startup_files += glob.glob(os.path.join(startup_dir, "*.py"))
+        startup_files += glob.glob(os.path.join(startup_dir, "*.ipy"))
+    if not startup_files: return
+    for fname in sorted(startup_files):
+        try: _exec_file(shell, fname)
+        except Exception: _LOG.warning("Error running startup file: %s", fname, exc_info=True)
+
+def _run_exec_lines(shell, exec_lines: list[str]) -> None:
+    "Run exec_lines in the shell namespace."
+    if not exec_lines: return
+    for line in exec_lines:
+        try: shell.run_cell(line, store_history=False)
+        except Exception: _LOG.warning("Error running exec line: %s", line, exc_info=True)
+
+def _run_exec_files(shell, exec_files: list[str]) -> None:
+    "Run exec_files in the shell namespace."
+    if not exec_files: return
+    for fname in exec_files:
+        try: _exec_file(shell, fname)
+        except Exception: _LOG.warning("Error running exec file: %s", fname, exc_info=True)
+
+def _init_extensions(shell, config: Config) -> None:
+    "Load IPython extensions from config."
+    cfg = config.get("InteractiveShellApp", {})
+    extensions = list(cfg.get("extensions", []))
+    extra = list(cfg.get("extra_extensions", []))
+    reraise = bool(cfg.get("reraise_ipython_extension_failures", False))
+    defaults = getattr(InteractiveShellApp, "default_extensions", ["storemagic"])
+    if hasattr(defaults, "default_value"): defaults = defaults.default_value
+    if not isinstance(defaults, (list, tuple, set)): defaults = ["storemagic"]
+    defaults = list(defaults)
+    for ext in defaults + extensions + extra:
+        if not ext: continue
+        try: shell.extension_manager.load_extension(ext)
+        except Exception:
+            if reraise: raise
+            _LOG.warning("Error loading IPython extension: %s", ext, exc_info=True)
+
+def _init_startup(shell) -> None:
+    "Load config, extensions, and startup code."
+    global _STARTUP_DONE
+    profile_dir = getattr(shell, "profile_dir", None)
+    config = _load_ipython_config(profile_dir)
+    _init_extensions(shell, config)
+    if _STARTUP_DONE: return
+    cfg = config.get("InteractiveShellApp", {})
+    exec_lines = list(cfg.get("exec_lines", []))
+    exec_files = list(cfg.get("exec_files", []))
+    exec_pythonstartup = bool(cfg.get("exec_PYTHONSTARTUP", True))
+    hide_initial_ns = bool(cfg.get("hide_initial_ns", True))
+    _run_startup_files(shell, profile_dir, exec_pythonstartup)
+    _run_exec_lines(shell, exec_lines)
+    _run_exec_files(shell, exec_files)
+    if hide_initial_ns: shell.user_ns_hidden.update(shell.user_ns)
+    _STARTUP_DONE = True
+
 
 def _debug_tmp_directory() -> str: return os.path.join(tempfile.gettempdir(), f"ipymini_{os.getpid()}")
 
@@ -749,6 +860,7 @@ class KernelBridge:
             self.shell.payload_manager.write_payload(payload)
 
         self.shell.set_next_input = _set_next_input  # type: ignore[assignment]
+        _init_startup(self.shell)
         kernel_modules = [module.__file__ for module in sys.modules.values() if getattr(module, "__file__", None)]
         self._debugger = MiniDebugger(debug_event_callback, zmq_context=zmq_context, kernel_modules=kernel_modules,
             debug_just_my_code=False, filter_internal_frames=True)

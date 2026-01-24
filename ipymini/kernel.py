@@ -1,4 +1,4 @@
-import json, os, queue, signal, threading, traceback, time, uuid
+import json, logging, os, queue, signal, threading, traceback, time, uuid
 from collections import deque
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -9,6 +9,7 @@ from jupyter_client.session import Session
 from .bridge import KernelBridge
 from .comms import comm_context, get_comm_manager
 
+_LOG = logging.getLogger("ipymini.stdin")
 
 @dataclass
 class ConnectionInfo:
@@ -166,7 +167,11 @@ class StdinRouterThread(threading.Thread):
                 self._drain_requests(sock)
                 events = dict(poller.poll(50))
                 if sock in events and events[sock] & zmq.POLLIN:
-                    idents, msg = self.session.recv(sock, mode=0)
+                    try: idents, msg = self.session.recv(sock, mode=0)
+                    except ValueError as err:
+                        if "Duplicate Signature" not in str(err):
+                            _LOG.warning("Error decoding stdin message: %s", err)
+                        continue
                     if msg is None: continue
                     if msg.get("msg_type") != "input_reply": continue
                     parent = msg.get("parent_header", {})

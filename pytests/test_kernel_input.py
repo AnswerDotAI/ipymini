@@ -90,3 +90,22 @@ def test_interrupt_while_waiting_for_input() -> None:
         ok_reply = get_shell_reply(kc, ok_id)
         assert ok_reply["content"]["status"] == "ok"
         drain_iopub(kc, ok_id)
+
+
+def test_duplicate_input_reply_does_not_break_stdin() -> None:
+    with start_kernel() as (_, kc):
+        msg_id = kc.execute("user_input = input('Enter something: ')", allow_stdin=True, store_history=False)
+        stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
+        reply = kc.session.msg("input_reply", {"value": "bbb"}, parent=stdin_msg)
+        kc.stdin_channel.send(reply)
+        kc.stdin_channel.send(reply)
+        reply_msg = get_shell_reply(kc, msg_id)
+        assert reply_msg["content"]["status"] == "ok"
+        drain_iopub(kc, msg_id)
+
+        msg_id2 = kc.execute("user_input = input('Again: ')", allow_stdin=True, store_history=False)
+        _stdin_msg2 = kc.get_stdin_msg(timeout=TIMEOUT)
+        kc.input("ccc")
+        reply_msg2 = get_shell_reply(kc, msg_id2)
+        assert reply_msg2["content"]["status"] == "ok"
+        drain_iopub(kc, msg_id2)

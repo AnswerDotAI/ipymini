@@ -50,11 +50,7 @@ class IpyminiComm(base_comm.BaseComm):
 _COMM_LOCK = threading.Lock()
 _COMM_MANAGER = None
 
-
-def _create_comm(*args, **kwargs):
-    "Create a new comm instance."
-    return IpyminiComm(*args, **kwargs)
-
+def _create_comm(*args, **kwargs): return IpyminiComm(*args, **kwargs)
 
 def _get_comm_manager():
     "Return the process-wide comm manager."
@@ -68,10 +64,6 @@ def _get_comm_manager():
 comm.create_comm = _create_comm
 comm.get_comm_manager = _get_comm_manager
 
-
-def get_comm_manager() -> base_comm.CommManager:
-    "Return the active comm manager."
-    return _get_comm_manager()
-
+def get_comm_manager() -> base_comm.CommManager: return _get_comm_manager()
 
 __all__ = ["IpyminiComm", "comm_context", "get_comm_manager"]
