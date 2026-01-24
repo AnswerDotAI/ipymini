@@ -379,63 +379,17 @@ class MiniDebugger:
         command = request.get("command")
         if not debugpy: return {}, []
         if command == "terminate":
-            if self.started:
-                self.client.close()
-                self.started = False
-                self.breakpoint_list = {}
-                self.stopped_threads = set()
-                self._traced_threads.clear()
-                self._restore_cleanup_transforms()
+            if self.started: self._reset_session()
             return self._response(request, True, body={}), self.events
         self._ensure_started()
         if "seq" in request: self.client.next_seq = max(self.client.next_seq, int(request["seq"]) + 1)
 
-        if command == "dumpCell":
-            code = request.get("arguments", {}).get("code", "")
-            file_name = _debug_file_name(code)
-            os.makedirs(os.path.dirname(file_name), exist_ok=True)
-            with open(file_name, "w", encoding="utf-8") as f: f.write(code)
-            return dict(type="response", request_seq=request.get("seq"), success=True, command=command, body={"sourcePath": file_name}), self.events
-
-        if command == "configurationDone":
-            return (dict(type="response", request_seq=request.get("seq"), success=True, command=command, body={}), self.events)
-
-        if command == "debugInfo":
-            breakpoint_list = []
-            for key, value in self.breakpoint_list.items(): breakpoint_list.append({"source": key, "breakpoints": value})
-            body = dict(isStarted=self.started, hashMethod="Murmur2", hashSeed=DEBUG_HASH_SEED,
-                tmpFilePrefix=_debug_tmp_directory() + os.sep, tmpFileSuffix=".py", breakpoints=breakpoint_list,
-                stoppedThreads=list(self.stopped_threads), richRendering=True, exceptionPaths=["Python Exceptions"], copyToGlobals=True)
-            return dict(type="response", request_seq=request.get("seq"), success=True, command=command, body=body), self.events
-
-        if command == "inspectVariables":
-            reply = self._inspect_variables(request)
-            return reply, self.events
-
-        if command == "richInspectVariables":
-            reply = self._rich_inspect_variables(request)
-            return reply, self.events
-
-        if command == "copyToGlobals":
-            reply = self._copy_to_globals(request)
-            return reply, self.events
-
-        if command == "modules":
-            reply = self._modules(request)
-            return reply, self.events
-
-        if command == "source":
-            source_path = request.get("arguments", {}).get("source", {}).get("path", "")
-            reply = dict(type="response", request_seq=request.get("seq"), command=command)
-            if source_path and os.path.isfile(source_path):
-                with open(source_path, encoding="utf-8") as f:
-                    reply["success"] = True
-                    reply["body"] = {"content": f.read()}
-            else:
-                reply["success"] = False
-                reply["message"] = "source unavailable"
-                reply["body"] = {}
-            return reply, self.events
+        simple = dict(configurationDone=lambda r: self._response(r, True, body={}), debugInfo=self._debug_info,
+            inspectVariables=self._inspect_variables)
+        simple |= dict(richInspectVariables=self._rich_inspect_variables, copyToGlobals=self._copy_to_globals,
+            modules=self._modules)
+        simple |= dict(source=self._source, dumpCell=self._dump_cell)
+        if command in simple: return simple[command](request), self.events
 
         if command == "attach":
             arguments = request.get("arguments") or {}
@@ -463,14 +417,17 @@ class MiniDebugger:
             return response or {}, self.events
 
         response = self.client.send_request(request)
-        if command == "disconnect":
-            self.client.close()
-            self.started = False
-            self.breakpoint_list = {}
-            self.stopped_threads = set()
-            self._traced_threads.clear()
-            self._restore_cleanup_transforms()
+        if command == "disconnect" and self.started: self._reset_session()
         return response or {}, self.events
+
+    def _reset_session(self) -> None:
+        "Reset debugpy client session state."
+        self.client.close()
+        self.started = False
+        self.breakpoint_list = {}
+        self.stopped_threads = set()
+        self._traced_threads.clear()
+        self._restore_cleanup_transforms()
 
     def trace_current_thread(self) -> None:
         "Enable debugpy tracing on the current thread if needed."
@@ -514,6 +471,30 @@ class MiniDebugger:
         if message: reply["message"] = message
         if body is not None: reply["body"] = body
         return reply
+
+    def _dump_cell(self, request: dict) -> dict:
+        "Write debug cell to disk and return its path."
+        code = request.get("arguments", {}).get("code", "")
+        file_name = _debug_file_name(code)
+        os.makedirs(os.path.dirname(file_name), exist_ok=True)
+        with open(file_name, "w", encoding="utf-8") as f: f.write(code)
+        return self._response(request, True, body=dict(sourcePath=file_name))
+
+    def _debug_info(self, request: dict) -> dict:
+        "Return debugInfo response."
+        breakpoints = [{"source": key, "breakpoints": value} for key, value in self.breakpoint_list.items()]
+        body = dict(isStarted=self.started, hashMethod="Murmur2", hashSeed=DEBUG_HASH_SEED,
+            tmpFilePrefix=_debug_tmp_directory() + os.sep, tmpFileSuffix=".py", breakpoints=breakpoints,
+            stoppedThreads=list(self.stopped_threads), richRendering=True, exceptionPaths=["Python Exceptions"], copyToGlobals=True)
+        return self._response(request, True, body=body)
+
+    def _source(self, request: dict) -> dict:
+        "Return source response."
+        source_path = request.get("arguments", {}).get("source", {}).get("path", "")
+        if source_path and os.path.isfile(source_path):
+            with open(source_path, encoding="utf-8") as f: content = f.read()
+            return self._response(request, True, body=dict(content=content))
+        return self._response(request, False, body={}, message="source unavailable")
 
     def _inspect_variables(self, request: dict) -> dict:
         "Return a variables response from the user namespace."

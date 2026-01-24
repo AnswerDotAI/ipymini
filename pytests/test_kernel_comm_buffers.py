@@ -1,13 +1,6 @@
 from .kernel_utils import execute_and_drain, iopub_msgs, iopub_streams, start_kernel
 
 
-def send_shell_with_buffers(kc, msg_type: str, content: dict, buffers: list[bytes]) -> str:
-    "Send a shell message with binary buffers and return msg_id."
-    msg = kc.session.msg(msg_type, content)
-    kc.session.send(kc.shell_channel.socket, msg, buffers=buffers)
-    return msg["header"]["msg_id"]
-
-
 def test_comm_buffers_from_kernel() -> None:
     with start_kernel() as (_, kc):
         code = (
@@ -43,13 +36,13 @@ def test_comm_buffers_to_kernel() -> None:
         assert reply["content"]["status"] == "ok"
 
         comm_id = "buf-1"
-        send_shell_with_buffers(kc, "comm_open", dict(comm_id=comm_id, target_name="buf_target", data={}), [b"open"])
-        send_shell_with_buffers(kc, "comm_msg", dict(comm_id=comm_id, data={}), [b"msg"])
+        kc.cmd.comm_open(comm_id=comm_id, target_name="buf_target", data={}, buffers=[b"open"])
+        kc.cmd.comm_msg(comm_id=comm_id, data={}, buffers=[b"msg"])
 
         code = (
             "import time\n"
-            "deadline = time.time() + 5\n"
-            "while 'msg' not in received and time.time() < deadline:\n"
+            "deadline = time.monotonic() + 5\n"
+            "while 'msg' not in received and time.monotonic() < deadline:\n"
             "    time.sleep(0.05)\n"
             "print(received.get('open'), received.get('msg'))\n"
         )

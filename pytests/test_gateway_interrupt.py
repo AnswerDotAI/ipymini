@@ -7,8 +7,8 @@ from .kernel_utils import TIMEOUT, build_env, ensure_separate_process
 
 
 async def _wait_for_status(kc, state: str, timeout: float) -> dict:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         msg = await kc.get_iopub_msg(timeout=0.2)
         if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == state: return msg
     raise AssertionError(f"timeout waiting for status {state}")
