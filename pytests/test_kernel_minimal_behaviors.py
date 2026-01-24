@@ -12,8 +12,7 @@ def _shell_addr(conn: dict) -> str:
     return f"{transport}://{ip}:{port}"
 
 
-def _send_kernel_info(session: Session, sock: zmq.Socket) -> None:
-    session.send(sock, "kernel_info_request", {})
+def _send_kernel_info(session: Session, sock: zmq.Socket) -> None: session.send(sock, "kernel_info_request", {})
 
 
 def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dict | None:

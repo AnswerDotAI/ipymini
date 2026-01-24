@@ -591,8 +591,7 @@ class MiniKernel:
         shell_task = asyncio.create_task(self._recv_loop(self.shell_socket, self._handle_shell_msg))
         control_task = asyncio.create_task(self._recv_loop(self.control_socket, self._handle_control_msg))
         send_task = asyncio.create_task(self._shell_send_loop())
-        try:
-            await self._async_shutdown.wait()
+        try: await self._async_shutdown.wait()
         finally:
             for task in (shell_task, control_task, send_task): task.cancel()
             await asyncio.gather(shell_task, control_task, send_task, return_exceptions=True)
@@ -745,8 +744,23 @@ class MiniKernel:
             self._send_status("idle", msg)
         finally: self._parent_header = None
 
+    def _send_interrupt_signal(self) -> None:
+        "Send SIGINT to the current process or process group."
+        if os.name == "nt":
+            _LOG.warning("Interrupt request not supported on Windows")
+            return
+        pid = os.getpid()
+        try: pgid = os.getpgid(pid)
+        except Exception: pgid = None
+        try:
+            # Only signal the process group if we're the leader; otherwise avoid killing unrelated processes.
+            if pgid and pgid == pid and hasattr(os, "killpg"): os.killpg(pgid, signal.SIGINT)
+            else: os.kill(pid, signal.SIGINT)
+        except OSError as err: _LOG.warning("Interrupt signal failed: %s", err)
+
     def _handle_interrupt(self, msg: dict, idents: list[bytes] | None, sock: zmq.Socket) -> None:
         "Handle interrupt_request by signaling subshells."
+        self._send_interrupt_signal()
         self.subshells.interrupt_all()
         self.stdin_router.interrupt_pending()
         self._send_reply(sock, "interrupt_reply", {"status": "ok"}, msg, idents)
