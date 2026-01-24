@@ -760,7 +760,9 @@ class KernelBridge:
         self._stream_live = False
         self._stdout = MiniStream("stdout", self._stream_events, sink=self._emit_stream)
         self._stderr = MiniStream("stderr", self._stream_events, sink=self._emit_stream)
-        self.shell.set_hook("show_in_pager", page.as_hook(self._payloadpage_page), 99)
+        if self.shell.display_page: hook = page.as_hook(page.display_page)
+        else: hook = page.as_hook(self._payloadpage_page)
+        self.shell.set_hook("show_in_pager", hook, 99)
         self.shell._last_traceback = None
 
         def _showtraceback(etype, evalue, stb): self.shell._last_traceback = stb
