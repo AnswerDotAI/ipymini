@@ -1,4 +1,4 @@
-from .kernel_utils import get_shell_reply, start_kernel, wait_for_status
+from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel, wait_for_status
 
 
 def test_interrupt_request() -> None:
@@ -9,7 +9,14 @@ def test_interrupt_request() -> None:
         km.interrupt_kernel()
 
         reply = get_shell_reply(kc, msg_id, timeout=20)
-        assert reply["content"]["status"] == "error"
-        assert reply["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}
+        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
+        assert reply["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}, (
+            f"interrupt ename: {reply.get('content')}"
+        )
 
-        wait_for_status(kc, "idle")
+        outputs = drain_iopub(kc, msg_id)
+        errors = iopub_msgs(outputs, "error")
+        assert errors, f"expected iopub error after interrupt, got: {[m.get('msg_type') for m in outputs]}"
+        assert errors[-1]["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}, (
+            f"interrupt iopub: {errors[-1].get('content')}"
+        )

@@ -1,4 +1,4 @@
-import json, logging, os, queue, signal, threading, traceback, time, uuid
+import asyncio, json, logging, os, queue, signal, threading, traceback, time, uuid
 from collections import deque
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -10,6 +10,7 @@ from .bridge import KernelBridge
 from .comms import comm_context, get_comm_manager
 
 _LOG = logging.getLogger("ipymini.stdin")
+_SHELL_SEND_STOP = object()
 _SUBSHELL_STOP = object()
 
 @dataclass
@@ -45,15 +46,6 @@ def _raise_async_exception(thread_id: int, exc_type: type[BaseException]) -> boo
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), None)
         return False
     return True
-
-def _env_int(name: str, default: int) -> int:
-    "Parse int env var `name`; return `default` on errors."
-    raw = os.environ.get(name)
-    if raw is None: return default
-    try: value = int(raw)
-    except Exception: return default
-    return value if value >= 0 else default
-
 
 class HeartbeatThread(threading.Thread):
     def __init__(self, context: zmq.Context, addr: str) -> None:
@@ -167,6 +159,7 @@ class StdinRouterThread(threading.Thread):
         "Route input_reply messages to waiting queues."
         sock = self.context.socket(zmq.ROUTER)
         sock.linger = 0
+        if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
         sock.bind(self.addr)
         self._socket = sock
         poller = zmq.Poller()
@@ -369,6 +362,9 @@ class Subshell:
         self._parent_header = msg
         self._parent_idents = idents
         self._executing.set()
+        sent_reply = False
+        sent_error = False
+        exec_count = None
 
         try:
             self._send_status("busy", msg)
@@ -400,6 +396,7 @@ class Subshell:
             if error:
                 self.kernel._iopub_send("error", dict(ename=error["ename"], evalue=error["evalue"],
                     traceback=error.get("traceback", [])), msg)
+                sent_error = True
 
             if not silent and not error and result.get("result") is not None:
                 self.kernel._iopub_send("execute_result", dict(execution_count=exec_count, data=result.get("result"),
@@ -410,7 +407,19 @@ class Subshell:
             if error: reply_content.update(error)
 
             self._send_reply(sock, "execute_reply", reply_content, msg, idents)
+            sent_reply = True
             if error and stop_on_error: self._abort_pending_executes()
+            self._send_status("idle", msg)
+        except KeyboardInterrupt as exc:
+            error = dict(ename=type(exc).__name__, evalue=str(exc),
+                traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
+            if not sent_error: self.kernel._iopub_send("error", error, msg)
+            if not sent_reply:
+                reply_content = dict(status="error", execution_count=exec_count or self.bridge.shell.execution_count,
+                    user_expressions={}, payload=[])
+                reply_content.update(error)
+                self._send_reply(sock, "execute_reply", reply_content, msg, idents)
+                if stop_on_error: self._abort_pending_executes()
             self._send_status("idle", msg)
         finally:
             self._parent_header = None
@@ -536,46 +545,57 @@ class MiniKernel:
         key = self.connection.key.encode()
         self.session = Session(key=key, signature_scheme=self.connection.signature_scheme)
         self.context = zmq.Context.instance()
-
-        self.shell_socket = self.context.socket(zmq.ROUTER)
-        self.control_socket = self.context.socket(zmq.ROUTER)
-        for sock in (self.shell_socket, self.control_socket): sock.linger = 0
-
-        self.shell_socket.bind(self.connection.addr(self.connection.shell_port))
-        self.control_socket.bind(self.connection.addr(self.connection.control_port))
+        self.shell_socket = None
+        self.control_socket = None
+        self.async_context = None
         self.iopub_thread = IOPubThread(self.context, self.connection.addr(self.connection.iopub_port), self.session)
         self.stdin_router = StdinRouterThread(self.context, self.connection.addr(self.connection.stdin_port), self.session)
 
-        self.poller = zmq.Poller()
-        self.poller.register(self.shell_socket, zmq.POLLIN)
-        self.poller.register(self.control_socket, zmq.POLLIN)
         self.hb = HeartbeatThread(self.context, self.connection.addr(self.connection.hb_port))
         self.subshells = SubshellManager(self)
         self.bridge = self.subshells.parent.bridge
         self._parent_header = None
         self._parent_idents = None
-        self._shell_send_queue = queue.Queue()
-        self._running = True
-        self._poll_ms = _env_int("IPYMINI_POLL_MS", 25)
+        self._shell_send_queue_async = None
+        self._loop = None
+        self._async_shutdown = None
         self._control_handlers = dict(shutdown_request=self._handle_shutdown, debug_request=self._handle_debug,
             interrupt_request=self._handle_interrupt, create_subshell_request=self._handle_create_subshell,
             list_subshell_request=self._handle_list_subshell, delete_subshell_request=self._handle_delete_subshell)
 
     def start(self) -> None:
         "Start kernel threads and serve shell/control messages."
+        asyncio.run(self._start_async())
+
+    async def _start_async(self) -> None:
+        "Start kernel with asyncio-based shell/control loops."
+        import zmq.asyncio as _zmq_asyncio
+        self._loop = asyncio.get_running_loop()
+        self.async_context = _zmq_asyncio.Context()
+        self.shell_socket = self.async_context.socket(zmq.ROUTER)
+        self.control_socket = self.async_context.socket(zmq.ROUTER)
+        if hasattr(zmq, "ROUTER_HANDOVER"):
+            self.shell_socket.router_handover = 1
+            self.control_socket.router_handover = 1
+        for sock in (self.shell_socket, self.control_socket): sock.linger = 0
+        self.shell_socket.bind(self.connection.addr(self.connection.shell_port))
+        self.control_socket.bind(self.connection.addr(self.connection.control_port))
+        self._shell_send_queue_async = asyncio.Queue()
         self.iopub_thread.start()
         self.stdin_router.start()
         self.subshells.start()
         self.hb.start()
         prev_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
+        self._async_shutdown = asyncio.Event()
+        shell_task = asyncio.create_task(self._recv_loop(self.shell_socket, self._handle_shell_msg))
+        control_task = asyncio.create_task(self._recv_loop(self.control_socket, self._handle_control_msg))
+        send_task = asyncio.create_task(self._shell_send_loop())
         try:
-            while self._running:
-                self._drain_shell_send_queue()
-                events = dict(self.poller.poll(self._poll_ms))
-                if self.control_socket in events: self._handle_control()
-                if self.shell_socket in events: self._handle_shell()
+            await self._async_shutdown.wait()
         finally:
+            for task in (shell_task, control_task, send_task): task.cancel()
+            await asyncio.gather(shell_task, control_task, send_task, return_exceptions=True)
             self.hb.stop()
             self.hb.join(timeout=1)
             self.subshells.stop_all()
@@ -586,18 +606,46 @@ class MiniKernel:
             self._close_sockets()
             signal.signal(signal.SIGINT, prev_sigint)
 
+    async def _recv_loop(self, sock: zmq.Socket, handler) -> None:
+        "Async recv loop for a socket using Session.deserialize."
+        while not self._async_shutdown.is_set():
+            try: frames = await sock.recv_multipart()
+            except asyncio.CancelledError: break
+            except Exception:
+                if self._async_shutdown.is_set(): break
+                continue
+            try: idents, msg_list = self.session.feed_identities(frames)
+            except Exception: continue
+            try: msg = self.session.deserialize(msg_list)
+            except Exception: continue
+            if msg is None: continue
+            try: handler(msg, idents)
+            except Exception: _LOG.warning("Error handling message: %s", msg.get("msg_type"), exc_info=True)
+
+    async def _shell_send_loop(self) -> None:
+        "Async loop to drain shell replies from the thread queue."
+        if self._shell_send_queue_async is None: return
+        while not self._async_shutdown.is_set():
+            item = await self._shell_send_queue_async.get()
+            if item is _SHELL_SEND_STOP: break
+            msg_type, content, parent, idents = item
+            if self.shell_socket is None: continue
+            self.session.send(self.shell_socket, msg_type, content, parent=parent, ident=idents)
+
     def _close_sockets(self) -> None:
-        for sock in (self.shell_socket, self.control_socket): sock.close(0)
+        for sock in (self.shell_socket, self.control_socket):
+            if sock is not None: sock.close(0)
+        if self.async_context is not None:
+            try: self.async_context.term()
+            except Exception: pass
 
     def _handle_sigint(self, signum, frame) -> None:
         "Handle SIGINT by interrupting subshells and input waits."
         self.subshells.interrupt_all()
         self.stdin_router.interrupt_pending()
 
-    def _handle_control(self) -> None:
-        "Handle control channel requests."
-        idents, msg = self.session.recv(self.control_socket, mode=0)
-        if msg is None: return
+    def _handle_control_msg(self, msg: dict, idents: list[bytes] | None) -> None:
+        "Handle control channel request message."
         msg_type = msg["header"]["msg_type"]
         handler = self._control_handlers.get(msg_type)
         if handler is None:
@@ -605,10 +653,8 @@ class MiniKernel:
             return
         handler(msg, idents, self.control_socket)
 
-    def _handle_shell(self) -> None:
-        "Handle shell channel requests and dispatch to subshells."
-        idents, msg = self.session.recv(self.shell_socket, mode=0)
-        if msg is None: return
+    def _handle_shell_msg(self, msg: dict, idents: list[bytes] | None) -> None:
+        "Handle shell request message and dispatch to subshells."
         subshell_id = msg.get("header", {}).get("subshell_id")
         subshell = self.subshells.get(subshell_id)
         if subshell is None:
@@ -621,15 +667,11 @@ class MiniKernel:
         self.session.send(socket, msg_type, content, parent=parent, ident=idents)
 
     def _queue_shell_reply(self, msg_type: str, content: dict, parent: dict, idents: list[bytes] | None) -> None:
+        "Enqueue a shell reply for async send."
         payload = (msg_type, content, parent, idents)
-        self._shell_send_queue.put(payload)
-
-    def _drain_shell_send_queue(self) -> None:
-        "Send queued replies on the shell socket."
-        while True:
-            try: msg_type, content, parent, idents = self._shell_send_queue.get_nowait()
-            except queue.Empty: return
-            self.session.send(self.shell_socket, msg_type, content, parent=parent, ident=idents)
+        if self._loop is None or self._shell_send_queue_async is None: return
+        try: self._loop.call_soon_threadsafe(self._shell_send_queue_async.put_nowait, payload)
+        except RuntimeError: pass
 
     def _send_status(self, state: str, parent: dict | None) -> None: self._iopub_send("status", {"execution_state": state}, parent)
 
@@ -714,7 +756,10 @@ class MiniKernel:
         content = msg.get("content", {})
         reply = {"status": "ok", "restart": bool(content.get("restart", False))}
         self._send_reply(sock, "shutdown_reply", reply, msg, idents)
-        self._running = False
+        if self._async_shutdown is not None:
+            self._async_shutdown.set()
+            if self._loop is not None and self._shell_send_queue_async is not None:
+                self._loop.call_soon_threadsafe(self._shell_send_queue_async.put_nowait, _SHELL_SEND_STOP)
 
 
 def run_kernel(connection_file: str) -> None:
