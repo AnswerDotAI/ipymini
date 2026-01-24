@@ -1,5 +1,7 @@
 # ipymini
 
+🛑 **WARNING** This is a very early, very experimental, purely research project for now. Have fun playing with it, but don't expect it to work, or be supported, or to still exist next week. Perhaps it'll turn out to be useful, and we'll invest in it and maintain it, in which case we'll remove this warning. If you play with it and find issues, have improvement ideas, etc, we're keen to hear, and to research together!
+
 `ipymini` is a **Python-only** Jupyter kernel for Python with a small, readable codebase and strong IPython parity.
 
 The design goal is: **a small, readable, testable kernel** with **first‑class IPython behavior**.
