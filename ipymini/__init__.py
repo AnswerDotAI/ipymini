@@ -1,7 +1,7 @@
 from importlib.metadata import PackageNotFoundError, version
 from .kernel import run_kernel
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 try: __version__ = version("ipymini")
 except PackageNotFoundError: pass
 
