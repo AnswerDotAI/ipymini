@@ -141,6 +141,29 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 
 ---
 
+## PRs and releases
+
+Create a PR (GitHub CLI required):
+
+```
+tools/pr.sh [label] ["Message"]
+```
+
+Release flow (tags trigger GitHub Actions publish):
+
+```
+tools/release.sh [patch|minor|major]
+```
+
+Initial PyPI permission setup (one-time):
+
+```
+hatch build
+twine upload dist/*
+```
+
+---
+
 ## Behavior implemented so far
 
 - `kernel_info` replies
@@ -213,4 +236,3 @@ We follow the fastai style guide (not PEP8). A summary lives in `style.md`. Key 
 - Repeated request/response plumbing is factored into small helpers
   - e.g., subshell send, DAP breakpoint helpers
 - No semicolons for chaining; only single-statement bodies are one-liners.
-
