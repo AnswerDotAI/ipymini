@@ -19,6 +19,7 @@ def _execute_plain(kc, code: str) -> str:
     return results[-1]["content"]["data"]["text/plain"]
 
 
+@pytest.mark.slow
 def test_use_jedi_env_toggle() -> None:
     with start_kernel(extra_env={"IPYMINI_USE_JEDI": "0"}) as (_, kc):
         value = _execute_plain(kc, "get_ipython().Completer.use_jedi")
@@ -29,6 +30,7 @@ def test_use_jedi_env_toggle() -> None:
         assert value == "True"
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not _EXPERIMENTAL_AVAILABLE, reason="experimental completions not available")
 def test_experimental_completions_env_toggle() -> None:
     with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": "1"}) as (_, kc):

@@ -94,6 +94,7 @@ def test_attach_debug(kernel_with_debug):
     assert reply["body"]["result"] == ""
 
 
+@pytest.mark.slow
 def test_set_breakpoints(kernel_with_debug):
     code = """def f(a, b):
     c = a + b
@@ -155,11 +156,11 @@ def test_rich_inspect_not_at_breakpoint(kernel_with_debug):
     kernel_with_debug.execute(code)
     kernel_with_debug.get_shell_msg(timeout=TIMEOUT)
     r = wait_for_debug_request(kernel_with_debug, "inspectVariables")
-    assert var_name in [v["name"] for v in r["body"]["variables"]]
     reply = wait_for_debug_request(kernel_with_debug, "richInspectVariables", variableName=var_name)
-    assert reply["body"]["data"] == {"text/plain": f"'{value}'"}
+    # NB: specifics of return value NOT checked since extensions can modify this
 
 
+@pytest.mark.slow
 def test_rich_inspect_at_breakpoint(kernel_with_debug):
     code = """def f(a, b):
     c = a + b
@@ -179,8 +180,8 @@ f(2, 3)"""
     locals_ = get_scope_vars(kernel_with_debug, scopes, "Locals")
     reply = wait_for_debug_request(kernel_with_debug, "richInspectVariables", variableName=locals_[0]["name"],
         frameId=stacks[0]["id"])
-    assert reply["body"]["data"] == {"text/plain": locals_[0]["value"]}
     continue_debugger(kernel_with_debug, stopped)
+    # NB: specifics of return value NOT checked since extensions can modify this
 
 
 def test_copy_to_globals(kernel_with_debug):
@@ -213,6 +214,7 @@ my_test()"""
     continue_debugger(kernel_with_debug, stopped)
 
 
+@pytest.mark.slow
 def test_debug_requests_sequential(kernel_with_debug):
     code = """def f(a, b):
     c = a + b

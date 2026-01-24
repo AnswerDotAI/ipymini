@@ -3,7 +3,7 @@ from .kernel_utils import get_shell_reply, start_kernel, wait_for_status
 
 def test_interrupt_request() -> None:
     with start_kernel() as (km, kc):
-        msg_id = kc.execute("import time; time.sleep(2)")
+        msg_id = kc.execute("import time; time.sleep(0.5)")
         wait_for_status(kc, "busy")
 
         km.interrupt_kernel()

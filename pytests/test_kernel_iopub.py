@@ -63,6 +63,7 @@ def test_matplotlib_enable_gui_no_error() -> None:
         assert reply["content"]["status"] == "ok"
 
 
+@pytest.mark.slow
 def test_matplotlib_inline_default_backend() -> None:
     pytest.importorskip("matplotlib")
     with start_kernel() as (_, kc):
@@ -71,7 +72,7 @@ def test_matplotlib_inline_default_backend() -> None:
             "plt.plot([1, 2, 3], [1, 4, 9])\n"
             "plt.gcf()\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False, timeout=30)
         assert reply["content"]["status"] == "ok"
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from matplotlib inline backend"

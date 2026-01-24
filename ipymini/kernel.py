@@ -10,6 +10,7 @@ from .bridge import KernelBridge
 from .comms import comm_context, get_comm_manager
 
 _LOG = logging.getLogger("ipymini.stdin")
+_SUBSHELL_STOP = object()
 
 @dataclass
 class ConnectionInfo:
@@ -44,6 +45,14 @@ def _raise_async_exception(thread_id: int, exc_type: type[BaseException]) -> boo
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), None)
         return False
     return True
+
+def _env_int(name: str, default: int) -> int:
+    "Parse int env var `name`; return `default` on errors."
+    raw = os.environ.get(name)
+    if raw is None: return default
+    try: value = int(raw)
+    except Exception: return default
+    return value if value >= 0 else default
 
 
 class HeartbeatThread(threading.Thread):
@@ -256,7 +265,7 @@ class Subshell:
     def stop(self) -> None:
         "Signal subshell thread to stop and wake it."
         self._stop.set()
-        self._queue.put_nowait(({}, None, self.kernel.shell_socket))
+        self._queue.put_nowait(_SUBSHELL_STOP)
 
     def join(self, timeout: float | None = None) -> None: self._thread.join(timeout=timeout)
 
@@ -296,9 +305,10 @@ class Subshell:
 
     def _run(self) -> None:
         "Main subshell loop: read queue and dispatch messages."
-        while not self._stop.is_set():
-            try: msg, idents, sock = self._queue.get(timeout=0.1)
-            except queue.Empty: continue
+        while True:
+            item = self._queue.get()
+            if item is _SUBSHELL_STOP: break
+            msg, idents, sock = item
             if not msg: continue
             self._handle_message(msg, idents, sock)
 
@@ -546,6 +556,7 @@ class MiniKernel:
         self._parent_idents = None
         self._shell_send_queue = queue.Queue()
         self._running = True
+        self._poll_ms = _env_int("IPYMINI_POLL_MS", 25)
         self._control_handlers = dict(shutdown_request=self._handle_shutdown, debug_request=self._handle_debug,
             interrupt_request=self._handle_interrupt, create_subshell_request=self._handle_create_subshell,
             list_subshell_request=self._handle_list_subshell, delete_subshell_request=self._handle_delete_subshell)
@@ -561,7 +572,7 @@ class MiniKernel:
         try:
             while self._running:
                 self._drain_shell_send_queue()
-                events = dict(self.poller.poll(100))
+                events = dict(self.poller.poll(self._poll_ms))
                 if self.control_socket in events: self._handle_control()
                 if self.shell_socket in events: self._handle_shell()
         finally:
