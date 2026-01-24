@@ -226,7 +226,7 @@ After the initial manual release, bump the version before running the release sc
 
 ## Coding style
 
-We follow the fastai style guide (not PEP8). A summary lives in `style.md`. Key points from the style guide:
+We follow the [fastai style guide](https://github.com/AnswerDotAI/fastaistyle) (not PEP8). Key points from the style guide:
 
 - Favor brevity and clarity: aim for one idea per line
   - Use single-line `if`/`def` when the body is a single statement.
