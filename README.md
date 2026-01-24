@@ -217,8 +217,6 @@ twine upload dist/*
 - `ipymini/kernel.py` – message loop + protocol handling
 - `ipymini/bridge.py` – IPython integration and output capture
 - `pytests/` – protocol expectations
-- `DEBUG.md` – debugger test flow + failure modes
-- `DEVLOG.md` – detailed progress notes and next steps
 
 ---
 
