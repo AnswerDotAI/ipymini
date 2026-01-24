@@ -16,8 +16,8 @@ def _send_kernel_info(session: Session, sock: zmq.Socket) -> None: session.send(
 
 
 def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dict | None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if not sock.poll(50): continue
         try: _, msg = session.recv(sock, mode=0)
         except Exception: return None

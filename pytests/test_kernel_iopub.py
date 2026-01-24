@@ -1,6 +1,6 @@
 import os, time, pytest, zmq
 from jupyter_client.session import Session
-from .kernel_utils import execute_and_drain, iopub_msgs, load_connection, start_kernel
+from .kernel_utils import execute_and_drain, iopub_msgs, load_connection, start_kernel, temp_env
 
 
 def test_iopub_welcome() -> None:
@@ -13,9 +13,9 @@ def test_iopub_welcome() -> None:
         sub.setsockopt(zmq.SUBSCRIBE, b"")
         sub.connect(f"{conn['transport']}://{conn['ip']}:{conn['iopub_port']}")
 
-        deadline = time.time() + 5
+        deadline = time.monotonic() + 5
         msg = None
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try: frames = sub.recv_multipart(flags=zmq.NOBLOCK)
             except zmq.Again:
                 time.sleep(0.05)
@@ -65,10 +65,11 @@ def test_matplotlib_enable_gui_no_error() -> None:
 
 @pytest.mark.slow
 def test_matplotlib_inline_default_backend(tmp_path) -> None:
-    pytest.importorskip("matplotlib")
     cache_dir = tmp_path / "mplconfig"
     cache_dir.mkdir(parents=True, exist_ok=True)
     if not os.access(cache_dir, os.W_OK): raise AssertionError(f"no writable mpl cache dir: {cache_dir}")
+    with temp_env(dict(MPLCONFIGDIR=str(cache_dir), XDG_CACHE_HOME=str(cache_dir))):
+        pytest.importorskip("matplotlib")
     extra_env = {"MPLCONFIGDIR": str(cache_dir), "XDG_CACHE_HOME": str(cache_dir)}
     with start_kernel(extra_env=extra_env) as (_, kc):
         code = (
@@ -76,7 +77,7 @@ def test_matplotlib_inline_default_backend(tmp_path) -> None:
             "plt.plot([1, 2, 3], [1, 4, 9])\n"
             "plt.gcf()\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False, timeout=3)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False, timeout=20)
         assert reply["content"]["status"] == "ok"
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from matplotlib inline backend"

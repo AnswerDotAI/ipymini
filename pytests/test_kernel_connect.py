@@ -1,12 +1,10 @@
-from .kernel_utils import get_shell_reply, load_connection, start_kernel
+from .kernel_utils import load_connection, start_kernel
 
 
 def test_connect_request() -> None:
     with start_kernel() as (km, kc):
-        msg = kc.session.msg("connect_request", content={})
-        kc.shell_channel.send(msg)
-        msg_id = msg["header"]["msg_id"]
-        reply = get_shell_reply(kc, msg_id)
+        msg_id = kc.cmd.connect_request()
+        reply = kc.shell_reply(msg_id)
         content = reply["content"]
         conn = load_connection(km)
 
