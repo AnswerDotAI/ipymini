@@ -1,4 +1,4 @@
-from .kernel_utils import execute_and_drain, get_shell_reply, start_kernel
+from .kernel_utils import *
 
 
 def test_inspect_open() -> None:
@@ -13,10 +13,10 @@ def test_inspect_open() -> None:
 
 def test_history_tail_search() -> None:
     with start_kernel() as (_, kc):
-        _, reply, _ = execute_and_drain(kc, "1+1")
+        _, reply, _ = kc.exec_drain("1+1")
         assert reply["content"]["status"] == "ok"
 
-        _, reply, _ = execute_and_drain(kc, "2+2")
+        _, reply, _ = kc.exec_drain("2+2")
         assert reply["content"]["status"] == "ok"
 
         msg_id = kc.history(hist_access_type="tail", n=2, output=False, raw=True)
@@ -32,7 +32,7 @@ def test_history_tail_search() -> None:
 def test_history_search_unique_and_n() -> None:
     with start_kernel() as (_, kc):
         for code in ("1+1", "1+2", "1+3", "1+1"):
-            _, reply, _ = execute_and_drain(kc, code)
+            _, reply, _ = kc.exec_drain(code)
             assert reply["content"]["status"] == "ok"
 
         msg_id = kc.history(hist_access_type="search", pattern="1+*", output=False, raw=True, unique=True)

@@ -1,6 +1,6 @@
 import os, time, pytest, zmq
 from jupyter_client.session import Session
-from .kernel_utils import execute_and_drain, iopub_msgs, load_connection, start_kernel, temp_env
+from .kernel_utils import *
 
 
 def test_iopub_welcome() -> None:
@@ -42,7 +42,7 @@ def test_display_image_png() -> None:
             ")\n"
             "display(Image(data=data))\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
+        _, reply, output_msgs = kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from image display"
@@ -59,7 +59,7 @@ def test_matplotlib_enable_gui_no_error() -> None:
             "backend = matplotlib.get_backend()\n"
             "assert 'inline' in backend.lower()\n"
         )
-        _, reply, _ = execute_and_drain(kc, code, store_history=False)
+        _, reply, _ = kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
 
 
@@ -77,7 +77,7 @@ def test_matplotlib_inline_default_backend(tmp_path) -> None:
             "plt.plot([1, 2, 3], [1, 4, 9])\n"
             "plt.gcf()\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False, timeout=20)
+        _, reply, output_msgs = kc.exec_drain(code, store_history=False, timeout=20)
         assert reply["content"]["status"] == "ok"
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from matplotlib inline backend"

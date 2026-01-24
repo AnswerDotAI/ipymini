@@ -2,7 +2,7 @@ import os, time, zmq
 from jupyter_client import KernelManager
 from jupyter_client.session import Session
 
-from .kernel_utils import build_env, drain_iopub, ensure_separate_process, get_shell_reply, iopub_msgs
+from .kernel_utils import *
 
 
 def _shell_addr(conn: dict) -> str:
@@ -98,7 +98,7 @@ _k.Subshell._send_reply = _send_reply
         reply = get_shell_reply(kc, msg_id, timeout=10)
         assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
         assert reply["content"].get("ename") == "KeyboardInterrupt", f"interrupt ename: {reply.get('content')}"
-        outputs = drain_iopub(kc, msg_id)
+        outputs = kc.iopub_drain(msg_id)
         errors = iopub_msgs(outputs, "error")
         assert errors, f"missing iopub error: {[m.get('msg_type') for m in outputs]}"
         assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"iopub error: {errors[-1].get('content')}"

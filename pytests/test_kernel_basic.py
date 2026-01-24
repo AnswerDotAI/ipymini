@@ -1,4 +1,4 @@
-from .kernel_utils import iopub_msgs, start_kernel
+from .kernel_utils import *
 
 
 def test_execute_stream() -> None:

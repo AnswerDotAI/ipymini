@@ -1,6 +1,6 @@
 import time, pytest
 from contextlib import contextmanager
-from .kernel_utils import DEBUG_INIT_ARGS, debug_configuration_done, debug_dump_cell, debug_set_breakpoints, start_kernel, wait_for_stop
+from .kernel_utils import *
 
 TIMEOUT = 3
 

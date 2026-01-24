@@ -1,4 +1,4 @@
-from .kernel_utils import execute_and_drain, iopub_msgs, iopub_streams, start_kernel
+from .kernel_utils import *
 
 
 def test_comm_buffers_from_kernel() -> None:
@@ -8,7 +8,7 @@ def test_comm_buffers_from_kernel() -> None:
             "c = create_comm(target_name='buf-test', buffers=[b'openbuf'])\n"
             "c.send(data={'x': 1}, buffers=[b'msgbuf'])\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
+        _, reply, output_msgs = kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
         comm_msgs = iopub_msgs(output_msgs, "comm_msg")
         assert comm_msgs, "expected comm_msg on iopub"
@@ -32,7 +32,7 @@ def test_comm_buffers_to_kernel() -> None:
             "    comm.on_msg(_on_msg)\n"
             "get_comm_manager().register_target('buf_target', _handler)\n"
         )
-        _, reply, _ = execute_and_drain(kc, setup, store_history=False)
+        _, reply, _ = kc.exec_drain(setup, store_history=False)
         assert reply["content"]["status"] == "ok"
 
         comm_id = "buf-1"
@@ -46,7 +46,7 @@ def test_comm_buffers_to_kernel() -> None:
             "    time.sleep(0.05)\n"
             "print(received.get('open'), received.get('msg'))\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False)
+        _, reply, output_msgs = kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
         streams = "".join(m["content"]["text"] for m in iopub_streams(output_msgs))
         assert "b'open'" in streams

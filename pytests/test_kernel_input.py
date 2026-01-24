@@ -1,5 +1,5 @@
 import time
-from .kernel_utils import iopub_streams, start_kernel
+from .kernel_utils import *
 
 TIMEOUT = 3
 

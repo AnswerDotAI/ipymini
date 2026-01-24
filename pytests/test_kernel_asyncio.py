@@ -1,5 +1,5 @@
 import time
-from .kernel_utils import DEBUG_INIT_ARGS, collect_iopub_outputs, collect_shell_replies, debug_request, start_kernel, wait_for_status
+from .kernel_utils import *
 
 TIMEOUT = 3
 

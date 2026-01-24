@@ -1,4 +1,4 @@
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import *
 
 
 def _version_tuple(value: str) -> tuple[int, ...]: return tuple(int(part) if part.isdigit() else 0 for part in value.split("."))
@@ -30,7 +30,7 @@ def test_execute_headers() -> None:
         _assert_header(reply, "execute_reply")
         assert reply["parent_header"]["msg_id"] == msg_id
 
-        output_msgs = drain_iopub(kc, msg_id)
+        output_msgs = kc.iopub_drain(msg_id)
         assert output_msgs
         for msg in output_msgs:
             _assert_header(msg)

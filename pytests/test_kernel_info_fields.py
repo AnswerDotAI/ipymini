@@ -1,4 +1,4 @@
-from .kernel_utils import get_shell_reply, start_kernel
+from .kernel_utils import *
 
 
 def test_kernel_info_fields() -> None:

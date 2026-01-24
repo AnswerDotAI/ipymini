@@ -1,5 +1,5 @@
 import zmq
-from .kernel_utils import load_connection, start_kernel
+from .kernel_utils import *
 
 
 def test_heartbeat_echo() -> None:

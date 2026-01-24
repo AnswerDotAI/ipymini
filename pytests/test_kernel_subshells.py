@@ -1,6 +1,6 @@
 import time, random
 from queue import Empty
-from .kernel_utils import collect_iopub_outputs, collect_shell_replies, iopub_msgs, iopub_streams, start_kernel
+from .kernel_utils import *
 
 
 TIMEOUT = 10

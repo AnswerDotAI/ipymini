@@ -1,6 +1,6 @@
 import json, os
 from jupyter_client.kernelspec import KernelSpecManager
-from .kernel_utils import ROOT, _build_env
+from .kernel_utils import *
 
 
 def test_kernelspec_file() -> None:
@@ -18,7 +18,7 @@ def test_kernelspec_file() -> None:
 
 
 def test_kernelspec_manager_discovers_spec() -> None:
-    env = _build_env()
+    env = build_env()
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     ksm = KernelSpecManager()
     spec = ksm.get_kernel_spec("ipymini")

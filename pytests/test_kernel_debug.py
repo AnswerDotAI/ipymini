@@ -1,4 +1,4 @@
-from .kernel_utils import DEBUG_INIT_ARGS, debug_request, start_kernel, wait_for_debug_event
+from .kernel_utils import *
 
 
 def test_debug_smoke() -> None:

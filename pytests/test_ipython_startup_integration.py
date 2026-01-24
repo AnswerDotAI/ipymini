@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from .kernel_utils import drain_iopub, get_shell_reply, start_kernel
+from .kernel_utils import *
 
 
 def test_ipython_startup_integration(tmp_path) -> None:
@@ -32,4 +32,4 @@ assert EXEC_LINE == 123
         msg_id = kc.execute(code, store_history=False)
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id)
+        kc.iopub_drain(msg_id)

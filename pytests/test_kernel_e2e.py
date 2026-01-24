@@ -1,15 +1,12 @@
 import pytest
 from jupyter_client import KernelManager
-from .kernel_utils import (DEBUG_INIT_ARGS, TIMEOUT, build_env, debug_configuration_done,
-    debug_continue, debug_dump_cell, debug_info, debug_request, debug_set_breakpoints,
-    execute_and_drain, drain_iopub, ensure_separate_process, get_shell_reply, iopub_msgs,
-    iopub_streams, wait_for_status, wait_for_stop)
+from .kernel_utils import *
 
 
 def _reset_kernel(kc) -> None:
     msg_id = kc.execute("get_ipython().run_line_magic('reset', '-f')", silent=True, store_history=False)
     get_shell_reply(kc, msg_id)
-    drain_iopub(kc, msg_id)
+    kc.iopub_drain(msg_id)
 
 
 class E2EKernel:
@@ -76,7 +73,7 @@ def kernel(e2e_kernel):
 
 def test_e2e_restart_and_debug(kernel, e2e_kernel) -> None:
     kc = e2e_kernel.kc
-    _, reply, outputs = execute_and_drain(kc, "1+2+3", store_history=False)
+    _, reply, outputs = kc.exec_drain("1+2+3", store_history=False)
     assert reply["content"]["status"] == "ok"
     results = iopub_msgs(outputs, "execute_result")
     assert results, "expected execute_result"
@@ -84,7 +81,7 @@ def test_e2e_restart_and_debug(kernel, e2e_kernel) -> None:
     e2e_kernel.restart()
     kc = e2e_kernel.kc
 
-    _, reply, outputs = execute_and_drain(kc, "try:\n    x\nexcept NameError:\n    print('missing')", store_history=False)
+    _, reply, outputs = kc.exec_drain("try:\n    x\nexcept NameError:\n    print('missing')", store_history=False)
     assert reply["content"]["status"] == "ok"
     streams = iopub_streams(outputs)
     assert any("missing" in m["content"].get("text", "") for m in streams)
@@ -110,7 +107,7 @@ f(2, 3)"""
     thread_id = stopped["content"]["body"]["threadId"]
     debug_continue(kc, thread_id)
     get_shell_reply(kc, msg_id)
-    drain_iopub(kc, msg_id)
+    kc.iopub_drain(msg_id)
 
     code = """
 def f(a, b):
@@ -129,4 +126,4 @@ f(2, 3)"""
     thread_id = stopped["content"]["body"]["threadId"]
     debug_continue(kc, thread_id)
     get_shell_reply(kc, msg_id)
-    drain_iopub(kc, msg_id)
+    kc.iopub_drain(msg_id)

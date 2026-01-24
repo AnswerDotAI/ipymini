@@ -1,5 +1,5 @@
 import pytest
-from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
+from .kernel_utils import *
 
 try:
     from IPython.core.completer import provisionalcompleter as _provisionalcompleter
@@ -13,7 +13,7 @@ def _execute_plain(kc, code: str) -> str:
     msg_id = kc.execute(code, store_history=False)
     reply = get_shell_reply(kc, msg_id)
     assert reply["content"]["status"] == "ok"
-    output_msgs = drain_iopub(kc, msg_id)
+    output_msgs = kc.iopub_drain(msg_id)
     results = iopub_msgs(output_msgs, "execute_result")
     assert results, "expected execute_result"
     return results[-1]["content"]["data"]["text/plain"]

@@ -7,9 +7,14 @@ from fastcore.basics import patch
 from fastcore.meta import delegates
 
 TIMEOUT = 10
-DEBUG_INIT_ARGS = dict(clientID="test-client", clientName="testClient", adapterID="", pathFormat="path", linesStartAt1=True,
+DEBUG_INIT_ARGS = dict( clientID="test-client", clientName="testClient", adapterID="", pathFormat="path", linesStartAt1=True,
     columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 ROOT = Path(__file__).resolve().parents[1]
+
+__all__ = [ "TIMEOUT", "DEBUG_INIT_ARGS", "ROOT", "build_env", "load_connection", "ensure_separate_process", "start_kernel",
+    "temp_env", "debug_request", "debug_dump_cell", "debug_set_breakpoints", "debug_info", "debug_configuration_done", "debug_continue",
+    "wait_for_debug_event", "wait_for_stop", "get_shell_reply", "collect_shell_replies", "collect_iopub_outputs", "wait_for_status",
+    "iopub_msgs", "iopub_streams" ]
 
 
 def _ensure_jupyter_path() -> str:
@@ -26,6 +31,28 @@ def _build_env() -> dict:
     return dict(os.environ) | dict(PYTHONPATH=pythonpath, JUPYTER_PATH=_ensure_jupyter_path())
 
 
+def build_env(extra_env: dict | None = None) -> dict:
+    "Build env."
+    env = _build_env()
+    if extra_env: env = {**env, **extra_env}
+    return env
+
+
+def load_connection(km) -> dict:
+    with open(km.connection_file, encoding="utf-8") as f: return json.load(f)
+
+
+def ensure_separate_process(km: KernelManager) -> None:
+    "Ensure separate process."
+    pid = None
+    provisioner = getattr(km, "provisioner", None)
+    if provisioner is not None: pid = getattr(provisioner, "pid", None)
+    if pid is None:
+        proc = getattr(provisioner, "process", None)
+        pid = getattr(proc, "pid", None) if proc is not None else None
+    if pid is None or pid == os.getpid(): raise RuntimeError("kernel must run in a separate process")
+
+
 @contextmanager
 def temp_env(update: dict):
     "Temporarily update environment variables."
@@ -38,11 +65,21 @@ def temp_env(update: dict):
             else: os.environ[key] = value
 
 
-def build_env(extra_env: dict | None = None) -> dict:
-    "Build env."
-    env = _build_env()
-    if extra_env: env = {**env, **extra_env}
-    return env
+@contextmanager
+def start_kernel(extra_env: dict | None = None):
+    "Start kernel."
+    env = build_env(extra_env)
+    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
+    km = KernelManager(kernel_name="ipymini")
+    km.start_kernel(env=env)
+    ensure_separate_process(km)
+    kc = km.client()
+    kc.start_channels()
+    kc.wait_for_ready(timeout=TIMEOUT)
+    try: yield km, kc
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=True)
 
 
 @patch
@@ -138,7 +175,7 @@ class _ReqProxy:
 
 @patch(as_prop=True)
 def ctl(self: KernelClient) -> _ReqProxy:
-    "Control channel request proxy."
+    "Control request proxy."
     if (proxy := getattr(self, "_ctl", None)) is None: self._ctl = proxy = _ReqProxy(self, "control", "_request")
     return proxy
 
@@ -209,48 +246,6 @@ def exec_ok(self: KernelClient, code: str, timeout: float | None = None, **kwarg
     return msg_id, reply, outputs
 
 
-def load_connection(km) -> dict:
-    with open(km.connection_file, encoding="utf-8") as f: return json.load(f)
-
-
-def ensure_separate_process(km: KernelManager) -> None:
-    "Ensure separate process."
-    pid = None
-    provisioner = getattr(km, "provisioner", None)
-    if provisioner is not None: pid = getattr(provisioner, "pid", None)
-    if pid is None:
-        proc = getattr(provisioner, "process", None)
-        pid = getattr(proc, "pid", None) if proc is not None else None
-    if pid is None or pid == os.getpid(): raise RuntimeError("kernel must run in a separate process")
-
-
-@contextmanager
-def start_kernel(extra_env: dict | None = None):
-    "Start kernel."
-    env = build_env(extra_env)
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
-    ensure_separate_process(km)
-    kc = km.client()
-    kc.start_channels()
-    kc.wait_for_ready(timeout=TIMEOUT)
-    try: yield km, kc
-    finally:
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)
-
-
-def drain_iopub(kc, msg_id):
-    "Drain iopub."
-    return kc.iopub_drain(msg_id, timeout=TIMEOUT)
-
-
-def execute_and_drain(kc, code, timeout: float | None = None, **exec_kwargs):
-    "Execute and drain."
-    return kc.exec_drain(code, timeout=timeout, **exec_kwargs)
-
-
 def debug_request(kc, command, arguments=None, timeout: float | None = None, full_reply: bool = False, **kwargs):
     "Debug request."
     if arguments is None: arguments = {}
@@ -315,7 +310,8 @@ def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -
     deadline = time.monotonic() + (timeout or TIMEOUT)
     replies = {}
     while time.monotonic() < deadline and len(replies) < len(msg_ids):
-        reply = kc.get_shell_msg(timeout=TIMEOUT)
+        try: reply = kc.get_shell_msg(timeout=TIMEOUT)
+        except Empty: continue
         parent_id = reply.get("parent_header", {}).get("msg_id")
         if parent_id in msg_ids: replies[parent_id] = reply
     if len(replies) != len(msg_ids):
@@ -330,7 +326,8 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -
     outputs = {msg_id: [] for msg_id in msg_ids}
     idle = set()
     while time.monotonic() < deadline and len(idle) < len(msg_ids):
-        msg = kc.get_iopub_msg(timeout=TIMEOUT)
+        try: msg = kc.get_iopub_msg(timeout=TIMEOUT)
+        except Empty: continue
         parent_id = msg.get("parent_header", {}).get("msg_id")
         if parent_id not in outputs: continue
         outputs[parent_id].append(msg)
