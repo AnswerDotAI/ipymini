@@ -11,10 +11,10 @@ DEBUG_INIT_ARGS = dict( clientID="test-client", clientName="testClient", adapter
     columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 ROOT = Path(__file__).resolve().parents[1]
 
-__all__ = [ "TIMEOUT", "DEBUG_INIT_ARGS", "ROOT", "build_env", "load_connection", "ensure_separate_process", "start_kernel",
-    "temp_env", "debug_request", "debug_dump_cell", "debug_set_breakpoints", "debug_info", "debug_configuration_done", "debug_continue",
-    "wait_for_debug_event", "wait_for_stop", "get_shell_reply", "collect_shell_replies", "collect_iopub_outputs", "wait_for_status",
-    "iopub_msgs", "iopub_streams" ]
+__all__ = [ "TIMEOUT", "DEBUG_INIT_ARGS", "ROOT", "build_env", "load_connection", "ensure_separate_process", "start_kernel", "temp_env",
+    "wait_for_msg", "iter_timeout", "parent_id", "debug_request", "debug_dump_cell", "debug_set_breakpoints", "debug_info",
+    "debug_configuration_done", "debug_continue", "wait_for_debug_event", "wait_for_stop", "get_shell_reply", "collect_shell_replies",
+    "collect_iopub_outputs", "wait_for_status", "iopub_msgs", "iopub_streams" ]
 
 
 def _ensure_jupyter_path() -> str:
@@ -36,6 +36,24 @@ def build_env(extra_env: dict | None = None) -> dict:
     env = _build_env()
     if extra_env: env = {**env, **extra_env}
     return env
+
+
+def parent_id(msg: dict) -> str | None: return msg.get("parent_header", {}).get("msg_id")
+
+
+def iter_timeout(timeout: float | None = None, default: float = TIMEOUT):
+    "Yield remaining time (seconds) until timeout expires, using monotonic time."
+    end = time.monotonic() + (timeout or default)
+    while (rem := end - time.monotonic()) > 0: yield rem
+
+
+def wait_for_msg(get_msg, match, timeout: float | None = None, poll: float = 0.5, err: str = "timeout"):
+    "Call `get_msg(timeout=...)` until `match(msg)` is true, else raise AssertionError on timeout."
+    for rem in iter_timeout(timeout):
+        try: msg = get_msg(timeout=min(poll, rem))
+        except Empty: continue
+        if match(msg): return msg
+    raise AssertionError(err)
 
 
 def load_connection(km) -> dict:
@@ -85,34 +103,25 @@ def start_kernel(extra_env: dict | None = None):
 @patch
 def shell_reply(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> dict:
     "Return shell reply matching `msg_id`."
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try: reply = self.get_shell_msg(timeout=timeout)
-        except Empty: continue
-        if reply.get("parent_header", {}).get("msg_id") == msg_id: return reply
-    raise AssertionError("timeout waiting for shell reply")
+    return wait_for_msg(self.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout,
+        err="timeout waiting for shell reply")
 
 
 @patch
 def control_reply(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> dict:
     "Return control reply matching `msg_id`."
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try: reply = self.control_channel.get_msg(timeout=timeout)
-        except Empty: continue
-        if reply.get("parent_header", {}).get("msg_id") == msg_id: return reply
-    raise AssertionError("timeout waiting for control reply")
+    return wait_for_msg(self.control_channel.get_msg, lambda m: parent_id(m) == msg_id, timeout,
+        err="timeout waiting for control reply")
 
 
 @patch
 def iopub_drain(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> list[dict]:
     "Drain iopub messages for `msg_id` until idle."
-    deadline = time.monotonic() + timeout
     outputs = []
-    while time.monotonic() < deadline:
-        try: msg = self.get_iopub_msg(timeout=timeout)
+    for rem in iter_timeout(timeout):
+        try: msg = self.get_iopub_msg(timeout=min(TIMEOUT, rem))
         except Empty: continue
-        if msg.get("parent_header", {}).get("msg_id") != msg_id: continue
+        if parent_id(msg) != msg_id: continue
         outputs.append(msg)
         if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle": break
     return outputs
@@ -134,7 +143,8 @@ def interrupt_request(self: KernelClient, timeout: float = 2) -> dict:
     "Send interrupt_request and return interrupt_reply."
     msg = self.session.msg("interrupt_request", {})
     self.control_channel.send(msg)
-    reply = self.control_reply(msg["header"]["msg_id"], timeout=timeout)
+    reply = wait_for_msg(self.control_channel.get_msg, lambda r: parent_id(r) == msg["header"]["msg_id"], timeout,
+        poll=0.2, err="missing interrupt_reply")
     assert reply["header"]["msg_type"] == "interrupt_reply"
     return reply
 
@@ -144,11 +154,10 @@ async def interrupt_request_async(self: AsyncKernelClient, timeout: float = 2) -
     "Send interrupt_request and return interrupt_reply (async)."
     msg = self.session.msg("interrupt_request", {})
     self.control_channel.send(msg)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try: reply = await self.control_channel.get_msg(timeout=timeout)
+    for rem in iter_timeout(timeout, default=timeout):
+        try: reply = await self.control_channel.get_msg(timeout=min(timeout, rem))
         except Empty: continue
-        if reply.get("parent_header", {}).get("msg_id") == msg["header"]["msg_id"]:
+        if parent_id(reply) == msg["header"]["msg_id"]:
             assert reply["header"]["msg_type"] == "interrupt_reply"
             return reply
     raise AssertionError("timeout waiting for interrupt_reply")
@@ -250,8 +259,14 @@ def debug_request(kc, command, arguments=None, timeout: float | None = None, ful
     "Debug request."
     if arguments is None: arguments = {}
     if kwargs: arguments |= kwargs
-    timeout = timeout or TIMEOUT
-    return getattr(kc.dap, command)(timeout=timeout, full=full_reply, **arguments)
+    seq = getattr(kc, "_debug_seq", 1)
+    setattr(kc, "_debug_seq", seq + 1)
+    msg = kc.session.msg("debug_request", dict(type="request", seq=seq, command=command, arguments=arguments or {}))
+    kc.control_channel.send(msg)
+    reply = wait_for_msg(kc.control_channel.get_msg, lambda r: parent_id(r) == msg["header"]["msg_id"], timeout,
+        err="timeout waiting for debug reply")
+    assert reply["header"]["msg_type"] == "debug_reply"
+    return reply if full_reply else reply["content"]
 
 
 def debug_dump_cell(kc, code): return debug_request(kc, "dumpCell", code=code)
@@ -277,12 +292,9 @@ def debug_continue(kc, thread_id: int | None = None):
 
 def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
     "Wait for debug event."
-    deadline = time.monotonic() + (timeout or TIMEOUT)
-    while time.monotonic() < deadline:
-        try: msg = kc.get_iopub_msg(timeout=0.5)
-        except Empty: continue
-        if msg.get("msg_type") == "debug_event" and msg.get("content", {}).get("event") == event_name: return msg
-    raise AssertionError(f"debug_event {event_name} not received")
+    return wait_for_msg(kc.get_iopub_msg,
+        lambda m: m.get("msg_type") == "debug_event" and m.get("content", {}).get("event") == event_name,
+        timeout, poll=0.5, err=f"debug_event {event_name} not received")
 
 
 def wait_for_stop(kc, timeout: float | None = None) -> dict:
@@ -290,9 +302,8 @@ def wait_for_stop(kc, timeout: float | None = None) -> dict:
     timeout = timeout or TIMEOUT
     try: return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
     except AssertionError:
-        deadline = time.monotonic() + timeout
         last = None
-        while time.monotonic() < deadline:
+        for _ in iter_timeout(timeout, default=timeout):
             reply = debug_request(kc, "stackTrace", threadId=1)
             if reply.get("success"): return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
             last = reply
@@ -302,18 +313,18 @@ def wait_for_stop(kc, timeout: float | None = None) -> dict:
 
 def get_shell_reply(kc, msg_id, timeout: float | None = None):
     "Get shell reply."
-    return kc.shell_reply(msg_id, timeout=timeout or TIMEOUT)
+    return wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout,
+        err="timeout waiting for matching shell reply")
 
 
 def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
     "Collect shell replies."
-    deadline = time.monotonic() + (timeout or TIMEOUT)
     replies = {}
-    while time.monotonic() < deadline and len(replies) < len(msg_ids):
+    for _ in iter_timeout(timeout):
+        if len(replies) >= len(msg_ids): break
         try: reply = kc.get_shell_msg(timeout=TIMEOUT)
         except Empty: continue
-        parent_id = reply.get("parent_header", {}).get("msg_id")
-        if parent_id in msg_ids: replies[parent_id] = reply
+        if (mid := parent_id(reply)) in msg_ids: replies[mid] = reply
     if len(replies) != len(msg_ids):
         missing = msg_ids - set(replies)
         raise AssertionError(f"timeout waiting for shell replies: {sorted(missing)}")
@@ -322,16 +333,15 @@ def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -
 
 def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
     "Collect iopub outputs."
-    deadline = time.monotonic() + (timeout or TIMEOUT)
     outputs = {msg_id: [] for msg_id in msg_ids}
     idle = set()
-    while time.monotonic() < deadline and len(idle) < len(msg_ids):
+    for _ in iter_timeout(timeout):
+        if len(idle) >= len(msg_ids): break
         try: msg = kc.get_iopub_msg(timeout=TIMEOUT)
         except Empty: continue
-        parent_id = msg.get("parent_header", {}).get("msg_id")
-        if parent_id not in outputs: continue
-        outputs[parent_id].append(msg)
-        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle": idle.add(parent_id)
+        if (mid := parent_id(msg)) not in outputs: continue
+        outputs[mid].append(msg)
+        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle": idle.add(mid)
     if len(idle) != len(msg_ids):
         missing = msg_ids - idle
         raise AssertionError(f"timeout waiting for iopub idle: {sorted(missing)}")
@@ -340,11 +350,9 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -
 
 def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
     "Wait for status."
-    deadline = time.monotonic() + (timeout or TIMEOUT)
-    while time.monotonic() < deadline:
-        msg = kc.get_iopub_msg(timeout=TIMEOUT)
-        if msg["msg_type"] == "status" and msg["content"].get("execution_state") == state: return msg
-    raise AssertionError(f"timeout waiting for status: {state}")
+    return wait_for_msg(kc.get_iopub_msg,
+        lambda m: m.get("msg_type") == "status" and m.get("content", {}).get("execution_state") == state,
+        timeout, err=f"timeout waiting for status: {state}")
 
 
 def iopub_msgs(outputs: list[dict], msg_type: str | None = None) -> list[dict]:

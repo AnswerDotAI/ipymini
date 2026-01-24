@@ -13,9 +13,8 @@ def test_iopub_welcome() -> None:
         sub.setsockopt(zmq.SUBSCRIBE, b"")
         sub.connect(f"{conn['transport']}://{conn['ip']}:{conn['iopub_port']}")
 
-        deadline = time.monotonic() + 5
         msg = None
-        while time.monotonic() < deadline:
+        for _ in iter_timeout(5):
             try: frames = sub.recv_multipart(flags=zmq.NOBLOCK)
             except zmq.Again:
                 time.sleep(0.05)

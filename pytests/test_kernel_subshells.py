@@ -1,5 +1,4 @@
 import time, random
-from queue import Empty
 from .kernel_utils import *
 
 
@@ -193,15 +192,9 @@ def test_subshell_reads_shared_ns_during_parent_sleep() -> None:
         subshell_msg_id = kc.cmd.execute_request(code="print(x)", subshell_id=subshell_id)
 
         start = time.monotonic()
-        reply = None
-        while time.monotonic() - start < 0.8:
-            try: msg = kc.get_shell_msg(timeout=0.2)
-            except Empty: continue
-            if msg["parent_header"].get("msg_id") == subshell_msg_id:
-                reply = msg
-                break
+        reply = wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == subshell_msg_id,
+            timeout=0.8, poll=0.2, err="timeout waiting for subshell reply")
         elapsed = time.monotonic() - start
-        assert reply is not None, "timeout waiting for subshell reply"
         assert elapsed < 1.0, f"subshell reply took too long: {elapsed:.2f}s"
 
         outputs = kc.iopub_drain(subshell_msg_id)

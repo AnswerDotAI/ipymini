@@ -1,4 +1,4 @@
-import asyncio, os, time
+import asyncio, os
 from queue import Empty
 
 from jupyter_client import AsyncKernelClient, KernelManager
@@ -7,11 +7,10 @@ from .kernel_utils import *
 
 
 async def _wait_for_status(kc, state: str, timeout: float) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        msg = await kc.get_iopub_msg(timeout=0.2)
-        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == state: return msg
-    raise AssertionError(f"timeout waiting for status {state}")
+    async with asyncio.timeout(timeout):
+        while True:
+            msg = await kc.get_iopub_msg(timeout=0.2)
+            if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == state: return msg
 
 
 async def _router(kc, waiters: dict, stop: asyncio.Event) -> None:
