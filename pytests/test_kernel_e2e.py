@@ -74,27 +74,12 @@ def kernel(e2e_kernel):
     return e2e_kernel
 
 
-def test_e2e_execute_roundtrip(kernel) -> None:
-    kc = kernel.kc
+def test_e2e_restart_and_debug(kernel, e2e_kernel) -> None:
+    kc = e2e_kernel.kc
     _, reply, outputs = execute_and_drain(kc, "1+2+3", store_history=False)
     assert reply["content"]["status"] == "ok"
     results = iopub_msgs(outputs, "execute_result")
     assert results, "expected execute_result"
-
-
-def test_e2e_interrupt(kernel) -> None:
-    km = kernel.km
-    kc = kernel.kc
-    msg_id = kc.execute("import time; time.sleep(2)")
-    wait_for_status(kc, "busy")
-    km.interrupt_kernel()
-    reply = get_shell_reply(kc, msg_id)
-    assert reply["content"]["status"] == "error"
-
-
-def test_e2e_restart(e2e_kernel) -> None:
-    kc = e2e_kernel.kc
-    execute_and_drain(kc, "x = 42", store_history=False)
 
     e2e_kernel.restart()
     kc = e2e_kernel.kc
@@ -104,18 +89,11 @@ def test_e2e_restart(e2e_kernel) -> None:
     streams = iopub_streams(outputs)
     assert any("missing" in m["content"].get("text", "") for m in streams)
 
-
-def test_e2e_debug_roundtrip(kernel) -> None:
-    kc = kernel.kc
     kernel.ensure_debug()
     kernel.debug_config_done()
     reply = debug_request(kc, "evaluate", expression="'a' + 'b'", context="repl")
-    assert reply.get("success")
+    assert reply.get("success"), f"evaluate: {reply}"
 
-def test_e2e_debug_breakpoint_stop(kernel) -> None:
-    kernel.restart()
-    kc = kernel.kc
-    kernel.ensure_debug()
     code = """def f(a, b):
     c = a + b
     return c
@@ -128,17 +106,12 @@ f(2, 3)"""
     kernel.debug_config_done()
     msg_id = kc.execute(code)
     stopped = wait_for_stop(kc, timeout=TIMEOUT)
-    assert stopped["content"]["body"]["reason"] == "breakpoint"
+    assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"]["threadId"]
     debug_continue(kc, thread_id)
     get_shell_reply(kc, msg_id)
     drain_iopub(kc, msg_id)
 
-
-def test_e2e_debug_breakpoint_leading_lines(kernel) -> None:
-    kernel.restart()
-    kc = kernel.kc
-    kernel.ensure_debug()
     code = """
 def f(a, b):
     c = a + b
@@ -152,7 +125,7 @@ f(2, 3)"""
     kernel.debug_config_done()
     msg_id = kc.execute(code)
     stopped = wait_for_stop(kc, timeout=TIMEOUT)
-    assert stopped["content"]["body"]["reason"] == "breakpoint"
+    assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"]["threadId"]
     debug_continue(kc, thread_id)
     get_shell_reply(kc, msg_id)

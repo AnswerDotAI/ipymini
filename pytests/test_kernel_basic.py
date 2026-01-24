@@ -1,14 +1,6 @@
 from .kernel_utils import drain_iopub, get_shell_reply, iopub_msgs, start_kernel
 
 
-def test_kernel_info() -> None:
-    with start_kernel() as (_, kc):
-        msg_id = kc.kernel_info()
-        reply = get_shell_reply(kc, msg_id)
-        assert reply["parent_header"]["msg_id"] == msg_id
-        assert reply["content"]["status"] == "ok"
-
-
 def test_execute_stream() -> None:
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print('hello')", store_history=False)

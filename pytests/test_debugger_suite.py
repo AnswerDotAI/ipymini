@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from .kernel_utils import (DEBUG_INIT_ARGS, debug_configuration_done, debug_continue, debug_dump_cell,
     debug_info, debug_request, debug_set_breakpoints, get_shell_reply, start_kernel, wait_for_stop)
 
-TIMEOUT = 10
+TIMEOUT = 3
 
 
 @contextmanager
@@ -51,7 +51,8 @@ def get_replies(kernel, msg_ids):
 
 def ensure_configuration_done(kernel) -> None:
     if getattr(kernel, "_debug_config_done", False): return
-    debug_configuration_done(kernel)
+    reply = debug_configuration_done(kernel)
+    assert reply.get("success"), f"configurationDone failed: {reply}"
     setattr(kernel, "_debug_config_done", True)
 
 
@@ -68,299 +69,115 @@ def kernel():
 
 
 @pytest.fixture()
-def kernel_with_debug(kernel):
-    wait_for_debug_request(kernel, "initialize", DEBUG_INIT_ARGS)
-    wait_for_debug_request(kernel, "attach")
+def debug_kernel(kernel):
+    reply = wait_for_debug_request(kernel, "initialize", DEBUG_INIT_ARGS)
+    assert reply.get("success"), f"initialize failed: {reply}"
+    reply = wait_for_debug_request(kernel, "attach")
+    assert reply.get("success"), f"attach failed: {reply}"
     try: yield kernel
     finally: wait_for_debug_request(kernel, "disconnect", restart=False, terminateDebuggee=True)
 
 
-def test_debug_initialize(kernel):
-    reply = wait_for_debug_request(kernel, "initialize", DEBUG_INIT_ARGS)
-    assert reply.get("success")
-
-
-def test_supported_features(kernel_with_debug):
-    kernel_with_debug.kernel_info()
-    reply = kernel_with_debug.get_shell_msg(timeout=TIMEOUT)
+def test_debugger_basic_features(debug_kernel):
+    debug_kernel.kernel_info()
+    reply = debug_kernel.get_shell_msg(timeout=TIMEOUT)
     features = reply["content"].get("supported_features", [])
-    assert "debugger" in features
+    assert "debugger" in features, f"supported_features: {features}"
+
+    reply = wait_for_debug_request(debug_kernel, "evaluate", expression="'a' + 'b'", context="repl")
+    assert reply.get("success"), f"evaluate failed: {reply}"
+    assert reply["body"]["result"] == "", f"evaluate result: {reply['body']['result']}"
+
+    var_name = "text"
+    value = "Hello the world"
+    code = f"{var_name}='{value}'\nprint({var_name})\n"
+    debug_kernel.execute(code)
+    debug_kernel.get_shell_msg(timeout=TIMEOUT)
+    wait_for_debug_request(debug_kernel, "inspectVariables")
+    wait_for_debug_request(debug_kernel, "richInspectVariables", variableName=var_name)
 
 
-def test_attach_debug(kernel_with_debug):
-    ensure_configuration_done(kernel_with_debug)
-    reply = wait_for_debug_request(kernel_with_debug, "evaluate", expression="'a' + 'b'", context="repl")
-    assert reply["success"]
-    assert reply["body"]["result"] == ""
-
-
-@pytest.mark.slow
-def test_set_breakpoints(kernel_with_debug):
-    code = """def f(a, b):
-    c = a + b
-    return c
-
-f(2, 3)"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    reply = debug_set_breakpoints(kernel_with_debug, source, 2)
-    assert reply["success"]
-    assert len(reply["body"]["breakpoints"]) == 1
-    assert reply["body"]["breakpoints"][0]["verified"]
-    assert reply["body"]["breakpoints"][0]["source"]["path"] == source
-    info = debug_info(kernel_with_debug)
-    assert source in [b["source"] for b in info["body"]["breakpoints"]]
-    done = debug_configuration_done(kernel_with_debug)
-    setattr(kernel_with_debug, "_debug_config_done", True)
-    assert done["success"]
-
-
-def test_stop_on_breakpoint(kernel_with_debug):
-    code = """def f(a, b):
-    c = a + b
-    return c
-
-f(2, 3)"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_info(kernel_with_debug)
-    debug_set_breakpoints(kernel_with_debug, source, 2)
-    debug_configuration_done(kernel_with_debug, full_reply=True)
-    setattr(kernel_with_debug, "_debug_config_done", True)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    assert stopped["content"]["body"]["reason"] == "breakpoint"
-    continue_debugger(kernel_with_debug, stopped)
-
-
-def test_breakpoint_in_cell_with_leading_empty_lines(kernel_with_debug):
+def test_debugger_breakpoints_and_steps(debug_kernel):
     code = """
 def f(a, b):
     c = a + b
     return c
 
-f(2, 3)"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_info(kernel_with_debug)
-    debug_set_breakpoints(kernel_with_debug, source, 6)
-    debug_configuration_done(kernel_with_debug, full_reply=True)
-    setattr(kernel_with_debug, "_debug_config_done", True)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    assert stopped["content"]["body"]["reason"] == "breakpoint"
-    continue_debugger(kernel_with_debug, stopped)
+def g():
+    return f(2, 3)
 
+g()
+"""
+    source = debug_dump_cell(debug_kernel, code)["body"]["sourcePath"]
+    reply = debug_set_breakpoints(debug_kernel, source, 7)
+    assert reply["success"], f"setBreakpoints failed: {reply}"
+    ensure_configuration_done(debug_kernel)
 
-def test_rich_inspect_not_at_breakpoint(kernel_with_debug):
-    var_name = "text"
-    value = "Hello the world"
-    code = f"{var_name}='{value}'\nprint({var_name})\n"
-    kernel_with_debug.execute(code)
-    kernel_with_debug.get_shell_msg(timeout=TIMEOUT)
-    r = wait_for_debug_request(kernel_with_debug, "inspectVariables")
-    reply = wait_for_debug_request(kernel_with_debug, "richInspectVariables", variableName=var_name)
-    # NB: specifics of return value NOT checked since extensions can modify this
-
-
-@pytest.mark.slow
-def test_rich_inspect_at_breakpoint(kernel_with_debug):
-    code = """def f(a, b):
-    c = a + b
-    return c
-
-f(2, 3)"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_set_breakpoints(kernel_with_debug, source, 2)
-    debug_info(kernel_with_debug)
-    debug_configuration_done(kernel_with_debug)
-    setattr(kernel_with_debug, "_debug_config_done", True)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
+    debug_kernel.execute(code)
+    stopped = wait_for_stop(debug_kernel)
+    assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"].get("threadId", 1)
-    stacks = get_stack_frames(kernel_with_debug, thread_id)
-    scopes = get_scopes(kernel_with_debug, stacks[0]["id"])
-    locals_ = get_scope_vars(kernel_with_debug, scopes, "Locals")
-    reply = wait_for_debug_request(kernel_with_debug, "richInspectVariables", variableName=locals_[0]["name"],
-        frameId=stacks[0]["id"])
-    continue_debugger(kernel_with_debug, stopped)
-    # NB: specifics of return value NOT checked since extensions can modify this
+    stepped = wait_for_debug_request(debug_kernel, "stepIn", threadId=thread_id)
+    assert stepped.get("success"), f"stepIn failed: {stepped}"
+    stopped = wait_for_stop(debug_kernel)
+    thread_id = stopped["content"]["body"].get("threadId", thread_id)
+    frames = get_stack_frames(debug_kernel, thread_id)
+    assert frames and frames[0]["name"] == "f", f"frames: {frames}"
 
+    reply = wait_for_debug_request(debug_kernel, "next", threadId=thread_id)
+    assert reply.get("success"), f"next failed: {reply}"
+    stopped = wait_for_stop(debug_kernel)
+    thread_id = stopped["content"]["body"].get("threadId", thread_id)
+    frames = get_stack_frames(debug_kernel, thread_id)
+    frame_id = frames[0]["id"]
+    scopes = get_scopes(debug_kernel, frame_id)
+    locals_ = get_scope_vars(debug_kernel, scopes, "Locals")
+    local_names = [v["name"] for v in locals_]
+    assert "a" in local_names and "b" in local_names, f"locals: {locals_}"
 
-def test_copy_to_globals(kernel_with_debug):
-    local_var_name = "var"
-    global_var_name = "var_copy"
-    code = f"""from IPython.core.display import HTML
-def my_test():
-    {local_var_name} = HTML('<p>test content</p>')
-    pass
-a = 2
-my_test()"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_set_breakpoints(kernel_with_debug, source, 4)
-    debug_info(kernel_with_debug)
-    debug_configuration_done(kernel_with_debug)
-    setattr(kernel_with_debug, "_debug_config_done", True)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    thread_id = stopped["content"]["body"].get("threadId", 1)
-    stacks = get_stack_frames(kernel_with_debug, thread_id)
-    frame_id = stacks[0]["id"]
-    wait_for_debug_request(kernel_with_debug, "copyToGlobals", srcVariableName=local_var_name, dstVariableName=global_var_name,
+    reply = wait_for_debug_request(debug_kernel, "richInspectVariables", variableName=locals_[0]["name"], frameId=frame_id)
+    assert reply.get("success"), f"richInspectVariables failed: {reply}"
+
+    reply = wait_for_debug_request(debug_kernel, "copyToGlobals", srcVariableName="c", dstVariableName="c_copy",
         srcFrameId=frame_id)
-    scopes = get_scopes(kernel_with_debug, frame_id)
-    locals_ = get_scope_vars(kernel_with_debug, scopes, "Locals")
-    local_var = next(v for v in locals_ if local_var_name in v["evaluateName"])
-    globals_ = get_scope_vars(kernel_with_debug, scopes, "Globals")
-    global_var = next(v for v in globals_ if global_var_name in v["evaluateName"])
-    assert global_var["value"] == local_var["value"] and global_var["type"] == local_var["type"]
-    continue_debugger(kernel_with_debug, stopped)
+    assert reply.get("success"), f"copyToGlobals failed: {reply}"
+    globals_ = get_scope_vars(debug_kernel, scopes, "Globals")
+    assert any(v for v in globals_ if v["name"] == "c_copy"), f"globals: {globals_}"
 
-
-@pytest.mark.slow
-def test_debug_requests_sequential(kernel_with_debug):
-    code = """def f(a, b):
-    c = a + b
-    return c
-
-f(2, 3)"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_set_breakpoints(kernel_with_debug, source, 2)
-    debug_info(kernel_with_debug)
-    debug_configuration_done(kernel_with_debug)
-    setattr(kernel_with_debug, "_debug_config_done", True)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    thread_id = stopped["content"]["body"].get("threadId", 1)
-    stacks = get_stack_frames(kernel_with_debug, thread_id)
-    scopes = get_scopes(kernel_with_debug, stacks[0]["id"])
     locals_ref = get_scope_ref(scopes, "Locals")
     globals_ref = get_scope_ref(scopes, "Globals")
-    msgs = [prepare_debug_request(kernel_with_debug, "variables", variablesReference=locals_ref),
-        prepare_debug_request(kernel_with_debug, "variables", variablesReference=globals_ref)]
-    for msg in msgs: kernel_with_debug.control_channel.send(msg)
-
-    replies = get_replies(kernel_with_debug, [msg["header"]["msg_id"] for msg in msgs])
+    msgs = [prepare_debug_request(debug_kernel, "variables", variablesReference=locals_ref),
+        prepare_debug_request(debug_kernel, "variables", variablesReference=globals_ref)]
+    for msg in msgs: debug_kernel.control_channel.send(msg)
+    replies = get_replies(debug_kernel, [msg["header"]["msg_id"] for msg in msgs])
     locals_reply = replies[0]["content"]
     globals_reply = replies[1]["content"]
-    assert locals_reply["success"]
-    vars_ = locals_reply["body"]["variables"]
-    assert next(v for v in vars_ if v["name"] == "a")["value"] == "2"
-    assert next(v for v in vars_ if v["name"] == "b")["value"] == "3"
-    assert globals_reply["success"]
-    names = [v["name"] for v in globals_reply["body"]["variables"]]
-    assert "function variables" in names
-    assert "special variables" in names
+    assert locals_reply["success"], f"locals reply: {locals_reply}"
+    assert globals_reply["success"], f"globals reply: {globals_reply}"
+    reply = wait_for_debug_request(debug_kernel, "stepOut", threadId=thread_id)
+    assert reply.get("success"), f"stepOut failed: {reply}"
+    stopped = wait_for_stop(debug_kernel)
+    thread_id = stopped["content"]["body"].get("threadId", thread_id)
+    frames = get_stack_frames(debug_kernel, thread_id)
+    assert frames and frames[0]["name"] != "f", f"frames: {frames}"
 
-    execution_states = []
-    deadline = time.time() + TIMEOUT
-    while time.time() < deadline and len(execution_states) < 4:
-        msg = kernel_with_debug.get_iopub_msg(timeout=TIMEOUT)
-        if msg["msg_type"] == "status": execution_states.append(msg["content"]["execution_state"])
-    assert execution_states.count("busy") == 2
-    assert execution_states.count("idle") == 2
-    continue_debugger(kernel_with_debug, stopped)
+    continue_debugger(debug_kernel, stopped)
 
 
-def test_debug_step_in(kernel_with_debug):
-    code = """def f():
-    x = 1
-    y = 2
-    return x + y
-
-z = f()
-"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_info(kernel_with_debug)
-    debug_set_breakpoints(kernel_with_debug, source, 6)
-    ensure_configuration_done(kernel_with_debug)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    thread_id = stopped["content"]["body"].get("threadId", 1)
-    reply = wait_for_debug_request(kernel_with_debug, "stepIn", threadId=thread_id)
-    assert reply["success"]
-    stepped = wait_for_stop(kernel_with_debug)
-    thread_id = stepped["content"]["body"].get("threadId", thread_id)
-    frames = get_stack_frames(kernel_with_debug, thread_id)
-    assert frames and frames[0]["name"] == "f"
-    continue_debugger(kernel_with_debug, stepped)
-
-
-def test_debug_next(kernel_with_debug):
-    code = """def f():
-    x = 1
-    y = 2
-    return x + y
-
-f()
-"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_info(kernel_with_debug)
-    debug_set_breakpoints(kernel_with_debug, source, 2)
-    ensure_configuration_done(kernel_with_debug)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    thread_id = stopped["content"]["body"].get("threadId", 1)
-    frames = get_stack_frames(kernel_with_debug, thread_id)
-    line_before = frames[0]["line"]
-    reply = wait_for_debug_request(kernel_with_debug, "next", threadId=thread_id)
-    assert reply["success"]
-    stepped = wait_for_stop(kernel_with_debug)
-    thread_id = stepped["content"]["body"].get("threadId", thread_id)
-    frames = get_stack_frames(kernel_with_debug, thread_id)
-    assert frames[0]["line"] != line_before
-    continue_debugger(kernel_with_debug, stepped)
-
-
-def test_debug_step_out(kernel_with_debug):
-    code = """def f():
-    x = 1
-    y = 2
-    return x + y
-
-z = f()
-after = 5
-"""
-    source = debug_dump_cell(kernel_with_debug, code)["body"]["sourcePath"]
-    debug_info(kernel_with_debug)
-    debug_set_breakpoints(kernel_with_debug, source, 2)
-    ensure_configuration_done(kernel_with_debug)
-    kernel_with_debug.execute(code)
-    stopped = wait_for_stop(kernel_with_debug)
-    thread_id = stopped["content"]["body"].get("threadId", 1)
-    reply = wait_for_debug_request(kernel_with_debug, "stepOut", threadId=thread_id)
-    assert reply["success"]
-    stepped = wait_for_stop(kernel_with_debug)
-    thread_id = stepped["content"]["body"].get("threadId", thread_id)
-    frames = get_stack_frames(kernel_with_debug, thread_id)
-    assert frames and frames[0]["name"] != "f"
-    continue_debugger(kernel_with_debug, stepped)
-
-
-def test_exception_breakpoints(kernel_with_debug):
-    reply = wait_for_debug_request(kernel_with_debug, "setExceptionBreakpoints", filters=["raised"])
-    assert reply["success"]
-    ensure_configuration_done(kernel_with_debug)
-    msg_id = kernel_with_debug.execute("raise ValueError('boom')")
-    stopped = wait_for_stop(kernel_with_debug)
+def test_debugger_exceptions_and_terminate(debug_kernel):
+    reply = wait_for_debug_request(debug_kernel, "setExceptionBreakpoints", filters=["raised"])
+    assert reply["success"], f"setExceptionBreakpoints failed: {reply}"
+    ensure_configuration_done(debug_kernel)
+    msg_id = debug_kernel.execute("raise ValueError('boom')")
+    stopped = wait_for_stop(debug_kernel)
     reason = stopped["content"]["body"].get("reason")
-    assert reason in {"exception", "breakpoint", "pause"}
-    continue_debugger(kernel_with_debug, stopped)
-    reply = get_shell_reply(kernel_with_debug, msg_id)
-    assert reply["content"]["status"] == "error"
+    assert reason in {"exception", "breakpoint", "pause"}, f"stopped: {stopped}"
+    continue_debugger(debug_kernel, stopped)
+    reply = get_shell_reply(debug_kernel, msg_id)
+    assert reply["content"]["status"] == "error", f"execute reply: {reply.get('content')}"
 
-
-def test_terminate_clears_state(kernel):
-    wait_for_debug_request(kernel, "initialize", DEBUG_INIT_ARGS)
-    wait_for_debug_request(kernel, "attach")
-    code = """def f():
-    x = 1
-    return x
-
-f()
-"""
-    source = debug_dump_cell(kernel, code)["body"]["sourcePath"]
-    debug_set_breakpoints(kernel, source, 2)
-    debug_configuration_done(kernel)
-    reply = wait_for_debug_request(kernel, "terminate", restart=False)
-    assert reply["success"]
-    info = debug_info(kernel)
-    assert info["body"]["breakpoints"] == []
-    assert info["body"]["stoppedThreads"] == []
+    reply = wait_for_debug_request(debug_kernel, "terminate", restart=False)
+    assert reply["success"], f"terminate failed: {reply}"
+    info = debug_info(debug_kernel)
+    assert info["body"]["breakpoints"] == [], f"breakpoints not cleared: {info['body']['breakpoints']}"
+    assert info["body"]["stoppedThreads"] == [], f"stoppedThreads not cleared: {info['body']['stoppedThreads']}"

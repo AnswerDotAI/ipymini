@@ -1,36 +1,17 @@
 import time
 from .kernel_utils import drain_iopub, get_shell_reply, iopub_streams, start_kernel
 
-TIMEOUT = 10
+TIMEOUT = 3
 
 
-def test_input_request() -> None:
+def test_input_request_and_stream_ordering() -> None:
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("print(input('prompt> '))", allow_stdin=True)
+        msg_id = kc.execute("print('before'); print(input('prompt> '))", allow_stdin=True)
         stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
         assert stdin_msg["msg_type"] == "input_request"
         assert stdin_msg["content"]["prompt"] == "prompt> "
         assert not stdin_msg["content"]["password"]
 
-        text = "some text"
-        kc.input(text)
-
-        reply = get_shell_reply(kc, msg_id)
-        assert reply["content"]["status"] == "ok"
-
-        output_msgs = drain_iopub(kc, msg_id)
-        streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
-        assert ("stdout", text + "\n") in streams
-
-
-def test_stream_flushed_before_input_request() -> None:
-    with start_kernel() as (_, kc):
-        msg_id = kc.execute("print('before'); input('prompt> ')", allow_stdin=True)
-        stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
-        assert stdin_msg["msg_type"] == "input_request"
-        assert stdin_msg["content"]["prompt"] == "prompt> "
-
-        # Stream output should be available before we reply to stdin.
         stream_msg = None
         deadline = time.time() + TIMEOUT
         while time.time() < deadline:
@@ -41,11 +22,15 @@ def test_stream_flushed_before_input_request() -> None:
         assert stream_msg is not None, "expected stream before input reply"
         assert stream_msg["content"]["text"] == "before\n"
 
-        kc.input("ok")
+        text = "some text"
+        kc.input(text)
 
         reply = get_shell_reply(kc, msg_id)
         assert reply["content"]["status"] == "ok"
-        drain_iopub(kc, msg_id)
+
+        output_msgs = drain_iopub(kc, msg_id)
+        streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
+        assert ("stdout", text + "\n") in streams
 
 
 def test_input_request_disallowed() -> None:

@@ -20,27 +20,19 @@ def _execute_plain(kc, code: str) -> str:
 
 
 @pytest.mark.slow
-def test_use_jedi_env_toggle() -> None:
-    with start_kernel(extra_env={"IPYMINI_USE_JEDI": "0"}) as (_, kc):
-        value = _execute_plain(kc, "get_ipython().Completer.use_jedi")
-        assert value == "False"
-
-    with start_kernel(extra_env={"IPYMINI_USE_JEDI": "1"}) as (_, kc):
-        value = _execute_plain(kc, "get_ipython().Completer.use_jedi")
-        assert value == "True"
+@pytest.mark.parametrize("value,expected", [("0", "False"), ("1", "True")])
+def test_use_jedi_env_toggle(value: str, expected: str) -> None:
+    with start_kernel(extra_env={"IPYMINI_USE_JEDI": value}) as (_, kc):
+        result = _execute_plain(kc, "get_ipython().Completer.use_jedi")
+        assert result == expected
 
 
 @pytest.mark.slow
 @pytest.mark.skipif(not _EXPERIMENTAL_AVAILABLE, reason="experimental completions not available")
-def test_experimental_completions_env_toggle() -> None:
-    with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": "1"}) as (_, kc):
+@pytest.mark.parametrize("value,expected", [("1", True), ("0", False)])
+def test_experimental_completions_env_toggle(value: str, expected: bool) -> None:
+    with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": value}) as (_, kc):
         msg_id = kc.complete("pri", 3)
         reply = get_shell_reply(kc, msg_id)
         metadata = reply["content"]["metadata"]
-        assert "_jupyter_types_experimental" in metadata
-
-    with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": "0"}) as (_, kc):
-        msg_id = kc.complete("pri", 3)
-        reply = get_shell_reply(kc, msg_id)
-        metadata = reply["content"]["metadata"]
-        assert "_jupyter_types_experimental" not in metadata
+        assert ("_jupyter_types_experimental" in metadata) is expected

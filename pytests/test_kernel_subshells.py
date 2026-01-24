@@ -79,18 +79,11 @@ def test_kernel_info_supports_subshells() -> None:
         assert "kernel subshells" in features
 
 
-def test_subshell_lifecycle() -> None:
+def test_subshell_basics() -> None:
     with start_kernel() as (_, kc):
         assert _list_subshells(kc) == []
         subshell_id = _create_subshell(kc)
         assert _list_subshells(kc) == [subshell_id]
-        _delete_subshell(kc, subshell_id)
-        assert _list_subshells(kc) == []
-
-
-def test_subshell_execution_counts_and_shared_namespace() -> None:
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
 
         _, reply1, _ = _execute(kc, "a = 10")
         assert reply1["content"]["execution_count"] == 1
@@ -105,12 +98,6 @@ def test_subshell_execution_counts_and_shared_namespace() -> None:
         _, reply3, _ = _execute(kc, "a + 1")
         assert reply3["content"]["execution_count"] == 2
 
-        _delete_subshell(kc, subshell_id)
-
-
-def test_subshell_history_is_separate() -> None:
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
         _execute(kc, "parent_only = 123")
         _execute(kc, "child_only = 456", subshell_id=subshell_id)
 
@@ -120,16 +107,41 @@ def test_subshell_history_is_separate() -> None:
         assert _last_history_input(parent_hist) == "parent_only = 123"
         assert _last_history_input(child_hist) == "child_only = 456"
 
+        msg = kc.session.msg("execute_request", {"code": "1+1"})
+        msg["header"]["subshell_id"] = "missing"
+        kc.shell_channel.send(msg)
+        reply = get_shell_reply(kc, msg["header"]["msg_id"])
+        assert reply["content"]["status"] == "error"
+        assert reply["content"].get("ename") == "SubshellNotFound"
+
+        _delete_subshell(kc, subshell_id)
+        assert _list_subshells(kc) == []
+
+
+def test_subshell_concurrency_and_control() -> None:
+    with start_kernel() as (_, kc):
+        subshell_a = _create_subshell(kc)
+        subshell_b = _create_subshell(kc)
+
+        msg = kc.session.msg("execute_request", {"code": "import time; time.sleep(0.05)"})
+        kc.shell_channel.send(msg)
+
+        control_reply = _control_request(kc, "create_subshell_request")
+        subshell_id = control_reply["content"]["subshell_id"]
+        control_date = control_reply["header"]["date"]
+
+        shell_reply = get_shell_reply(kc, msg["header"]["msg_id"])
+        shell_date = shell_reply["header"]["date"]
+        drain_iopub(kc, msg["header"]["msg_id"])
+
         _delete_subshell(kc, subshell_id)
 
+        assert control_date < shell_date
 
-def test_subshells_can_run_concurrently() -> None:
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
         _execute(kc, "import threading; evt = threading.Event()")
 
         msg_wait = kc.session.msg("execute_request", {"code": "ok = evt.wait(1.0); print(ok)"})
-        msg_wait["header"]["subshell_id"] = subshell_id
+        msg_wait["header"]["subshell_id"] = subshell_a
         kc.shell_channel.send(msg_wait)
 
         msg_set = kc.session.msg("execute_request", {"code": "evt.set(); print('set')"})
@@ -149,35 +161,29 @@ def test_subshells_can_run_concurrently() -> None:
         streams_set = iopub_streams(outputs_set)
         assert any("set" in m["content"].get("text", "") for m in streams_set)
 
-        _delete_subshell(kc, subshell_id)
+        _execute(kc, "import threading, time; barrier = threading.Barrier(3)")
 
+        def _send(code: str, subshell_id: str | None = None) -> str:
+            msg = kc.session.msg("execute_request", {"code": code})
+            _send_subshell(kc, msg, subshell_id)
+            return msg["header"]["msg_id"]
 
-def test_unknown_subshell_id_returns_error() -> None:
-    with start_kernel() as (_, kc):
-        msg = kc.session.msg("execute_request", {"code": "1+1"})
-        msg["header"]["subshell_id"] = "missing"
-        kc.shell_channel.send(msg)
-        reply = get_shell_reply(kc, msg["header"]["msg_id"])
-        assert reply["content"]["status"] == "error"
-        assert reply["content"].get("ename") == "SubshellNotFound"
+        msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
+        msg_a = _send("barrier.wait(); time.sleep(0.05); print('a')", subshell_a)
+        msg_b = _send("barrier.wait(); time.sleep(0.05); print('b')", subshell_b)
 
+        msg_ids = {msg_parent, msg_a, msg_b}
+        replies = collect_shell_replies(kc, msg_ids)
+        outputs = collect_iopub_outputs(kc, msg_ids)
 
-def test_subshell_create_while_execute() -> None:
-    with start_kernel() as (_, kc):
-        msg = kc.session.msg("execute_request", {"code": "import time; time.sleep(0.05)"})
-        kc.shell_channel.send(msg)
+        assert all(reply["content"]["status"] == "ok" for reply in replies.values())
+        expected = {msg_parent: "parent", msg_a: "a", msg_b: "b"}
+        for msg_id, text in expected.items():
+            streams = iopub_streams(outputs[msg_id])
+            assert any(text in m["content"].get("text", "") for m in streams)
 
-        control_reply = _control_request(kc, "create_subshell_request")
-        subshell_id = control_reply["content"]["subshell_id"]
-        control_date = control_reply["header"]["date"]
-
-        shell_reply = get_shell_reply(kc, msg["header"]["msg_id"])
-        shell_date = shell_reply["header"]["date"]
-        drain_iopub(kc, msg["header"]["msg_id"])
-
-        _delete_subshell(kc, subshell_id)
-
-        assert control_date < shell_date
+        _delete_subshell(kc, subshell_a)
+        _delete_subshell(kc, subshell_b)
 
 
 @pytest.mark.parametrize("are_subshells", [(False, True), (True, False), (True, True)])
@@ -253,35 +259,6 @@ def test_stdin_concurrent_subshells() -> None:
         for msg_id, expected in values.items():
             streams = iopub_streams(outputs[msg_id])
             assert any(f"got:{expected}" in m["content"].get("text", "") for m in streams)
-
-        _delete_subshell(kc, subshell_a)
-        _delete_subshell(kc, subshell_b)
-
-
-def test_subshell_concurrency_barrier() -> None:
-    with start_kernel() as (_, kc):
-        subshell_a = _create_subshell(kc)
-        subshell_b = _create_subshell(kc)
-        _execute(kc, "import threading, time; barrier = threading.Barrier(3)")
-
-        def _send(code: str, subshell_id: str | None = None) -> str:
-            msg = kc.session.msg("execute_request", {"code": code})
-            _send_subshell(kc, msg, subshell_id)
-            return msg["header"]["msg_id"]
-
-        msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
-        msg_a = _send("barrier.wait(); time.sleep(0.05); print('a')", subshell_a)
-        msg_b = _send("barrier.wait(); time.sleep(0.05); print('b')", subshell_b)
-
-        msg_ids = {msg_parent, msg_a, msg_b}
-        replies = collect_shell_replies(kc, msg_ids)
-        outputs = collect_iopub_outputs(kc, msg_ids)
-
-        assert all(reply["content"]["status"] == "ok" for reply in replies.values())
-        expected = {msg_parent: "parent", msg_a: "a", msg_b: "b"}
-        for msg_id, text in expected.items():
-            streams = iopub_streams(outputs[msg_id])
-            assert any(text in m["content"].get("text", "") for m in streams)
 
         _delete_subshell(kc, subshell_a)
         _delete_subshell(kc, subshell_b)

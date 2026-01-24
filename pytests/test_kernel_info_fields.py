@@ -6,6 +6,7 @@ def test_kernel_info_fields() -> None:
         msg_id = kc.kernel_info()
         reply = get_shell_reply(kc, msg_id)
         content = reply["content"]
+        assert reply["parent_header"]["msg_id"] == msg_id
         assert content["status"] == "ok"
         assert content["protocol_version"] == "5.3"
         assert content["implementation"] == "ipymini"

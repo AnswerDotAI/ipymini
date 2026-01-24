@@ -1,4 +1,4 @@
-import time, pytest, zmq
+import os, time, pytest, zmq
 from jupyter_client.session import Session
 from .kernel_utils import execute_and_drain, iopub_msgs, load_connection, start_kernel
 
@@ -64,15 +64,19 @@ def test_matplotlib_enable_gui_no_error() -> None:
 
 
 @pytest.mark.slow
-def test_matplotlib_inline_default_backend() -> None:
+def test_matplotlib_inline_default_backend(tmp_path) -> None:
     pytest.importorskip("matplotlib")
-    with start_kernel() as (_, kc):
+    cache_dir = tmp_path / "mplconfig"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if not os.access(cache_dir, os.W_OK): raise AssertionError(f"no writable mpl cache dir: {cache_dir}")
+    extra_env = {"MPLCONFIGDIR": str(cache_dir), "XDG_CACHE_HOME": str(cache_dir)}
+    with start_kernel(extra_env=extra_env) as (_, kc):
         code = (
             "import matplotlib.pyplot as plt\n"
             "plt.plot([1, 2, 3], [1, 4, 9])\n"
             "plt.gcf()\n"
         )
-        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False, timeout=30)
+        _, reply, output_msgs = execute_and_drain(kc, code, store_history=False, timeout=3)
         assert reply["content"]["status"] == "ok"
         displays = iopub_msgs(output_msgs, "display_data")
         assert displays, "expected display_data from matplotlib inline backend"
