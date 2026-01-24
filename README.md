@@ -162,6 +162,8 @@ hatch build
 twine upload dist/*
 ```
 
+After the initial manual release, bump the version before running the release script.
+
 ---
 
 ## Behavior implemented so far
@@ -190,7 +192,8 @@ twine upload dist/*
 
 ## Design notes
 
-- Interrupts use the kernelspec `interrupt_mode = signal`; the kernel restores the default SIGINT handler so IPython turns interrupts into `KeyboardInterrupt`.
+- The parent subshell runs on the main thread; shell/control I/O live on background threads.
+- Interrupts use the kernelspec `interrupt_mode = signal`; SIGINT is handled by the kernel to interrupt active execution without killing the kernel when idle.
 - ``set_next_input`` is injected onto the IPython shell to emit the expected payloads.
 - `stop_on_error` aborts queued *execute* requests only; non-execute requests still return replies.
 - Subshells run in per‑subshell threads with a shared user namespace and thread‑local IO routing.

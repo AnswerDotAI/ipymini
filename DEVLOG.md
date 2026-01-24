@@ -19,6 +19,7 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 - `MiniKernel` owns sockets, threads, and message routing.
 - `SubshellManager` + `Subshell` provide concurrent execute pipelines with shared user namespace.
 - Shell/control handlers are mapped once and dispatched by message type.
+- Shell/control ZMQ sockets run in background threads; the parent subshell executes in the main thread for signal‑driven interrupts.
 - `KernelBridge` integrates IPython execution, display, history, comms, and debugger.
 
 ## Debugger (DAP) behavior
@@ -54,7 +55,7 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 - Debug file name override: `IPYMINI_CELL_NAME`.
 
 ## Key behaviors
-- Interrupts are signal‑based (SIGINT) and restored after shutdown.
+- Interrupts are signal‑based (SIGINT) and handled by the kernel to avoid killing the process when idle.
 - `stop_on_error` aborts queued execute requests but lets non‑execute requests complete.
 - `set_next_input` payloads are de‑duplicated per execute.
 - Debugger uses `debugpy` and avoids sys.monitoring stalls by setting `PYDEVD_USE_SYS_MONITORING=0`.
