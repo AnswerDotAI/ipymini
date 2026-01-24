@@ -1,4 +1,3 @@
-import time
 from .kernel_utils import *
 
 TIMEOUT = 3
@@ -12,14 +11,9 @@ def test_input_request_and_stream_ordering() -> None:
         assert stdin_msg["content"]["prompt"] == "prompt> "
         assert not stdin_msg["content"]["password"]
 
-        stream_msg = None
-        deadline = time.monotonic() + TIMEOUT
-        while time.monotonic() < deadline:
-            msg = kc.get_iopub_msg(timeout=TIMEOUT)
-            if msg["msg_type"] == "stream":
-                stream_msg = msg
-                break
-        assert stream_msg is not None, "expected stream before input reply"
+        stream_msg = wait_for_msg(kc.get_iopub_msg,
+            lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream",
+            timeout=TIMEOUT, err="expected stream before input reply")
         assert stream_msg["content"]["text"] == "before\n"
 
         text = "some text"
