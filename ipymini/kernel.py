@@ -169,8 +169,7 @@ class StdinRouterThread(threading.Thread):
                 if sock in events and events[sock] & zmq.POLLIN:
                     try: idents, msg = self.session.recv(sock, mode=0)
                     except ValueError as err:
-                        if "Duplicate Signature" not in str(err):
-                            _LOG.warning("Error decoding stdin message: %s", err)
+                        if "Duplicate Signature" not in str(err): _LOG.warning("Error decoding stdin message: %s", err)
                         continue
                     if msg is None: continue
                     if msg.get("msg_type") != "input_reply": continue
