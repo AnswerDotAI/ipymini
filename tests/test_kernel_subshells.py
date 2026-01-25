@@ -5,7 +5,7 @@ from .kernel_utils import *
 TIMEOUT = 10
 
 
-def _create_subshell(kc) -> str:
+def _create_subshell(kc)->str:
     reply = kc.ctl.create_subshell()
     assert reply["content"]["status"] == "ok"
     subshell_id = reply["content"].get("subshell_id")
@@ -44,7 +44,7 @@ def _history_tail(kc, subshell_id:str|None, n:int = 1):
     return kc.shell_reply(msg_id)
 
 
-def _last_history_input(reply: dict) -> str|None:
+def _last_history_input(reply: dict)->str|None:
     hist = reply.get("content", {}).get("history") or []
     if not hist: return None
     item = hist[-1]
@@ -136,7 +136,7 @@ def test_subshell_concurrency_and_control():
 
         _execute(kc, "import threading, time; barrier = threading.Barrier(3)")
 
-        def _send(code:str, subshell_id:str|None=None) -> str: return cmd.execute_request(code=code, subshell_id=subshell_id)
+        def _send(code:str, subshell_id:str|None=None)->str: return cmd.execute_request(code=code, subshell_id=subshell_id)
 
         msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
         msg_a = _send("barrier.wait(); time.sleep(0.05); print('a')", subshell_a)

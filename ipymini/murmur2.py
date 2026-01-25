@@ -1,4 +1,4 @@
-def murmur2_x86(data:str, seed:int) -> int:
+def murmur2_x86(data:str, seed:int)->int:
     "Return Murmur2 x86 hash of UTF-8 `data` with `seed`."
     m = 0x5BD1E995
     data_bytes = data.encode("utf-8")

@@ -13,7 +13,7 @@ class _CommContext:
         "Store per-thread comm sender and parent."
         self._local = threading.local()
 
-    def get(self) -> tuple[IopubSender|None, dict|None]:
+    def get(self)->tuple[IopubSender|None, dict|None]:
         "Return the active comm sender and parent header."
         return getattr(self._local, "sender", None), getattr(self._local, "parent", None)
 
@@ -64,6 +64,6 @@ def _get_comm_manager():
 comm.create_comm = _create_comm
 comm.get_comm_manager = _get_comm_manager
 
-def get_comm_manager() -> base_comm.CommManager: return _get_comm_manager()
+def get_comm_manager()->base_comm.CommManager: return _get_comm_manager()
 
 __all__ = ["IpyminiComm", "comm_context", "get_comm_manager"]

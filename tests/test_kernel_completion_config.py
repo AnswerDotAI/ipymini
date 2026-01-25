@@ -6,7 +6,7 @@ from .kernel_utils import *
 _EXPERIMENTAL_AVAILABLE = True
 
 
-def _execute_plain(kc, code:str) -> str:
+def _execute_plain(kc, code:str)->str:
     msg_id = kc.execute(code, store_history=False)
     reply = get_shell_reply(kc, msg_id)
     assert reply["content"]["status"] == "ok"

@@ -26,17 +26,17 @@ class ConnectionInfo:
     signature_scheme:str
 
     @classmethod
-    def from_file(cls, path:str) -> "ConnectionInfo":
+    def from_file(cls, path:str)->"ConnectionInfo":
         "Load connection info from JSON connection file at `path`."
         with open(path, encoding="utf-8") as f: data = json.load(f)
         return cls(transport=data["transport"], ip=data["ip"], shell_port=int(data["shell_port"]),
             iopub_port=int(data["iopub_port"]), stdin_port=int(data["stdin_port"]), control_port=int(data["control_port"]),
             hb_port=int(data["hb_port"]), key=data.get("key", ""), signature_scheme=data.get("signature_scheme", "hmac-sha256"))
 
-    def addr(self, port:int) -> str: return f"{self.transport}://{self.ip}:{port}"
+    def addr(self, port:int)->str: return f"{self.transport}://{self.ip}:{port}"
 
 
-def _raise_async_exception(thread_id:int, exc_type: type[BaseException]) -> bool:
+def _raise_async_exception(thread_id:int, exc_type: type[BaseException])->bool:
     "Inject `exc_type` into a thread by id; returns success."
     try: import ctypes
     except ImportError: return False
@@ -133,7 +133,7 @@ class StdinRouterThread(threading.Thread):
         self._socket = None
 
     def request_input( self, prompt:str, password: bool, parent: dict|None,
-        ident: list[bytes]|None, timeout:float|None=None,) -> str:
+        ident: list[bytes]|None, timeout:float|None=None,)->str:
         "Send input_request and wait for input_reply; honors `timeout`."
         response_queue = queue.Queue()
         self._requests.put((prompt, password, parent, ident, response_queue))
@@ -266,7 +266,7 @@ class Subshell:
 
     def submit(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket): self._queue.put((msg, idents, sock))
 
-    def interrupt(self) -> bool:
+    def interrupt(self)->bool:
         "Raise KeyboardInterrupt in subshell thread if executing."
         if self._thread is None: return False
         if not self._executing.is_set(): return False
@@ -274,7 +274,7 @@ class Subshell:
         if thread_id is None: return False
         return _raise_async_exception(thread_id, KeyboardInterrupt)
 
-    def request_input(self, prompt:str, password: bool) -> str:
+    def request_input(self, prompt:str, password: bool)->str:
         "Forward input_request through stdin router for this subshell."
         try:
             if os.sys.stdout is not None: os.sys.stdout.flush()
@@ -493,12 +493,12 @@ class SubshellManager:
 
     def start(self): return
 
-    def get(self, subshell_id:str|None) -> Subshell|None:
+    def get(self, subshell_id:str|None)->Subshell|None:
         "Return subshell by id, or the parent when None."
         if subshell_id is None: return self.parent
         with self._lock: return self._subs.get(subshell_id)
 
-    def create(self) -> str:
+    def create(self)->str:
         "Create and start a new subshell; return its id."
         subshell_id = str(uuid.uuid4())
         subshell = Subshell(self.kernel, subshell_id, self._user_ns)
@@ -506,7 +506,7 @@ class SubshellManager:
         subshell.start()
         return subshell_id
 
-    def list(self) -> list[str]:
+    def list(self)->list[str]:
         with self._lock: return list(self._subs.keys())
 
     def delete(self, subshell_id:str):
@@ -618,7 +618,7 @@ class MiniKernel:
         "Blocking control loop in a background thread."
         self.router_loop(self.connection.control_port, "control_socket", self.handle_control_msg, log_label="control")
 
-    def bind_router(self, port:int) -> zmq.Socket:
+    def bind_router(self, port:int)->zmq.Socket:
         "Bind ROUTER socket to `port`."
         sock = self.context.socket(zmq.ROUTER)
         if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
@@ -721,7 +721,7 @@ class MiniKernel:
         self.iopub.debug_event(parent, content=event)
 
     @property
-    def iopub(self) -> IOPubCommand:
+    def iopub(self)->IOPubCommand:
         "Return cached IOPubCommand wrapper."
         if (proxy := self._iopub_cmd) is None: self._iopub_cmd = proxy = IOPubCommand(self)
         return proxy
@@ -769,7 +769,7 @@ class MiniKernel:
             return {}
         self.control_ok(sock, msg, idents, "delete_subshell_reply", _do)
 
-    def kernel_info_content(self) -> dict:
+    def kernel_info_content(self)->dict:
         "Build kernel_info_reply content."
         try: impl_version = version("ipymini")
         except PackageNotFoundError: impl_version = "0.0.0+local"
@@ -779,7 +779,7 @@ class MiniKernel:
                 file_extension=".py", pygments_lexer="python", codemirror_mode={"name": "ipython", "version": 3},
                 nbconvert_exporter="python"), banner="ipymini", help_links=[], supported_features=supported_features)
 
-    def python_version(self) -> str: return ".".join(str(x) for x in os.sys.version_info[:3])
+    def python_version(self)->str: return ".".join(str(x) for x in os.sys.version_info[:3])
 
     def handle_debug(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Handle debug_request via KernelBridge and emit events."

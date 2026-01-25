@@ -4,7 +4,7 @@ from jupyter_client import AsyncKernelClient, KernelManager
 from .kernel_utils import *
 
 
-async def _get_pubs(kc: AsyncKernelClient, timeout:float = 0.2) -> list[dict]:
+async def _get_pubs(kc: AsyncKernelClient, timeout:float = 0.2)->list[dict]:
     res = []
     try:
         while msg := await kc.get_iopub_msg(timeout=timeout): res.append(msg)

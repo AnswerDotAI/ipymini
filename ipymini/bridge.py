@@ -645,7 +645,7 @@ def _maybe_json(value):
     return value
 
 
-def _env_flag(name:str) -> bool|None:
+def _env_flag(name:str)->bool|None:
     "Parse env var `name` to bool; return None if unset/invalid."
     raw = os.environ.get(name)
     if raw is None: return None
