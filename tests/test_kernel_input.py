@@ -1,3 +1,4 @@
+from queue import Empty
 from .kernel_utils import *
 
 TIMEOUT = 3
@@ -33,7 +34,7 @@ def test_input_request_disallowed() -> None:
         try:
             _ = kc.get_stdin_msg(timeout=1)
             assert False, "expected no stdin message"
-        except Exception: pass
+        except Empty: pass
 
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "error"

@@ -19,7 +19,7 @@ def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dic
     for _ in iter_timeout(timeout, default=timeout):
         if not sock.poll(50): continue
         try: _, msg = session.recv(sock, mode=0)
-        except Exception: return None
+        except (ValueError, zmq.ZMQError): return None
         if msg and msg.get("msg_type") == "kernel_info_reply": return msg
     return None
 

@@ -1,12 +1,9 @@
 import pytest
+from IPython.core.completer import provisionalcompleter as _provisionalcompleter
+from IPython.core.completer import rectify_completions as _rectify_completions
 from .kernel_utils import *
 
-try:
-    from IPython.core.completer import provisionalcompleter as _provisionalcompleter
-    from IPython.core.completer import rectify_completions as _rectify_completions
-
-    _EXPERIMENTAL_AVAILABLE = True
-except Exception: _EXPERIMENTAL_AVAILABLE = False
+_EXPERIMENTAL_AVAILABLE = True
 
 
 def _execute_plain(kc, code: str) -> str:

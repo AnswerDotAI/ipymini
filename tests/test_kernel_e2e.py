@@ -17,9 +17,7 @@ class E2EKernel:
         self._debug_config_done = False
 
     def reset_client(self) -> None:
-        if self.kc is not None:
-            try: self.kc.stop_channels()
-            except Exception: pass
+        if self.kc is not None: self.kc.stop_channels()
         self.kc = self.km.client()
         self.kc.start_channels()
         self.kc.wait_for_ready(timeout=TIMEOUT)

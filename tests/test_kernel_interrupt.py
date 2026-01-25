@@ -40,8 +40,7 @@ def test_interrupt_request_breaks_sleep() -> None:
         msg_id = kc.execute("import time; time.sleep(5); print('finished')")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
-        try: reply = kc.shell_reply(msg_id, timeout=2)
-        except Exception as exc: raise AssertionError("expected execute_reply after interrupt_request") from exc
+        reply = kc.shell_reply(msg_id, timeout=2)
         assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
         outputs = kc.iopub_drain(msg_id)
         errors = iopub_msgs(outputs, "error")
