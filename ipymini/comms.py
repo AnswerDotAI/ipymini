@@ -44,7 +44,7 @@ class IpyminiComm(base_comm.BaseComm):
         if data is None: data = {}
         if metadata is None: metadata = {}
         content = dict(data=data, comm_id=self.comm_id, **keys)
-        sender(msg_type, content, parent or {}, metadata, self.topic, buffers)
+        sender(msg_type, parent or {}, content=content, metadata=metadata, ident=self.topic, buffers=buffers)
 
 
 _COMM_LOCK = threading.Lock()
