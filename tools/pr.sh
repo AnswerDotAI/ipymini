@@ -1,8 +1,13 @@
 #!/bin/bash
 set -e
 
-label=${1:-enhancement}  # enhancement or bug
-msg=${2:-"Update"}
+if [ -z "$1" ]; then
+  echo "Usage: tools/pr.sh \"Message\" [label] [body|body-file]"
+  exit 1
+fi
+
+msg=$1
+label=${2:-enhancement}  # enhancement or bug
 body=${3:-""}
 
 branch="pr-$(date +%s)"
@@ -24,4 +29,3 @@ git checkout main
 git pull --ff-only
 
 echo "PR created with label '$label' and merged; main updated"
-
