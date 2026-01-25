@@ -139,6 +139,12 @@ All tests must pass before changes are considered complete:
 pytest -q
 ```
 
+To run the full suite (including slow tests), use:
+
+```
+tools/run_tests.sh
+```
+
 Note: e2e tests launch the kernel via `jupyter_client.KernelManager` in a separate process; make sure the kernelspec is discoverable (see `JUPYTER_PATH` above).
 
 Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PYDEVD_USE_SYS_MONITORING=0` to avoid sys.monitoring stalls (see `DEVLOG.md`).

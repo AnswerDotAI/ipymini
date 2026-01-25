@@ -50,6 +50,36 @@ def test_interrupt_request_breaks_sleep():
         )
 
 
+def test_interrupt_request_breaks_asyncio_sleep():
+    with start_kernel() as (_, kc):
+        msg_id = kc.execute("import asyncio; await asyncio.sleep(5)")
+        wait_for_status(kc, "busy")
+        kc.interrupt_request()
+        reply = kc.shell_reply(msg_id, timeout=2)
+        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
+        outputs = kc.iopub_drain(msg_id)
+        errors = iopub_msgs(outputs, "error")
+        assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
+        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
+            f"interrupt iopub: {errors[-1].get('content')}"
+        )
+
+
+def test_interrupt_request_breaks_busy_loop():
+    with start_kernel() as (_, kc):
+        msg_id = kc.execute("while True: pass")
+        wait_for_status(kc, "busy")
+        kc.interrupt_request()
+        reply = kc.shell_reply(msg_id, timeout=2)
+        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
+        outputs = kc.iopub_drain(msg_id)
+        errors = iopub_msgs(outputs, "error")
+        assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
+        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
+            f"interrupt iopub: {errors[-1].get('content')}"
+        )
+
+
 def test_interrupt_request_gateway_pattern():
     async def _run():
         env = build_env()

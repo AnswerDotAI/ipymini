@@ -77,6 +77,17 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 - Added gateway‑style client tests to validate eval/exec patterns used by Solveit (`tests/test_gateway_client.py`).
 - Cleared the default event loop after subshell shutdown to avoid atexit cleanup warnings (`tests/test_loop_cleanup.py`).
 
+## Recent changes (audit follow‑up)
+- Router threads now drain outbound queues after inbound work to avoid reply starvation under heavy inbound traffic.
+- Async ROUTER sockets reuse the kernel ZMQ context via `zmq.asyncio.Context.shadow`, avoiding multiple contexts.
+- Router enqueue/stop guards handle loop‑closed races without noisy tracebacks; Windows selector warning added for zmq.asyncio.
+- Subshell submit no longer blocks router threads while waiting for loop readiness.
+- Added required‑field validation for shell requests; missing fields yield `MissingField` error replies.
+- Added iopub ordering test to ensure `execute_input` precedes stream/display output.
+- Added interrupt tests for `await asyncio.sleep(...)` and tight CPU loops.
+- Introduced `KernelHarness` test helper + fixture, and migrated a few tests to it.
+- IPython startup scripts in `profile_default/startup/` are now exercised in integration tests.
+
 ## Notes for contributors
 - Don’t touch reference implementations in `ipykernel/`, `xeus/`, etc.
 - Keep tests concise; prefer helpers and one‑liners for single‑statement bodies.

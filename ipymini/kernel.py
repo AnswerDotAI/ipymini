@@ -2,6 +2,7 @@ import asyncio, contextvars, json, logging, os, queue, signal, sys, threading, t
 from contextlib import contextmanager
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from fastcore.basics import store_attr
@@ -35,6 +36,14 @@ class ConnectionInfo:
             hb_port=int(data["hb_port"]), key=data.get("key", ""), signature_scheme=data.get("signature_scheme", "hmac-sha256"))
 
     def addr(self, port:int)->str: return f"{self.transport}://{self.ip}:{port}"
+
+
+class ExecState(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
 
 
 def _raise_async_exception(thread_id:int, exc_type: type[BaseException])->bool:
@@ -250,6 +259,7 @@ class AsyncRouterThread(threading.Thread):
         self._loop = None
         self._queue = None
         self._ready = threading.Event()
+        self._socket_ready = threading.Event()
         self._stop = threading.Event()
         self._pending = queue.Queue()
 
@@ -257,15 +267,19 @@ class AsyncRouterThread(threading.Thread):
         if self._queue is None or self._loop is None or not self._ready.is_set():
             self._pending.put(item)
             return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        try: self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        except RuntimeError: _LOG.debug("Router loop closed; dropping %s item", self.log_label)
 
     def stop(self):
         self._stop.set()
         if self._loop is None or self._queue is None: return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+        try: self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+        except RuntimeError: pass
 
     def run(self):
         loop = asyncio.new_event_loop()
+        if sys.platform.startswith("win") and not isinstance(loop, asyncio.SelectorEventLoop):
+            _LOG.warning("Windows event loop may not support zmq.asyncio; consider SelectorEventLoop policy.")
         asyncio.set_event_loop(loop)
         self._loop = loop
         self._queue = asyncio.Queue()
@@ -285,8 +299,14 @@ class AsyncRouterThread(threading.Thread):
     async def _router_loop(self):
         sock = self.kernel.bind_router_async(self.port)
         setattr(self.kernel, self.socket_attr, sock)
+        self._socket_ready.set()
         poller = zmq.asyncio.Poller()
         poller.register(sock, zmq.POLLIN)
+        def _drain_send_queue():
+            while True:
+                try: item = self._queue.get_nowait()
+                except asyncio.QueueEmpty: break
+                if item is not None: self.kernel._send_router_item(sock, item)
         try:
             while not self.kernel._shutdown_event.is_set() and not self._stop.is_set():
                 poll_task = asyncio.ensure_future(poller.poll())
@@ -295,10 +315,7 @@ class AsyncRouterThread(threading.Thread):
                 if send_task in done:
                     item = send_task.result()
                     if item is not None: self.kernel._send_router_item(sock, item)
-                    while True:
-                        try: item = self._queue.get_nowait()
-                        except asyncio.QueueEmpty: break
-                        if item is not None: self.kernel._send_router_item(sock, item)
+                    _drain_send_queue()
                 if poll_task in done:
                     events = dict(poll_task.result())
                     if sock in events and events[sock] & zmq.POLLIN:
@@ -306,6 +323,7 @@ class AsyncRouterThread(threading.Thread):
                         if msg is not None:
                             try: self.handler(msg, idents)
                             except Exception: _LOG.warning("Error in %s: %s", self.log_label, msg.get("msg_type"), exc_info=True)
+                        _drain_send_queue()
                 for task in pending: task.cancel()
                 if pending: await asyncio.gather(*pending, return_exceptions=True)
         finally:
@@ -336,6 +354,11 @@ class Subshell:
         self._parent_header_var = contextvars.ContextVar("parent_header", default=None)
         self._parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self._executing = threading.Event()
+        self._exec_state = ExecState.IDLE
+        self._last_exec_state = None
+        self._state_lock = threading.Lock()
+        self._shell_required = dict(execute_request=("code",), complete_request=("code", "cursor_pos"),
+            inspect_request=("code", "cursor_pos"), history_request=("hist_access_type",), is_complete_request=("code",))
         self._shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
             complete_request=self._handle_complete, inspect_request=self._handle_inspect, history_request=self._handle_history,
             is_complete_request=self._handle_is_complete, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
@@ -361,16 +384,25 @@ class Subshell:
         if self._thread is not None: self._thread.join(timeout=timeout)
 
     def submit(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
-        self._loop_ready.wait()
-        if self._loop is None: return
         with self._pending_lock: self._pending.append((msg, idents, sock))
         if self._pending_event is None: return
-        self._loop.call_soon_threadsafe(self._pending_event.set)
+        if self._loop is not None and self._loop.is_running(): self._loop.call_soon_threadsafe(self._pending_event.set)
+        else: self._pending_event.set()
+
+    def _set_exec_state(self, state: ExecState):
+        with self._state_lock: self._exec_state = state
+
+    def _set_last_exec_state(self, state: ExecState):
+        with self._state_lock: self._last_exec_state = state
+
+    def _get_exec_state(self)->ExecState:
+        with self._state_lock: return self._exec_state
 
     def interrupt(self)->bool:
         "Raise KeyboardInterrupt in subshell thread if executing."
         if self._thread is None: return False
-        if not self._executing.is_set(): return False
+        if self._get_exec_state() != ExecState.RUNNING: return False
+        self._set_exec_state(ExecState.CANCELLING)
         if self.bridge.cancel_exec_task(self._loop): return True
         thread_id = self._thread.ident
         if thread_id is None: return False
@@ -437,6 +469,7 @@ class Subshell:
         self._pending_event = asyncio.Event()
         self._async_lock = asyncio.Lock()
         self._loop_ready.set()
+        if self._pending: self._pending_event.set()
         loop.create_task(self._consume_queue())
 
     def _shutdown_loop(self):
@@ -478,6 +511,10 @@ class Subshell:
         token_header = self._parent_header_var.set(msg)
         token_idents = self._parent_idents_var.set(idents)
         try:
+            missing = self._missing_fields(msg_type, msg.get("content", {}))
+            if missing:
+                self._send_missing_fields_reply(msg_type, missing, msg, idents, sock)
+                return
             if msg_type == "execute_request" and self._aborting:
                 self._send_abort_reply(sock, msg, idents)
                 return
@@ -489,9 +526,27 @@ class Subshell:
             self._parent_header_var.reset(token_header)
             self._parent_idents_var.reset(token_idents)
 
+    def _missing_fields(self, msg_type:str, content: dict)->list[str]:
+        required = self._shell_required.get(msg_type)
+        if not required: return []
+        return [key for key in required if key not in content]
+
+    def _send_missing_fields_reply(self, msg_type:str, missing: list[str], msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
+        reply_type = msg_type.replace("_request", "_reply")
+        evalue = f"missing required fields: {', '.join(missing)}"
+        reply = dict(status="error", ename="MissingField", evalue=evalue, traceback=[])
+        if msg_type == "execute_request":
+            reply |= dict(execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
+        elif msg_type == "complete_request": reply |= dict(matches=[], cursor_start=0, cursor_end=0, metadata={})
+        elif msg_type == "inspect_request": reply |= dict(found=False, data={}, metadata={})
+        elif msg_type == "history_request": reply |= dict(history=[])
+        elif msg_type == "is_complete_request": reply |= dict(indent="")
+        self.send_reply(sock, reply_type, reply, msg, idents)
+
     def _send_abort_reply(self, sock: zmq.Socket, msg: dict, idents: list[bytes]|None):
         "Send an abort reply for `msg`."
         self.kernel.send_status("busy", msg)
+        self._set_last_exec_state(ExecState.ABORTED)
         reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
         self.send_reply(sock, "execute_reply", reply_content, msg, idents)
         self.kernel.send_status("idle", msg)
@@ -536,6 +591,7 @@ class Subshell:
                 continue
             msg_type = msg.get("header", {}).get("msg_type")
             if msg_type == "execute_request":
+                self._set_last_exec_state(ExecState.ABORTED)
                 reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count,
                     user_expressions={}, payload=[])
                 self.send_reply(sock, "execute_reply", reply_content, msg, idents)
@@ -563,10 +619,12 @@ class Subshell:
         user_expressions = content.get("user_expressions", {})
         allow_stdin = bool(content.get("allow_stdin", False))
 
+        self._set_exec_state(ExecState.RUNNING)
         self._executing.set()
         sent_reply = False
         sent_error = False
         exec_count = None
+        terminal_state = ExecState.COMPLETED
 
         self.kernel.send_status("busy", msg)
         iopub = self.kernel.iopub
@@ -587,6 +645,8 @@ class Subshell:
             exec_count = result.get("execution_count")
 
             error = result.get("error")
+            if error and error.get("ename") == "CancelledError" and self._get_exec_state() == ExecState.CANCELLING:
+                error = dict(error) | dict(ename="KeyboardInterrupt", evalue="")
             if not silent:
                 for stream in result.get("streams", []): iopub.stream(msg, name=stream["name"], text=stream["text"])
                 for event in result.get("display", []):
@@ -603,6 +663,7 @@ class Subshell:
                         else: iopub.display_data(msg, payload, buffers=buffers)
 
             if error:
+                if error.get("ename") == "KeyboardInterrupt": terminal_state = ExecState.ABORTED
                 tb = error.get("traceback", [])
                 iopub.error(msg, ename=error["ename"], evalue=error["evalue"], traceback=tb)
                 sent_error = True
@@ -622,6 +683,7 @@ class Subshell:
                 self._abort_pending_executes(append_abort_clear=append_abort_clear)
                 self._start_aborting()
         except KeyboardInterrupt as exc:
+            terminal_state = ExecState.ABORTED
             error = dict(ename=type(exc).__name__, evalue=str(exc),
                 traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
             if not sent_error: iopub.error(msg, content=error)
@@ -636,7 +698,9 @@ class Subshell:
                     self._start_aborting()
         finally:
             self.kernel.send_status("idle", msg)
+            self._set_last_exec_state(terminal_state)
             self._executing.clear()
+            self._set_exec_state(ExecState.IDLE)
 
     def _handle_complete(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Reply to complete_request."
@@ -771,6 +835,7 @@ class MiniKernel:
         key = self.connection.key.encode()
         self.session = Session(key=key, signature_scheme=self.connection.signature_scheme)
         self.context = zmq.Context.instance()
+        self.async_context = zmq.asyncio.Context.shadow(self.context) if hasattr(zmq.asyncio.Context, "shadow") else zmq.asyncio.Context.instance()
         self.shell_socket = None
         self.control_socket = None
         self.iopub_thread = IOPubThread(self.context, self.connection.addr(self.connection.iopub_port), self.session)
@@ -832,8 +897,7 @@ class MiniKernel:
 
     def bind_router_async(self, port:int)->zmq.asyncio.Socket:
         "Bind async ROUTER socket to `port`."
-        ctx = zmq.asyncio.Context.instance()
-        sock = ctx.socket(zmq.ROUTER)
+        sock = self.async_context.socket(zmq.ROUTER)
         if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
         sock.linger = 0
         sock.bind(self.connection.addr(port))
@@ -866,7 +930,9 @@ class MiniKernel:
         "Handle SIGINT by interrupting subshells and input waits."
         self.subshells.interrupt_all()
         self.stdin_router.interrupt_pending()
-        if self.subshells.parent._executing.is_set(): raise KeyboardInterrupt
+        if self.subshells.parent._executing.is_set():
+            self.subshells.parent._set_exec_state(ExecState.CANCELLING)
+            raise KeyboardInterrupt
 
     def handle_control_msg(self, msg: dict, idents: list[bytes]|None):
         "Handle control channel request message."

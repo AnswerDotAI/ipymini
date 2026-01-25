@@ -49,6 +49,18 @@ def test_display_image_png():
         assert "image/png" in data
 
 
+def test_execute_input_before_output():
+    with start_kernel() as (_, kc):
+        code = "print('hi')\nfrom IPython.display import display\n\ndisplay({'x': 1})\n"
+        _, reply, output_msgs = kc.exec_drain(code, store_history=False)
+        assert reply["content"]["status"] == "ok"
+        msg_types = [msg.get("msg_type") for msg in output_msgs]
+        assert "execute_input" in msg_types, f"missing execute_input: {msg_types}"
+        idx_input = msg_types.index("execute_input")
+        if "stream" in msg_types: assert idx_input < msg_types.index("stream")
+        if "display_data" in msg_types: assert idx_input < msg_types.index("display_data")
+
+
 def test_matplotlib_enable_gui_no_error():
     pytest.importorskip("matplotlib")
     with start_kernel() as (_, kc):

@@ -11,10 +11,10 @@ DEBUG_INIT_ARGS = dict( clientID="test-client", clientName="testClient", adapter
     columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 ROOT = Path(__file__).resolve().parents[1]
 
-__all__ = [ "TIMEOUT", "DEBUG_INIT_ARGS", "ROOT", "build_env", "load_connection", "ensure_separate_process", "start_kernel", "temp_env",
-    "wait_for_msg", "iter_timeout", "parent_id", "debug_request", "debug_dump_cell", "debug_set_breakpoints", "debug_info",
-    "debug_configuration_done", "debug_continue", "wait_for_debug_event", "wait_for_stop", "get_shell_reply", "collect_shell_replies",
-    "collect_iopub_outputs", "wait_for_status", "iopub_msgs", "iopub_streams" ]
+__all__ = ("TIMEOUT DEBUG_INIT_ARGS ROOT KernelHarness build_env load_connection ensure_separate_process start_kernel temp_env "
+    "wait_for_msg iter_timeout parent_id debug_request debug_dump_cell debug_set_breakpoints debug_info debug_configuration_done debug_continue "
+    "wait_for_debug_event wait_for_stop get_shell_reply collect_shell_replies collect_iopub_outputs wait_for_status iopub_msgs iopub_streams"
+    ).split()
 
 
 def _ensure_jupyter_path()->str:
@@ -96,6 +96,46 @@ def start_kernel(extra_env: dict|None=None, **kwargs):
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=True)
+
+
+class KernelHarness:
+    def __init__(self, extra_env: dict|None=None, **kwargs):
+        "Minimal kernel harness for protocol-style tests."
+        self.extra_env = extra_env
+        self.kwargs = kwargs
+        self._ctx = None
+        self.km = None
+        self.kc = None
+
+    def __enter__(self):
+        self._ctx = start_kernel(extra_env=self.extra_env, **self.kwargs)
+        self.km, self.kc = self._ctx.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._ctx is not None: return self._ctx.__exit__(exc_type, exc, tb)
+
+    def send_wait(self, msg_type:str, timeout:float = TIMEOUT, content: dict|None=None, **kwargs):
+        "Send shell request and return (msg_id, reply)."
+        msg_id = self.kc.shell_send(msg_type, content, **kwargs)
+        reply = self.kc.shell_reply(msg_id, timeout=timeout)
+        return msg_id, reply
+
+    def control_send_wait(self, msg_type:str, timeout:float = TIMEOUT, content: dict|None=None):
+        "Send control request and return (msg_id, reply)."
+        if content is None: content = {}
+        msg = self.kc.session.msg(msg_type, content)
+        self.kc.control_channel.send(msg)
+        reply = self.kc.control_reply(msg["header"]["msg_id"], timeout=timeout)
+        return msg["header"]["msg_id"], reply
+
+    def jmsgs(self, msg_id:str, timeout:float = TIMEOUT)->list[dict]:
+        "Return iopub messages for `msg_id`."
+        return self.kc.iopub_drain(msg_id, timeout=timeout)
+
+    def exec_drain(self, code:str, timeout:float|None=None, **kwargs):
+        "Execute `code` and return (msg_id, reply, outputs)."
+        return self.kc.exec_drain(code, timeout=timeout, **kwargs)
 
 
 @patch
