@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_execute_streams_smoke() -> None:
+def test_execute_streams_smoke():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print('hello, world')", store_history=False)
         reply = get_shell_reply(kc, msg_id)

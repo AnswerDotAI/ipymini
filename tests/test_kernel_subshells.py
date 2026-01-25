@@ -19,7 +19,7 @@ def _list_subshells(kc):
     return reply["content"].get("subshell_id", [])
 
 
-def _delete_subshell(kc, subshell_id: str) -> None:
+def _delete_subshell(kc, subshell_id: str):
     reply = kc.ctl.delete_subshell(subshell_id=subshell_id)
     assert reply["content"]["status"] == "ok"
 
@@ -52,7 +52,7 @@ def _last_history_input(reply: dict) -> str|None:
     return None
 
 
-def test_subshell_basics() -> None:
+def test_subshell_basics():
     with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": "0"}) as (_, kc):
         msg_id = kc.kernel_info()
         reply = kc.shell_reply(msg_id)
@@ -94,7 +94,7 @@ def test_subshell_basics() -> None:
         assert _list_subshells(kc) == []
 
 
-def test_subshell_concurrency_and_control() -> None:
+def test_subshell_concurrency_and_control():
     with start_kernel() as (_, kc):
         cmd = kc.cmd
         subshell_a = _create_subshell(kc)
@@ -183,7 +183,7 @@ def test_subshell_concurrency_and_control() -> None:
         _delete_subshell(kc, subshell_b)
 
 
-def test_subshell_reads_shared_ns_during_parent_sleep() -> None:
+def test_subshell_reads_shared_ns_during_parent_sleep():
     with start_kernel() as (_, kc):
         subshell_id = _create_subshell(kc)
         parent_msg_id = kc.execute("x = 123; import time; time.sleep(2); print('done')")
@@ -211,7 +211,7 @@ def test_subshell_reads_shared_ns_during_parent_sleep() -> None:
         _delete_subshell(kc, subshell_id)
 
 
-def test_subshell_interrupt_request_breaks_sleep() -> None:
+def test_subshell_interrupt_request_breaks_sleep():
     with start_kernel() as (_, kc):
         subshell_id = _create_subshell(kc)
         msg_id = _send_execute(kc, "import time; time.sleep(2); print('done')", subshell_id=subshell_id)
@@ -228,7 +228,7 @@ def test_subshell_interrupt_request_breaks_sleep() -> None:
         _delete_subshell(kc, subshell_id)
 
 
-def test_subshell_stop_on_error_isolated() -> None:
+def test_subshell_stop_on_error_isolated():
     with start_kernel() as (_, kc):
         for are_subshells in [(False, True), (True, False), (True, True)]:
             subshell_ids = [_create_subshell(kc) if is_subshell else None for is_subshell in are_subshells]
@@ -271,7 +271,7 @@ def test_subshell_stop_on_error_isolated() -> None:
                 if subshell_id: _delete_subshell(kc, subshell_id)
 
 
-def test_subshell_fuzzes() -> None:
+def test_subshell_fuzzes():
     with start_kernel() as (km, kc):
         cmd = kc.cmd
         code = ("import time, warnings; from IPython.core import completer; "

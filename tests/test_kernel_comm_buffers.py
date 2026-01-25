@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_comm_buffers_from_kernel() -> None:
+def test_comm_buffers_from_kernel():
     with start_kernel() as (_, kc):
         code = (
             "from comm import create_comm\n"
@@ -20,7 +20,7 @@ def test_comm_buffers_from_kernel() -> None:
         assert open_buffers and bytes(open_buffers[0]) == b"openbuf"
 
 
-def test_comm_buffers_to_kernel() -> None:
+def test_comm_buffers_to_kernel():
     with start_kernel() as (_, kc):
         setup = (
             "from comm import get_comm_manager\n"

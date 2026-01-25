@@ -21,14 +21,14 @@ def get_scope_vars(dap, scopes, name):
     return dap.variables(variablesReference=ref)["body"]["variables"]
 
 
-def ensure_configuration_done(kernel) -> None:
+def ensure_configuration_done(kernel):
     if getattr(kernel, "_debug_config_done", False): return
     reply = debug_configuration_done(kernel)
     assert reply.get("success"), f"configurationDone failed: {reply}"
     setattr(kernel, "_debug_config_done", True)
 
 
-def continue_debugger(kernel, stopped: dict) -> None:
+def continue_debugger(kernel, stopped: dict):
     dap = kernel.dap
     cont = getattr(dap, "continue")
     body = stopped.get("content", {}).get("body", {})

@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_connect_request() -> None:
+def test_connect_request():
     with start_kernel() as (km, kc):
         msg_id = kc.cmd.connect_request()
         reply = kc.shell_reply(msg_id)

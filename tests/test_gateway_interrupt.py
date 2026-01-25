@@ -13,7 +13,7 @@ async def _wait_for_status(kc, state: str, timeout: float) -> dict:
             if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == state: return msg
 
 
-async def _router(kc, waiters: dict, stop: asyncio.Event) -> None:
+async def _router(kc, waiters: dict, stop: asyncio.Event):
     while not stop.is_set():
         try: msg = await kc.get_shell_msg(timeout=0.1)
         except Empty: continue
@@ -31,8 +31,8 @@ async def _send_wait(kc, waiters: dict, code: str, timeout: float) -> tuple[str,
     finally: waiters.pop(msg_id, None)
 
 
-def test_send_wait_after_interrupt() -> None:
-    async def _run() -> None:
+def test_send_wait_after_interrupt():
+    async def _run():
         timeout = 2
         env = build_env()
         os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]

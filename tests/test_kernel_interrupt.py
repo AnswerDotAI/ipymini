@@ -12,7 +12,7 @@ async def _get_pubs(kc: AsyncKernelClient, timeout: float = 0.2) -> list[dict]:
     return res
 
 
-def test_interrupt_request() -> None:
+def test_interrupt_request():
     with start_kernel() as (km, kc):
         for use_control_channel in [False, True]:
             msg_id = kc.execute("import time; time.sleep(1)")
@@ -35,7 +35,7 @@ def test_interrupt_request() -> None:
             )
 
 
-def test_interrupt_request_breaks_sleep() -> None:
+def test_interrupt_request_breaks_sleep():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("import time; time.sleep(5); print('finished')")
         wait_for_status(kc, "busy")
@@ -50,8 +50,8 @@ def test_interrupt_request_breaks_sleep() -> None:
         )
 
 
-def test_interrupt_request_gateway_pattern() -> None:
-    async def _run() -> None:
+def test_interrupt_request_gateway_pattern():
+    async def _run():
         env = build_env()
         os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
         km = KernelManager(kernel_name="ipymini")

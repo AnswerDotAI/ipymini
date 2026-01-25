@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_execute_stream() -> None:
+def test_execute_stream():
     with start_kernel() as (_, kc):
         _, _, outputs = kc.exec_ok("print('hello')", store_history=False)
         stream = iopub_msgs(outputs, "stream")

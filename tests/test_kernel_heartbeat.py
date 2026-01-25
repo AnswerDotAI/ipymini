@@ -2,7 +2,7 @@ import zmq
 from .kernel_utils import *
 
 
-def test_heartbeat_echo() -> None:
+def test_heartbeat_echo():
     with start_kernel() as (km, _kc):
         conn = load_connection(km)
 

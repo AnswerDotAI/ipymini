@@ -3,32 +3,32 @@ from jupyter_client import KernelManager
 from .kernel_utils import *
 
 
-def _reset_kernel(kc) -> None:
+def _reset_kernel(kc):
     msg_id = kc.execute("get_ipython().run_line_magic('reset', '-f')", silent=True, store_history=False)
     get_shell_reply(kc, msg_id)
     kc.iopub_drain(msg_id)
 
 
 class E2EKernel:
-    def __init__(self, km: KernelManager) -> None:
+    def __init__(self, km: KernelManager):
         self.km = km
         self.kc = None
         self._debug_initialized = False
         self._debug_config_done = False
 
-    def reset_client(self) -> None:
+    def reset_client(self):
         if self.kc is not None: self.kc.stop_channels()
         self.kc = self.km.client()
         self.kc.start_channels()
         self.kc.wait_for_ready(timeout=TIMEOUT)
 
-    def restart(self) -> None:
+    def restart(self):
         self.km.restart_kernel(now=True)
         self._debug_initialized = False
         self._debug_config_done = False
         self.reset_client()
 
-    def ensure_debug(self) -> None:
+    def ensure_debug(self):
         if self._debug_initialized: return
         reply = debug_request(self.kc, "initialize", DEBUG_INIT_ARGS)
         assert reply.get("success")
@@ -38,7 +38,7 @@ class E2EKernel:
             assert "already attached" in message or "already initialized" in message
         self._debug_initialized = True
 
-    def debug_config_done(self) -> None:
+    def debug_config_done(self):
         if self._debug_config_done: return
         debug_configuration_done(self.kc)
         self._debug_config_done = True
@@ -69,7 +69,7 @@ def kernel(e2e_kernel):
     return e2e_kernel
 
 
-def test_e2e_restart_and_debug(kernel, e2e_kernel) -> None:
+def test_e2e_restart_and_debug(kernel, e2e_kernel):
     kc = e2e_kernel.kc
     _, reply, outputs = kc.exec_drain("1+2+3", store_history=False)
     assert reply["content"]["status"] == "ok"

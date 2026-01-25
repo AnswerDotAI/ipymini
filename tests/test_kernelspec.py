@@ -3,7 +3,7 @@ from jupyter_client.kernelspec import KernelSpecManager
 from .kernel_utils import *
 
 
-def test_kernelspec_file() -> None:
+def test_kernelspec_file():
     spec_path = ROOT / "share" / "jupyter" / "kernels" / "ipymini" / "kernel.json"
     assert spec_path.exists()
     data = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -17,7 +17,7 @@ def test_kernelspec_file() -> None:
     assert data["interrupt_mode"] == "signal"
 
 
-def test_kernelspec_manager_discovers_spec() -> None:
+def test_kernelspec_manager_discovers_spec():
     env = build_env()
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     ksm = KernelSpecManager()

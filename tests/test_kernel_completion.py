@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_completion_samples() -> None:
+def test_completion_samples():
     with start_kernel() as (_, kc):
         msg_id = kc.complete("pri")
         reply = get_shell_reply(kc, msg_id)
@@ -14,7 +14,7 @@ def test_completion_samples() -> None:
         assert "import " in matches
 
 
-def test_is_complete_samples() -> None:
+def test_is_complete_samples():
     with start_kernel() as (_, kc):
         msg_id = kc.is_complete("print('hello, world')")
         reply = get_shell_reply(kc, msg_id)

@@ -4,7 +4,7 @@ from .kernel_utils import *
 TIMEOUT = 3
 
 
-def test_asyncio_scenario() -> None:
+def test_asyncio_scenario():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("1+1", store_history=False)
         reply = kc.shell_reply(msg_id)

@@ -4,7 +4,7 @@ from .kernel_utils import *
 TIMEOUT = 3
 
 
-def test_input_request_and_stream_ordering() -> None:
+def test_input_request_and_stream_ordering():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print('before'); print(input('prompt> '))", allow_stdin=True)
         stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
@@ -27,7 +27,7 @@ def test_input_request_and_stream_ordering() -> None:
         assert ("stdout", text + "\n") in streams
 
 
-def test_input_request_disallowed() -> None:
+def test_input_request_disallowed():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("input('prompt> ')", allow_stdin=False)
 
@@ -42,7 +42,7 @@ def test_input_request_disallowed() -> None:
         kc.iopub_drain(msg_id)
 
 
-def test_interrupt_while_waiting_for_input() -> None:
+def test_interrupt_while_waiting_for_input():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("input('prompt> ')", allow_stdin=True)
         stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
@@ -61,7 +61,7 @@ def test_interrupt_while_waiting_for_input() -> None:
         kc.iopub_drain(ok_id)
 
 
-def test_duplicate_input_reply_does_not_break_stdin() -> None:
+def test_duplicate_input_reply_does_not_break_stdin():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("user_input = input('Enter something: ')", allow_stdin=True, store_history=False)
         stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)

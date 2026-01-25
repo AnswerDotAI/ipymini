@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_display_data_samples() -> None:
+def test_display_data_samples():
     samples = [("from IPython.display import HTML, display; display(HTML('<b>test</b>'))", "text/html"),
         ("from IPython.display import Math, display; display(Math('\\\\frac{1}{2}'))", "text/latex")]
     with start_kernel() as (_, kc):
@@ -15,7 +15,7 @@ def test_display_data_samples() -> None:
             assert any(mime in msg["content"]["data"] for msg in displays)
 
 
-def test_pager_payload() -> None:
+def test_pager_payload():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print?")
         reply = get_shell_reply(kc, msg_id)
@@ -28,7 +28,7 @@ def test_pager_payload() -> None:
         kc.iopub_drain(msg_id)
 
 
-def test_set_next_input_single_payload() -> None:
+def test_set_next_input_single_payload():
     code = "ip = get_ipython()\nfor i in range(3):\n   ip.set_next_input('Hello There')\n"
     with start_kernel() as (_, kc):
         msg_id = kc.execute(code)

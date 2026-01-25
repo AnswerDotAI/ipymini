@@ -3,7 +3,7 @@ from jupyter_client.session import Session
 from .kernel_utils import *
 
 
-def test_iopub_welcome() -> None:
+def test_iopub_welcome():
     with start_kernel() as (km, _kc):
         conn = load_connection(km)
         session = Session(key=conn.get("key", "").encode(), signature_scheme=conn.get("signature_scheme", "hmac-sha256"))
@@ -30,7 +30,7 @@ def test_iopub_welcome() -> None:
         assert msg["header"]["msg_type"] == "iopub_welcome"
 
 
-def test_display_image_png() -> None:
+def test_display_image_png():
     with start_kernel() as (_, kc):
         code = (
             "import base64\n"
@@ -49,7 +49,7 @@ def test_display_image_png() -> None:
         assert "image/png" in data
 
 
-def test_matplotlib_enable_gui_no_error() -> None:
+def test_matplotlib_enable_gui_no_error():
     pytest.importorskip("matplotlib")
     with start_kernel() as (_, kc):
         code = (
@@ -63,7 +63,7 @@ def test_matplotlib_enable_gui_no_error() -> None:
 
 
 @pytest.mark.slow
-def test_matplotlib_inline_default_backend(tmp_path) -> None:
+def test_matplotlib_inline_default_backend(tmp_path):
     cache_dir = tmp_path / "mplconfig"
     cache_dir.mkdir(parents=True, exist_ok=True)
     if not os.access(cache_dir, os.W_OK): raise AssertionError(f"no writable mpl cache dir: {cache_dir}")

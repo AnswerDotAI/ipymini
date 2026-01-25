@@ -12,7 +12,7 @@ def _shell_addr(conn: dict) -> str:
     return f"{transport}://{ip}:{port}"
 
 
-def _send_kernel_info(session: Session, sock: zmq.Socket) -> None: session.send(sock, "kernel_info_request", {})
+def _send_kernel_info(session: Session, sock: zmq.Socket): session.send(sock, "kernel_info_request", {})
 
 
 def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dict|None:
@@ -24,7 +24,7 @@ def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dic
     return None
 
 
-def test_router_handover_same_identity() -> None:
+def test_router_handover_same_identity():
     env = build_env()
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="ipymini")
@@ -67,7 +67,7 @@ def test_router_handover_same_identity() -> None:
         km.shutdown_kernel(now=True)
 
 
-def test_execute_reply_after_keyboardinterrupt_during_send() -> None:
+def test_execute_reply_after_keyboardinterrupt_during_send():
     env = build_env()
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="ipymini")

@@ -9,7 +9,7 @@ IopubSender = Callable[..., None]
 
 
 class _CommContext:
-    def __init__(self) -> None:
+    def __init__(self):
         "Store per-thread comm sender and parent."
         self._local = threading.local()
 
@@ -17,7 +17,7 @@ class _CommContext:
         "Return the active comm sender and parent header."
         return getattr(self._local, "sender", None), getattr(self._local, "parent", None)
 
-    def set(self, sender: IopubSender|None, parent: dict|None) -> None:
+    def set(self, sender: IopubSender|None, parent: dict|None):
         "Set the comm sender and parent header for this thread."
         self._local.sender = sender
         self._local.parent = parent
@@ -37,7 +37,7 @@ def comm_context(sender: IopubSender|None, parent: dict|None):
 
 class IpyminiComm(base_comm.BaseComm):
     def publish_msg(self, msg_type: str, data: base_comm.MaybeDict = None, metadata: base_comm.MaybeDict = None,
-        buffers: base_comm.BuffersType = None, **keys) -> None:
+        buffers: base_comm.BuffersType = None, **keys):
         "Send comm messages on IOPub using the current comm context."
         sender, parent = _COMM_CONTEXT.get()
         if sender is None: return

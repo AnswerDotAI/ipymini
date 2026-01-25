@@ -3,7 +3,7 @@ from pathlib import Path
 from .kernel_utils import *
 
 
-def test_ipython_startup_integration(tmp_path) -> None:
+def test_ipython_startup_integration(tmp_path):
     root = Path(__file__).resolve().parents[1]
     ipdir = tmp_path / "ipdir"
     profile = ipdir / "profile_default"

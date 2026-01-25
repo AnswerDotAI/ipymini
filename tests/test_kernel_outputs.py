@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_stream_ordering() -> None:
+def test_stream_ordering():
     with start_kernel() as (_, kc):
         _, reply, output_msgs = kc.exec_drain("import sys; print('out1'); print('err1', file=sys.stderr); print('out2')", store_history=False)
         assert reply["content"]["status"] == "ok"
@@ -9,7 +9,7 @@ def test_stream_ordering() -> None:
         assert streams == [("stdout", "out1\n"), ("stderr", "err1\n"), ("stdout", "out2\n")]
 
 
-def test_clear_output_wait() -> None:
+def test_clear_output_wait():
     with start_kernel() as (_, kc):
         _, reply, output_msgs = kc.exec_drain("from IPython.display import clear_output; clear_output(wait=True)", store_history=False)
         assert reply["content"]["status"] == "ok"
@@ -17,7 +17,7 @@ def test_clear_output_wait() -> None:
         assert True in waits
 
 
-def test_display_id_update() -> None:
+def test_display_id_update():
     with start_kernel() as (_, kc):
         code = "from IPython.display import display\nh = display('first', display_id=True)\nh.update('second')\n"
         _, reply, output_msgs = kc.exec_drain(code, store_history=False)
@@ -33,7 +33,7 @@ def test_display_id_update() -> None:
         assert update_id == display_id
 
 
-def test_display_metadata_transient() -> None:
+def test_display_metadata_transient():
     with start_kernel() as (_, kc):
         code = (
             "from IPython.display import display\n"
@@ -48,7 +48,7 @@ def test_display_metadata_transient() -> None:
         assert content.get("transient", {}).get("display_id") == "xyz"
 
 
-def test_display_buffers() -> None:
+def test_display_buffers():
     with start_kernel() as (_, kc):
         code = (
             "from IPython import get_ipython\n"

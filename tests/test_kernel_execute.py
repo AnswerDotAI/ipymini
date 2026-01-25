@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_execute_silent_no_output() -> None:
+def test_execute_silent_no_output():
     with start_kernel() as (_, kc):
         _, reply, output_msgs = kc.exec_drain("print('hi')", silent=True)
         assert reply["content"]["status"] == "ok"
@@ -10,7 +10,7 @@ def test_execute_silent_no_output() -> None:
         )
 
 
-def test_store_history_false() -> None:
+def test_store_history_false():
     with start_kernel() as (_, kc):
         msg_id1, reply1, _ = kc.exec_drain("1+1")
         assert reply1["content"]["status"] == "ok"
@@ -28,7 +28,7 @@ def test_store_history_false() -> None:
         assert count3 == count2
 
 
-def test_execute_result() -> None:
+def test_execute_result():
     with start_kernel() as (_, kc):
         _, reply, output_msgs = kc.exec_drain("1+2+3", store_history=False)
         assert reply["content"]["status"] == "ok"
@@ -38,7 +38,7 @@ def test_execute_result() -> None:
         assert data.get("text/plain") == "6"
 
 
-def test_user_expressions() -> None:
+def test_user_expressions():
     with start_kernel() as (_, kc):
         _, reply, _ = kc.exec_drain("a = 10", user_expressions={"x": "a+1", "bad": "1/0"})
         assert reply["content"]["status"] == "ok"
@@ -48,7 +48,7 @@ def test_user_expressions() -> None:
         assert expr["bad"]["status"] == "error"
 
 
-def test_execute_error() -> None:
+def test_execute_error():
     with start_kernel() as (_, kc):
         _, reply, output_msgs = kc.exec_drain("1/0", store_history=False)
         assert reply["content"]["status"] == "error"
@@ -56,7 +56,7 @@ def test_execute_error() -> None:
         assert errors
 
 
-def test_stop_on_error_aborts_pending_executes() -> None:
+def test_stop_on_error_aborts_pending_executes():
     with start_kernel() as (_, kc):
         fail = "import time\n" "time.sleep(0.2)\n" "raise ValueError('boom')"
         msg_id_fail = kc.execute(fail)
@@ -73,7 +73,7 @@ def test_stop_on_error_aborts_pending_executes() -> None:
         assert reply_world["content"]["status"] == "aborted"
 
 
-def test_stop_on_error_false_allows_followup() -> None:
+def test_stop_on_error_false_allows_followup():
     with start_kernel() as (_, kc):
         fail = "import time\n" "time.sleep(0.2)\n" "raise ValueError('boom')"
         msg_id_fail = kc.execute(fail, stop_on_error=False)
@@ -86,7 +86,7 @@ def test_stop_on_error_false_allows_followup() -> None:
         assert reply_ok["content"]["status"] == "ok"
 
 
-def test_stop_on_error_does_not_abort_non_execute() -> None:
+def test_stop_on_error_does_not_abort_non_execute():
     with start_kernel() as (_, kc):
         fail = "import time\n" "time.sleep(0.2)\n" "raise ValueError('boom')"
         msg_id_fail = kc.execute(fail)

@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_inspect_open() -> None:
+def test_inspect_open():
     with start_kernel() as (_, kc):
         msg_id = kc.inspect("open")
         reply = get_shell_reply(kc, msg_id)
@@ -11,7 +11,7 @@ def test_inspect_open() -> None:
         assert "text/plain" in content.get("data", {})
 
 
-def test_history_tail_search() -> None:
+def test_history_tail_search():
     with start_kernel() as (_, kc):
         _, reply, _ = kc.exec_drain("1+1")
         assert reply["content"]["status"] == "ok"
@@ -29,7 +29,7 @@ def test_history_tail_search() -> None:
         assert reply["content"]["status"] == "ok"
 
 
-def test_history_search_unique_and_n() -> None:
+def test_history_search_unique_and_n():
     with start_kernel() as (_, kc):
         for code in ("1+1", "1+2", "1+3", "1+1"):
             _, reply, _ = kc.exec_drain(code)

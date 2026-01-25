@@ -1,7 +1,7 @@
 from .kernel_utils import *
 
 
-def test_kernel_info_fields() -> None:
+def test_kernel_info_fields():
     with start_kernel() as (_, kc):
         msg_id = kc.kernel_info()
         reply = get_shell_reply(kc, msg_id)
