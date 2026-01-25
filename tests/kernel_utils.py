@@ -31,23 +31,23 @@ def _build_env() -> dict:
     return dict(os.environ) | dict(PYTHONPATH=pythonpath, JUPYTER_PATH=_ensure_jupyter_path())
 
 
-def build_env(extra_env: dict | None = None) -> dict:
+def build_env(extra_env: dict|None=None) -> dict:
     "Build env."
     env = _build_env()
     if extra_env: env = {**env, **extra_env}
     return env
 
 
-def parent_id(msg: dict) -> str | None: return msg.get("parent_header", {}).get("msg_id")
+def parent_id(msg: dict) -> str|None: return msg.get("parent_header", {}).get("msg_id")
 
 
-def iter_timeout(timeout: float | None = None, default: float = TIMEOUT):
+def iter_timeout(timeout: float|None=None, default: float = TIMEOUT):
     "Yield remaining time (seconds) until timeout expires, using monotonic time."
     end = time.monotonic() + (timeout or default)
     while (rem := end - time.monotonic()) > 0: yield rem
 
 
-def wait_for_msg(get_msg, match, timeout: float | None = None, poll: float = 0.5, err: str = "timeout"):
+def wait_for_msg(get_msg, match, timeout: float|None=None, poll: float = 0.5, err: str = "timeout"):
     "Call `get_msg(timeout=...)` until `match(msg)` is true, else raise AssertionError on timeout."
     for rem in iter_timeout(timeout):
         try: msg = get_msg(timeout=min(poll, rem))
@@ -85,7 +85,7 @@ def temp_env(update: dict):
 
 @delegates(KernelManager.start_kernel, but="env")
 @contextmanager
-def start_kernel(extra_env: dict | None = None, **kwargs):
+def start_kernel(extra_env: dict|None=None, **kwargs):
     "Start kernel."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
@@ -128,7 +128,7 @@ def iopub_drain(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> li
 
 @patch
 @delegates(KernelClient.execute, keep=True)
-def exec_drain(self: KernelClient, code: str, timeout: float | None = None, **kwargs):
+def exec_drain(self: KernelClient, code: str, timeout: float|None=None, **kwargs):
     "Execute `code` and return (msg_id, reply, outputs)."
     msg_id = self.execute(code, **kwargs)
     timeout = timeout or TIMEOUT
@@ -219,8 +219,8 @@ class ShellCommand:
 
     def __getattr__(self, name: str):
         if name.startswith('_'): raise AttributeError(name)
-        def _call(*, subshell_id: str | None = None, buffers: list[bytes] | None = None,
-            content: dict | None = None, **kwargs):
+        def _call(*, subshell_id: str|None=None, buffers: list[bytes]|None=None,
+            content: dict|None=None, **kwargs):
             return self.kc.shell_send(name, content, subshell_id=subshell_id, buffers=buffers, **kwargs)
 
         return _call
@@ -234,8 +234,8 @@ def cmd(self: KernelClient) -> ShellCommand:
 
 
 @patch
-def shell_send(self: KernelClient, msg_type: str, content: dict | None = None, subshell_id: str | None = None,
-    buffers: list[bytes] | None = None, **kwargs) -> str:
+def shell_send(self: KernelClient, msg_type: str, content: dict|None=None, subshell_id: str|None=None,
+    buffers: list[bytes]|None=None, **kwargs) -> str:
     "Send shell message with optional subshell header, buffers, and kwargs content."
     if content is None: content = {}
     if kwargs: content = dict(content) | kwargs
@@ -248,14 +248,14 @@ def shell_send(self: KernelClient, msg_type: str, content: dict | None = None, s
 
 @patch
 @delegates(KernelClient.execute, keep=True)
-def exec_ok(self: KernelClient, code: str, timeout: float | None = None, **kwargs):
+def exec_ok(self: KernelClient, code: str, timeout: float|None=None, **kwargs):
     "Execute `code` and assert ok reply."
     msg_id, reply, outputs = self.exec_drain(code, timeout=timeout, **kwargs)
     assert reply["content"]["status"] == "ok", reply.get("content")
     return msg_id, reply, outputs
 
 
-def debug_request(kc, command, arguments=None, timeout: float | None = None, full_reply: bool = False, **kwargs):
+def debug_request(kc, command, arguments=None, timeout: float|None=None, full_reply: bool = False, **kwargs):
     "Debug request."
     if arguments is None: arguments = {}
     if kwargs: arguments |= kwargs
@@ -284,19 +284,19 @@ def debug_info(kc): return debug_request(kc, "debugInfo")
 def debug_configuration_done(kc, full_reply: bool = False): return debug_request(kc, "configurationDone", full_reply=full_reply)
 
 
-def debug_continue(kc, thread_id: int | None = None):
+def debug_continue(kc, thread_id: int|None=None):
     "Debug continue."
     if thread_id is None: return debug_request(kc, "continue")
     return debug_request(kc, "continue", threadId=thread_id)
 
 
-def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
+def wait_for_debug_event(kc, event_name: str, timeout: float|None=None) -> dict:
     "Wait for debug event."
     pred = lambda m: m.get("msg_type") == "debug_event" and m.get("content", {}).get("event") == event_name
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, poll=0.5, err=f"debug_event {event_name} not received")
 
 
-def wait_for_stop(kc, timeout: float | None = None) -> dict:
+def wait_for_stop(kc, timeout: float|None=None) -> dict:
     "Wait for stop."
     timeout = timeout or TIMEOUT
     try: return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
@@ -310,12 +310,12 @@ def wait_for_stop(kc, timeout: float | None = None) -> dict:
         raise AssertionError(f"stopped debug_event not received: {last}")
 
 
-def get_shell_reply(kc, msg_id, timeout: float | None = None):
+def get_shell_reply(kc, msg_id, timeout: float|None=None):
     "Get shell reply."
     return wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for matching shell reply")
 
 
-def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
+def collect_shell_replies(kc, msg_ids: set[str], timeout: float|None=None) -> dict:
     "Collect shell replies."
     replies = {}
     for _ in iter_timeout(timeout):
@@ -329,7 +329,7 @@ def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -
     return replies
 
 
-def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
+def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float|None=None) -> dict:
     "Collect iopub outputs."
     outputs = {msg_id: [] for msg_id in msg_ids}
     idle = set()
@@ -346,18 +346,18 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -
     return outputs
 
 
-def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
+def wait_for_status(kc, state: str, timeout: float|None=None) -> dict:
     "Wait for status."
     pred = lambda m: m.get("msg_type") == "status" and m.get("content", {}).get("execution_state") == state
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
 
 
-def iopub_msgs(outputs: list[dict], msg_type: str | None = None) -> list[dict]:
+def iopub_msgs(outputs: list[dict], msg_type: str|None=None) -> list[dict]:
     "Iopub msgs."
     return outputs if msg_type is None else [m for m in outputs if m["msg_type"] == msg_type]
 
 
-def iopub_streams(outputs: list[dict], name: str | None = None) -> list[dict]:
+def iopub_streams(outputs: list[dict], name: str|None=None) -> list[dict]:
     "Iopub streams."
     streams = iopub_msgs(outputs, "stream")
     return streams if name is None else [m for m in streams if m["content"].get("name") == name]

@@ -15,7 +15,7 @@ def _shell_addr(conn: dict) -> str:
 def _send_kernel_info(session: Session, sock: zmq.Socket) -> None: session.send(sock, "kernel_info_request", {})
 
 
-def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dict | None:
+def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout: float) -> dict|None:
     for _ in iter_timeout(timeout, default=timeout):
         if not sock.poll(50): continue
         try: _, msg = session.recv(sock, mode=0)

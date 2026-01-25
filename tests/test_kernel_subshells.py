@@ -24,7 +24,7 @@ def _delete_subshell(kc, subshell_id: str) -> None:
     assert reply["content"]["status"] == "ok"
 
 
-def _execute(kc, code: str, subshell_id: str | None = None, **content):
+def _execute(kc, code: str, subshell_id: str|None=None, **content):
     payload = {"code": code}
     payload.update(content)
     msg_id = kc.cmd.execute_request(content=payload, subshell_id=subshell_id)
@@ -33,18 +33,18 @@ def _execute(kc, code: str, subshell_id: str | None = None, **content):
     return msg_id, reply, outputs
 
 
-def _send_execute(kc, code: str, subshell_id: str | None = None, **content):
+def _send_execute(kc, code: str, subshell_id: str|None=None, **content):
     payload = {"code": code}
     payload.update(content)
     return kc.cmd.execute_request(content=payload, subshell_id=subshell_id)
 
 
-def _history_tail(kc, subshell_id: str | None, n: int = 1):
+def _history_tail(kc, subshell_id: str|None, n: int = 1):
     msg_id = kc.cmd.history_request(hist_access_type="tail", n=n, output=False, raw=True, subshell_id=subshell_id)
     return kc.shell_reply(msg_id)
 
 
-def _last_history_input(reply: dict) -> str | None:
+def _last_history_input(reply: dict) -> str|None:
     hist = reply.get("content", {}).get("history") or []
     if not hist: return None
     item = hist[-1]
@@ -136,7 +136,7 @@ def test_subshell_concurrency_and_control() -> None:
 
         _execute(kc, "import threading, time; barrier = threading.Barrier(3)")
 
-        def _send(code: str, subshell_id: str | None = None) -> str: return cmd.execute_request(code=code, subshell_id=subshell_id)
+        def _send(code: str, subshell_id: str|None=None) -> str: return cmd.execute_request(code=code, subshell_id=subshell_id)
 
         msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
         msg_a = _send("barrier.wait(); time.sleep(0.05); print('a')", subshell_a)

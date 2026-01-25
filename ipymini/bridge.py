@@ -188,7 +188,7 @@ class DebugpyMessageQueue:
 
 
 class MiniDebugpyClient:
-    def __init__(self, context: zmq.Context, event_callback: Callable[[dict], None] | None):
+    def __init__(self, context: zmq.Context, event_callback: Callable[[dict], None]|None):
         "Initialize debugpy client state for a ZMQ connection."
         self.context = context
         self.next_seq = 1
@@ -645,7 +645,7 @@ def _maybe_json(value):
     return value
 
 
-def _env_flag(name: str) -> bool | None:
+def _env_flag(name: str) -> bool|None:
     "Parse env var `name` to bool; return None if unset/invalid."
     raw = os.environ.get(name)
     if raw is None: return None
@@ -790,7 +790,7 @@ class KernelBridge:
         return dict(streams=streams, display=list(self.shell.display_pub.events), result=self.shell.displayhook.last, result_metadata=result_meta,
             execution_count=exec_count, error=error, user_expressions=user_expr, payload=payload)
 
-    def set_stream_sender(self, sender: Callable[[str, str], None] | None): self._stream_sender = sender
+    def set_stream_sender(self, sender: Callable[[str, str], None]|None): self._stream_sender = sender
 
     def _emit_stream(self, name: str, text: str):
         if self._stream_live and self._stream_sender is not None and text: self._stream_sender(name, text)

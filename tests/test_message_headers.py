@@ -4,7 +4,7 @@ from .kernel_utils import *
 def _version_tuple(value: str) -> tuple[int, ...]: return tuple(int(part) if part.isdigit() else 0 for part in value.split("."))
 
 
-def _assert_header(msg: dict, msg_type: str | None = None) -> None:
+def _assert_header(msg: dict, msg_type: str|None=None) -> None:
     header = msg.get("header", {})
     assert header.get("msg_id")
     assert header.get("msg_type")

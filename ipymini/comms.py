@@ -13,11 +13,11 @@ class _CommContext:
         "Store per-thread comm sender and parent."
         self._local = threading.local()
 
-    def get(self) -> tuple[IopubSender | None, dict | None]:
+    def get(self) -> tuple[IopubSender|None, dict|None]:
         "Return the active comm sender and parent header."
         return getattr(self._local, "sender", None), getattr(self._local, "parent", None)
 
-    def set(self, sender: IopubSender | None, parent: dict | None) -> None:
+    def set(self, sender: IopubSender|None, parent: dict|None) -> None:
         "Set the comm sender and parent header for this thread."
         self._local.sender = sender
         self._local.parent = parent
@@ -27,7 +27,7 @@ _COMM_CONTEXT = _CommContext()
 
 
 @contextmanager
-def comm_context(sender: IopubSender | None, parent: dict | None):
+def comm_context(sender: IopubSender|None, parent: dict|None):
     "Temporarily bind a comm sender and parent header for this thread."
     prev_sender, prev_parent = _COMM_CONTEXT.get()
     _COMM_CONTEXT.set(sender, parent)
