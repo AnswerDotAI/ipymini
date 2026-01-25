@@ -18,9 +18,8 @@ if [ -n "$body" ]; then
 else
   gh pr create --fill --label "$label"
 fi
-if ! gh pr merge --squash --auto; then
-  gh pr merge --squash
-fi
+gh pr merge --squash
 git checkout main
+git pull --ff-only
 
-echo "PR created with label '$label' and auto-merge enabled"
+echo "PR created with label '$label' and merged; main updated"
