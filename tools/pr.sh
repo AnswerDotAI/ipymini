@@ -19,4 +19,9 @@ else
   gh pr create --fill --label "$label"
 fi
 
-echo "PR created with label '$label'"
+gh pr merge --squash
+git checkout main
+git pull --ff-only
+
+echo "PR created with label '$label' and merged; main updated"
+
