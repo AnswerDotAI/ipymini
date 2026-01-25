@@ -150,7 +150,7 @@ Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PY
 Create a PR (GitHub CLI required):
 
 ```
-tools/pr.sh [label] ["Message"]
+tools/pr.sh "Message" [label] [body|body-file]
 ```
 
 Release flow (tags trigger GitHub Actions publish):
