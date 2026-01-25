@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from fastcore.basics import store_attr
-import zmq
+import zmq, zmq.asyncio
 from jupyter_client.session import Session
 from .bridge import KernelBridge
 from .comms import comm_context, get_comm_manager
@@ -241,6 +241,77 @@ class StdinRouterThread(threading.Thread):
             waiters.append(waiter)
         for waiter in waiters: waiter.put(_INPUT_INTERRUPTED)
 
+
+class AsyncRouterThread(threading.Thread):
+    def __init__(self, kernel: "MiniKernel", port:int, socket_attr:str, handler, log_label:str):
+        "Async ROUTER loop for shell/control sockets."
+        super().__init__(daemon=True, name=f"{log_label}-router")
+        store_attr("kernel,port,socket_attr,handler,log_label")
+        self._loop = None
+        self._queue = None
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._pending = queue.Queue()
+
+    def enqueue(self, item):
+        if self._queue is None or self._loop is None or not self._ready.is_set():
+            self._pending.put(item)
+            return
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+
+    def stop(self):
+        self._stop.set()
+        if self._loop is None or self._queue is None: return
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._queue = asyncio.Queue()
+        self._ready.set()
+        while True:
+            try: item = self._pending.get_nowait()
+            except queue.Empty: break
+            self._queue.put_nowait(item)
+        try: loop.run_until_complete(self._router_loop())
+        finally:
+            if hasattr(loop, "shutdown_asyncgens"): loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            asyncio.set_event_loop(None)
+            self._loop = None
+            self._queue = None
+
+    async def _router_loop(self):
+        sock = self.kernel.bind_router_async(self.port)
+        setattr(self.kernel, self.socket_attr, sock)
+        poller = zmq.asyncio.Poller()
+        poller.register(sock, zmq.POLLIN)
+        try:
+            while not self.kernel._shutdown_event.is_set() and not self._stop.is_set():
+                poll_task = asyncio.ensure_future(poller.poll())
+                send_task = asyncio.create_task(self._queue.get())
+                done, pending = await asyncio.wait({poll_task, send_task}, return_when=asyncio.FIRST_COMPLETED)
+                if send_task in done:
+                    item = send_task.result()
+                    if item is not None: self.kernel._send_router_item(sock, item)
+                    while True:
+                        try: item = self._queue.get_nowait()
+                        except asyncio.QueueEmpty: break
+                        if item is not None: self.kernel._send_router_item(sock, item)
+                if poll_task in done:
+                    events = dict(poll_task.result())
+                    if sock in events and events[sock] & zmq.POLLIN:
+                        idents, msg = await self.kernel.recv_msg_async(sock)
+                        if msg is not None:
+                            try: self.handler(msg, idents)
+                            except Exception: _LOG.warning("Error in %s: %s", self.log_label, msg.get("msg_type"), exc_info=True)
+                for task in pending: task.cancel()
+                if pending: await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            poller.unregister(sock)
+            sock.close(0)
+            if getattr(self.kernel, self.socket_attr) is sock: setattr(self.kernel, self.socket_attr, None)
 
 class Subshell:
     def __init__(self, kernel: "MiniKernel", subshell_id:str|None, user_ns: dict,
@@ -500,6 +571,10 @@ class Subshell:
         self.kernel.send_status("busy", msg)
         iopub = self.kernel.iopub
         try:
+            exec_count_pre = self.bridge.shell.execution_count
+            if not silent: exec_count_pre += 1 if store_history else 0
+            # pre-send execute_input before any live output to match ipykernel ordering
+            if not silent: iopub.execute_input(msg, code=code, execution_count=exec_count_pre)
             try:
                 with comm_context(iopub.send, msg):
                     result = await self.bridge.execute(code, silent=silent, store_history=store_history,
@@ -510,7 +585,6 @@ class Subshell:
                     error=dict(ename=type(exc).__name__, evalue=str(exc), traceback=tb), user_expressions={}, payload=[])
 
             exec_count = result.get("execution_count")
-            if not silent: iopub.execute_input(msg, code=code, execution_count=exec_count)
 
             error = result.get("error")
             if not silent:
@@ -707,10 +781,8 @@ class MiniKernel:
         self.bridge = self.subshells.parent.bridge
         self._parent_header = None
         self._parent_idents = None
-        self._shell_send_queue = queue.Queue()
-        self._control_send_queue = queue.Queue()
-        self._shell_thread = None
-        self._control_thread = None
+        self._shell_router = None
+        self._control_router = None
         self._shutdown_event = threading.Event()
         self.stop_on_error_timeout = _env_float("IPYMINI_STOP_ON_ERROR_TIMEOUT", 0.0)
         self._iopub_cmd = None
@@ -728,15 +800,19 @@ class MiniKernel:
         prev_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self.handle_sigint)
         self._shutdown_event.clear()
-        self._shell_thread = threading.Thread(target=self.shell_loop, daemon=True, name="shell-thread")
-        self._control_thread = threading.Thread(target=self.control_loop, daemon=True, name="control-thread")
-        self._shell_thread.start()
-        self._control_thread.start()
+        self._shell_router = AsyncRouterThread(self, self.connection.shell_port, "shell_socket", self.handle_shell_msg, "shell")
+        self._control_router = AsyncRouterThread(self, self.connection.control_port, "control_socket", self.handle_control_msg, "control")
+        self._shell_router.start()
+        self._control_router.start()
+        self._shell_router._ready.wait()
+        self._control_router._ready.wait()
         try: self.subshells.parent.run_main()
         finally:
             self._shutdown_event.set()
-            if self._shell_thread is not None: self._shell_thread.join(timeout=1)
-            if self._control_thread is not None: self._control_thread.join(timeout=1)
+            if self._shell_router is not None: self._shell_router.stop()
+            if self._control_router is not None: self._control_router.stop()
+            if self._shell_router is not None: self._shell_router.join(timeout=1)
+            if self._control_router is not None: self._control_router.join(timeout=1)
             self.hb.stop()
             self.hb.join(timeout=1)
             self.subshells.stop_all()
@@ -744,22 +820,20 @@ class MiniKernel:
             self.stdin_router.join(timeout=1)
             self.iopub_thread.stop()
             self.iopub_thread.join(timeout=1)
-            self.close_sockets()
             signal.signal(signal.SIGINT, prev_sigint)
-
-    def shell_loop(self):
-        "Background shell loop to recv messages and send replies."
-        self.router_loop(self.connection.shell_port, "shell_socket", self.handle_shell_msg,
-            pre=self.drain_shell_send_queue, log_label="shell")
-
-    def control_loop(self):
-        "Blocking control loop in a background thread."
-        self.router_loop(self.connection.control_port, "control_socket", self.handle_control_msg,
-            pre=self.drain_control_send_queue, log_label="control")
 
     def bind_router(self, port:int)->zmq.Socket:
         "Bind ROUTER socket to `port`."
         sock = self.context.socket(zmq.ROUTER)
+        if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
+        sock.linger = 0
+        sock.bind(self.connection.addr(port))
+        return sock
+
+    def bind_router_async(self, port:int)->zmq.asyncio.Socket:
+        "Bind async ROUTER socket to `port`."
+        ctx = zmq.asyncio.Context.instance()
+        sock = ctx.socket(zmq.ROUTER)
         if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
         sock.linger = 0
         sock.bind(self.connection.addr(port))
@@ -773,47 +847,20 @@ class MiniKernel:
         except zmq.ZMQError: pass
         return None, None
 
-    def router_loop(self, port:int, attr:str, handler, pre=None, log_label:str = "router"):
-        "Run a ROUTER loop for shell/control sockets."
-        sock = self.bind_router(port)
-        setattr(self, attr, sock)
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
-        try:
-            while not self._shutdown_event.is_set():
-                if pre: pre()
-                if sock not in dict(poller.poll(50)): continue
-                idents, msg = self.recv_msg(sock)
-                if msg is None: continue
-                try: handler(msg, idents)
-                except Exception: _LOG.warning("Error in %s: %s", log_label, msg.get("msg_type"), exc_info=True)
-        finally:
-            sock.close(0)
-            if getattr(self, attr) is sock: setattr(self, attr, None)
+    async def recv_msg_async(self, sock: zmq.asyncio.Socket):
+        "Receive message from async `sock`."
+        try: msg_list = await sock.recv_multipart(copy=False)
+        except zmq.ZMQError: return None, None
+        idents, msg_list = self.session.feed_identities(msg_list, copy=False)
+        try: msg = self.session.deserialize(msg_list, content=True, copy=False)
+        except ValueError as err:
+            if "Duplicate Signature" not in str(err): _LOG.warning("Bad message signature", exc_info=True)
+            return None, None
+        return idents, msg
 
-    def drain_shell_send_queue(self):
-        "Drain shell replies queued by subshell threads."
-        if self.shell_socket is None: return
-        while True:
-            try: msg_type, content, parent, idents = self._shell_send_queue.get_nowait()
-            except queue.Empty: return
-            self.session.send(self.shell_socket, msg_type, content, parent=parent, ident=idents)
-
-    def queue_control_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
-        "Enqueue a control reply for async send."
-        self._control_send_queue.put((msg_type, content, parent, idents))
-
-    def drain_control_send_queue(self):
-        "Drain control replies queued by subshell threads."
-        if self.control_socket is None: return
-        while True:
-            try: msg_type, content, parent, idents = self._control_send_queue.get_nowait()
-            except queue.Empty: return
-            self.session.send(self.control_socket, msg_type, content, parent=parent, ident=idents)
-
-    def close_sockets(self):
-        for sock in (self.shell_socket, self.control_socket):
-            if sock is not None: sock.close(0)
+    def _send_router_item(self, sock: zmq.asyncio.Socket, item):
+        msg_type, content, parent, idents = item
+        self.session.send(sock, msg_type, content, parent=parent, ident=idents)
 
     def handle_sigint(self, signum, frame):
         "Handle SIGINT by interrupting subshells and input waits."
@@ -844,7 +891,13 @@ class MiniKernel:
 
     def queue_shell_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
         "Enqueue a shell reply for async send."
-        self._shell_send_queue.put((msg_type, content, parent, idents))
+        if self._shell_router is None: return
+        self._shell_router.enqueue((msg_type, content, parent, idents))
+
+    def queue_control_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
+        "Enqueue a control reply for async send."
+        if self._control_router is None: return
+        self._control_router.enqueue((msg_type, content, parent, idents))
 
     def send_status(self, state:str, parent: dict|None): self.iopub.status(parent, execution_state=state)
 
