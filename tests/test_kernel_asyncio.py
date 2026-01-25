@@ -9,6 +9,24 @@ def test_asyncio_scenario():
         msg_id = kc.execute("1+1", store_history=False)
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
+
+
+def test_asyncio_create_task() -> None:
+    with start_kernel() as (_, kc):
+        code = (
+            "import asyncio, time\n"
+            "async def f():\n"
+            "    await asyncio.sleep(0.01)\n"
+            "    print('ok')\n"
+            "asyncio.create_task(f())\n"
+            "time.sleep(0.05)\n"
+        )
+        msg_id = kc.execute(code, store_history=False)
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "ok"
+        outputs = kc.iopub_drain(msg_id)
+        streams = iopub_streams(outputs, "stdout")
+        assert any("ok" in msg["content"].get("text", "") for msg in streams)
         kc.iopub_drain(msg_id)
 
         reply = debug_request(kc, "initialize", DEBUG_INIT_ARGS)
