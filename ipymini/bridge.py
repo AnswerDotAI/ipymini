@@ -24,7 +24,7 @@ _STARTUP_DONE = False
 
 
 class _ThreadLocalStream:
-    def __init__(self, name: str, default):
+    def __init__(self, name:str, default):
         "Create a thread-local stream proxy for `name` with `default` fallback."
         self._name = name
         self._default = default
@@ -103,7 +103,7 @@ def _thread_local_get_ipython():
     return shell if shell is not None else _IO_STATE._orig_get_ipython()
 
 
-def _thread_local_input(prompt: str = "")->str:
+def _thread_local_input(prompt:str = "")->str:
     "Route input() through kernel stdin handler using `prompt`."
     handler = getattr(_IO_STATE.local, "request_input", None)
     allow = getattr(_IO_STATE.local, "allow_stdin", False)
@@ -113,7 +113,7 @@ def _thread_local_input(prompt: str = "")->str:
     return handler(str(prompt), False)
 
 
-def _thread_local_getpass(prompt: str = "Password: ", stream=None)->str:
+def _thread_local_getpass(prompt:str = "Password: ", stream=None)->str:
     "Route getpass() through stdin handler using `prompt`."
     handler = getattr(_IO_STATE.local, "request_input", None)
     allow = getattr(_IO_STATE.local, "allow_stdin", False)
@@ -151,13 +151,13 @@ class DebugpyMessageQueue:
         self.message_size = 0
         self.message_pos = -1
 
-    def _put_message(self, raw_msg: str):
+    def _put_message(self, raw_msg:str):
         "Decode a JSON message and dispatch to event/response callback."
         msg = json.loads(raw_msg)
         if msg.get("type") == "event": self.event_callback(msg)
         else: self.response_callback(msg)
 
-    def put_tcp_frame(self, frame: str):
+    def put_tcp_frame(self, frame:str):
         "Append TCP frame data and emit complete debugpy messages."
         self.tcp_buffer += frame
         while True:
@@ -203,7 +203,7 @@ class MiniDebugpyClient:
         self._endpoint = None
         self._message_queue = DebugpyMessageQueue(self._handle_event, self._handle_response)
 
-    def connect(self, host: str, port: int):
+    def connect(self, host:str, port:int):
         "Connect to debugpy adapter at `host:port` and start reader."
         self._endpoint = f"tcp://{host}:{port}"
         self._start_reader()
@@ -267,7 +267,7 @@ class MiniDebugpyClient:
             header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
             sock.send_multipart([self._routing_id, header + payload])
 
-    def send_request(self, msg: dict, timeout: float = 10.0)->dict:
+    def send_request(self, msg: dict, timeout:float = 10.0)->dict:
         "Send a debugpy request and wait for a response."
         req_seq = msg.get("seq")
         if not isinstance(req_seq, int) or req_seq <= 0:
@@ -287,7 +287,7 @@ class MiniDebugpyClient:
         self._outgoing.put(msg)
         return req_seq, waiter
 
-    def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0)->dict:
+    def wait_for_response(self, req_seq:int, waiter: queue.Queue, timeout:float = 10.0)->dict:
         "Wait for a response on `waiter` until `timeout`."
         try: reply = waiter.get(timeout=timeout)
         except queue.Empty as exc: raise TimeoutError("timed out waiting for debugpy response") from exc
@@ -295,7 +295,7 @@ class MiniDebugpyClient:
             with self._pending_lock: self._pending.pop(req_seq, None)
         return reply
 
-    def wait_initialized(self, timeout: float = 5.0)->bool: return self._initialized.wait(timeout=timeout)
+    def wait_initialized(self, timeout:float = 5.0)->bool: return self._initialized.wait(timeout=timeout)
 
     def next_internal_seq(self)->int:
         "Return the next internal sequence number."
@@ -440,13 +440,13 @@ class MiniDebugger:
             func = self._removed_cleanup.pop(index)
             cleanup_transforms.insert(index, func)
 
-    def _request_payload(self, command: str, arguments: dict|None=None, seq: int|None=None)->dict:
+    def _request_payload(self, command:str, arguments: dict|None=None, seq:int|None=None)->dict:
         "Build a DAP request payload for `command`."
         if seq is None: seq = self.client.next_internal_seq()
         if arguments is None: arguments = {}
         return dict(type="request", command=command, seq=seq, arguments=arguments)
 
-    def _response(self, request: dict, success: bool, body: dict|None=None, message: str|None=None)->dict:
+    def _response(self, request: dict, success: bool, body: dict|None=None, message:str|None=None)->dict:
         "Build a DAP response dict for `request`."
         reply = dict(type="response", request_seq=request.get("seq"), success=bool(success), command=request.get("command"))
         if message: reply["message"] = message
@@ -558,7 +558,7 @@ class MiniDebugger:
 
 
 class MiniStream:
-    def __init__(self, name: str, events: list[dict], sink: Callable[[str, str], None]|None=None):
+    def __init__(self, name:str, events: list[dict], sink: Callable[[str, str], None]|None=None):
         "Buffer stream text and emit events to `events`/`sink`."
         self.name = name
         self.events = events
@@ -593,7 +593,7 @@ class MiniStream:
 
     def isatty(self)->bool: return False
 
-    def _emit_live(self, text: str):
+    def _emit_live(self, text:str):
         "Emit complete lines from buffer to the sink."
         self._buffer += text
         if "\n" not in self._buffer: return
@@ -645,7 +645,7 @@ def _maybe_json(value):
     return value
 
 
-def _env_flag(name: str) -> bool|None:
+def _env_flag(name:str) -> bool|None:
     "Parse env var `name` to bool; return None if unset/invalid."
     raw = os.environ.get(name)
     if raw is None: return None
@@ -681,7 +681,7 @@ def _init_ipython_app(shell):
 def _debug_tmp_directory()->str: return os.path.join(tempfile.gettempdir(), f"ipymini_{os.getpid()}")
 
 
-def _debug_file_name(code: str)->str:
+def _debug_file_name(code:str)->str:
     "Compute debug cell filename; respects IPYMINI_CELL_NAME."
     cell_name = os.environ.get("IPYMINI_CELL_NAME")
     if cell_name is None:
@@ -706,7 +706,7 @@ class KernelBridge:
         if experimental is None: experimental = True
         self._use_experimental_completions = bool(experimental)
 
-        def _code_name(raw_code: str, transformed_code: str, number: int)->str: return _debug_file_name(raw_code)
+        def _code_name(raw_code:str, transformed_code:str, number:int)->str: return _debug_file_name(raw_code)
 
         self.shell.compile.get_code_name = _code_name
         self._request_input = request_input
@@ -725,7 +725,7 @@ class KernelBridge:
 
         def _showtraceback(etype, evalue, stb): self.shell._last_traceback = stb
         def _enable_gui(gui=None): self.shell.active_eventloop = gui
-        def _set_next_input(text: str, replace:bool=False):
+        def _set_next_input(text:str, replace:bool=False):
             payload = dict(source="set_next_input", text=text, replace=bool(replace))
             self.shell.payload_manager.write_payload(payload)
 
@@ -753,7 +753,7 @@ class KernelBridge:
         self.shell._last_traceback = None
         self._stream_events.clear()
 
-    def execute(self, code: str, silent:bool=False, store_history:bool=True,
+    def execute(self, code:str, silent:bool=False, store_history:bool=True,
         user_expressions=None, allow_stdin:bool=False)->dict:
         "Execute `code` in IPython and return captured outputs/errors."
         self._reset_capture_state()
@@ -792,7 +792,7 @@ class KernelBridge:
 
     def set_stream_sender(self, sender: Callable[[str, str], None]|None): self._stream_sender = sender
 
-    def _emit_stream(self, name: str, text: str):
+    def _emit_stream(self, name:str, text:str):
         if self._stream_live and self._stream_sender is not None and text: self._stream_sender(name, text)
 
     def _dedupe_set_next_input(self, payload: list[dict])->list[dict]:
@@ -807,7 +807,7 @@ class KernelBridge:
             deduped.append(item)
         return list(reversed(deduped))
 
-    def complete(self, code: str, cursor_pos: int|None=None)->dict:
+    def complete(self, code:str, cursor_pos:int|None=None)->dict:
         "Return completion matches for `code` at `cursor_pos`."
         if self._use_experimental_completions:
             if cursor_pos is None: cursor_pos = len(code)
@@ -832,7 +832,7 @@ class KernelBridge:
         txt, matches = self.shell.complete("", line, line_cursor)
         return dict(matches=matches, cursor_start=cursor_pos - len(txt), cursor_end=cursor_pos, metadata={}, status="ok")
 
-    def inspect(self, code: str, cursor_pos: int|None=None, detail_level:int=0)->dict:
+    def inspect(self, code:str, cursor_pos:int|None=None, detail_level:int=0)->dict:
         "Return inspection data for `code` at `cursor_pos`."
         if cursor_pos is None: cursor_pos = len(code)
         from IPython.utils.tokenutil import token_at_cursor
@@ -843,7 +843,7 @@ class KernelBridge:
         if not self.shell.enable_html_pager: bundle.pop("text/html", None)
         return dict(status="ok", found=True, data=bundle, metadata={})
 
-    def is_complete(self, code: str)->dict:
+    def is_complete(self, code:str)->dict:
         "Report completeness status and indentation for `code`."
         tm = getattr(self.shell, "input_transformer_manager", None)
         if tm is None: tm = self.shell.input_splitter
@@ -852,7 +852,7 @@ class KernelBridge:
         if status == "incomplete": reply["indent"] = " " * indent_spaces
         return reply
 
-    def history(self, hist_access_type: str, output: bool, raw: bool, session:int=0, start:int=0,
+    def history(self, hist_access_type:str, output: bool, raw: bool, session:int=0, start:int=0,
         stop=None, n=None, pattern=None, unique:bool=False)->dict:
         "Return history entries based on `hist_access_type` query."
         if hist_access_type == "tail": hist = self.shell.history_manager.get_tail(n, raw=raw, output=output, include_latest=True)
@@ -864,7 +864,7 @@ class KernelBridge:
         return {"status": "ok", "history": list(hist)}
 
 
-    def debug_request(self, request_json: str)->dict:
+    def debug_request(self, request_json:str)->dict:
         "Handle a debug_request DAP message in JSON."
         try: request = json.loads(request_json)
         except json.JSONDecodeError: request = {}

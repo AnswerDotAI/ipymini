@@ -36,7 +36,7 @@ def comm_context(sender: IopubSender|None, parent: dict|None):
 
 
 class IpyminiComm(base_comm.BaseComm):
-    def publish_msg(self, msg_type: str, data: base_comm.MaybeDict = None, metadata: base_comm.MaybeDict = None,
+    def publish_msg(self, msg_type:str, data: base_comm.MaybeDict = None, metadata: base_comm.MaybeDict = None,
         buffers: base_comm.BuffersType = None, **keys):
         "Send comm messages on IOPub using the current comm context."
         sender, parent = _COMM_CONTEXT.get()

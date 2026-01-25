@@ -6,7 +6,7 @@ from jupyter_client import AsyncKernelClient, KernelManager
 from .kernel_utils import *
 
 
-async def _wait_for_status(kc, state: str, timeout: float) -> dict:
+async def _wait_for_status(kc, state:str, timeout:float) -> dict:
     async with asyncio.timeout(timeout):
         while True:
             msg = await kc.get_iopub_msg(timeout=0.2)
@@ -23,7 +23,7 @@ async def _router(kc, waiters: dict, stop: asyncio.Event):
         if waiter is not None: waiter.put_nowait(msg)
 
 
-async def _send_wait(kc, waiters: dict, code: str, timeout: float) -> tuple[str, dict]:
+async def _send_wait(kc, waiters: dict, code:str, timeout:float) -> tuple[str, dict]:
     msg_id = kc.execute(code)
     q = asyncio.Queue()
     waiters[msg_id] = q

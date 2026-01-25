@@ -41,13 +41,13 @@ def build_env(extra_env: dict|None=None) -> dict:
 def parent_id(msg: dict) -> str|None: return msg.get("parent_header", {}).get("msg_id")
 
 
-def iter_timeout(timeout: float|None=None, default: float = TIMEOUT):
+def iter_timeout(timeout:float|None=None, default:float = TIMEOUT):
     "Yield remaining time (seconds) until timeout expires, using monotonic time."
     end = time.monotonic() + (timeout or default)
     while (rem := end - time.monotonic()) > 0: yield rem
 
 
-def wait_for_msg(get_msg, match, timeout: float|None=None, poll: float = 0.5, err: str = "timeout"):
+def wait_for_msg(get_msg, match, timeout:float|None=None, poll:float = 0.5, err:str = "timeout"):
     "Call `get_msg(timeout=...)` until `match(msg)` is true, else raise AssertionError on timeout."
     for rem in iter_timeout(timeout):
         try: msg = get_msg(timeout=min(poll, rem))
@@ -75,7 +75,7 @@ def ensure_separate_process(km: KernelManager):
 def temp_env(update: dict):
     "Temporarily update environment variables."
     old_env = {key: os.environ.get(key) for key in update}
-    os.environ.update({key: str(value) for key, value in update.items()})
+    os.environ.update({key:str(value) for key, value in update.items()})
     try: yield
     finally:
         for key, value in old_env.items():
@@ -102,19 +102,19 @@ def start_kernel(extra_env: dict|None=None, **kwargs):
 
 
 @patch
-def shell_reply(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> dict:
+def shell_reply(self: KernelClient, msg_id:str, timeout:float = TIMEOUT) -> dict:
     "Return shell reply matching `msg_id`."
     return wait_for_msg(self.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for shell reply")
 
 
 @patch
-def control_reply(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> dict:
+def control_reply(self: KernelClient, msg_id:str, timeout:float = TIMEOUT) -> dict:
     "Return control reply matching `msg_id`."
     return wait_for_msg(self.control_channel.get_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for control reply")
 
 
 @patch
-def iopub_drain(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> list[dict]:
+def iopub_drain(self: KernelClient, msg_id:str, timeout:float = TIMEOUT) -> list[dict]:
     "Drain iopub messages for `msg_id` until idle."
     outputs = []
     for rem in iter_timeout(timeout):
@@ -128,7 +128,7 @@ def iopub_drain(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> li
 
 @patch
 @delegates(KernelClient.execute, keep=True)
-def exec_drain(self: KernelClient, code: str, timeout: float|None=None, **kwargs):
+def exec_drain(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
     "Execute `code` and return (msg_id, reply, outputs)."
     msg_id = self.execute(code, **kwargs)
     timeout = timeout or TIMEOUT
@@ -138,7 +138,7 @@ def exec_drain(self: KernelClient, code: str, timeout: float|None=None, **kwargs
 
 
 @patch
-def interrupt_request(self: KernelClient, timeout: float = 2) -> dict:
+def interrupt_request(self: KernelClient, timeout:float = 2) -> dict:
     "Send interrupt_request and return interrupt_reply."
     msg = self.session.msg("interrupt_request", {})
     self.control_channel.send(msg)
@@ -149,7 +149,7 @@ def interrupt_request(self: KernelClient, timeout: float = 2) -> dict:
 
 
 @patch
-async def interrupt_request_async(self: AsyncKernelClient, timeout: float = 2) -> dict:
+async def interrupt_request_async(self: AsyncKernelClient, timeout:float = 2) -> dict:
     "Send interrupt_request and return interrupt_reply (async)."
     msg = self.session.msg("interrupt_request", {})
     self.control_channel.send(msg)
@@ -163,17 +163,17 @@ async def interrupt_request_async(self: AsyncKernelClient, timeout: float = 2) -
 
 
 class _ReqProxy:
-    def __init__(self, kc: KernelClient, channel: str, suffix: str):
+    def __init__(self, kc: KernelClient, channel:str, suffix:str):
         self.kc = kc
         self.channel = channel
         self.suffix = suffix
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name:str):
         msg_type = f"{name}{self.suffix}"
         reply_fn = self.kc.control_reply if self.channel == "control" else self.kc.shell_reply
         channel = self.kc.control_channel if self.channel == "control" else self.kc.shell_channel
 
-        def _call(*, timeout: float = TIMEOUT, **content):
+        def _call(*, timeout:float = TIMEOUT, **content):
             msg = self.kc.session.msg(msg_type, content)
             channel.send(msg)
             return reply_fn(msg["header"]["msg_id"], timeout=timeout)
@@ -193,8 +193,8 @@ class _DapProxy:
         self.kc = kc
         self.seq = 1
 
-    def __getattr__(self, command: str):
-        def _call(*, timeout: float = TIMEOUT, full: bool = False, **arguments):
+    def __getattr__(self, command:str):
+        def _call(*, timeout:float = TIMEOUT, full: bool = False, **arguments):
             seq = self.seq
             self.seq += 1
             msg = self.kc.session.msg("debug_request", dict(type="request", seq=seq, command=command, arguments=arguments))
@@ -217,9 +217,9 @@ class ShellCommand:
         "Create shell command proxy for `kc`."
         self.kc = kc
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name:str):
         if name.startswith('_'): raise AttributeError(name)
-        def _call(*, subshell_id: str|None=None, buffers: list[bytes]|None=None,
+        def _call(*, subshell_id:str|None=None, buffers: list[bytes]|None=None,
             content: dict|None=None, **kwargs):
             return self.kc.shell_send(name, content, subshell_id=subshell_id, buffers=buffers, **kwargs)
 
@@ -234,7 +234,7 @@ def cmd(self: KernelClient) -> ShellCommand:
 
 
 @patch
-def shell_send(self: KernelClient, msg_type: str, content: dict|None=None, subshell_id: str|None=None,
+def shell_send(self: KernelClient, msg_type:str, content: dict|None=None, subshell_id:str|None=None,
     buffers: list[bytes]|None=None, **kwargs) -> str:
     "Send shell message with optional subshell header, buffers, and kwargs content."
     if content is None: content = {}
@@ -248,14 +248,14 @@ def shell_send(self: KernelClient, msg_type: str, content: dict|None=None, subsh
 
 @patch
 @delegates(KernelClient.execute, keep=True)
-def exec_ok(self: KernelClient, code: str, timeout: float|None=None, **kwargs):
+def exec_ok(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
     "Execute `code` and assert ok reply."
     msg_id, reply, outputs = self.exec_drain(code, timeout=timeout, **kwargs)
     assert reply["content"]["status"] == "ok", reply.get("content")
     return msg_id, reply, outputs
 
 
-def debug_request(kc, command, arguments=None, timeout: float|None=None, full_reply: bool = False, **kwargs):
+def debug_request(kc, command, arguments=None, timeout:float|None=None, full_reply: bool = False, **kwargs):
     "Debug request."
     if arguments is None: arguments = {}
     if kwargs: arguments |= kwargs
@@ -284,19 +284,19 @@ def debug_info(kc): return debug_request(kc, "debugInfo")
 def debug_configuration_done(kc, full_reply: bool = False): return debug_request(kc, "configurationDone", full_reply=full_reply)
 
 
-def debug_continue(kc, thread_id: int|None=None):
+def debug_continue(kc, thread_id:int|None=None):
     "Debug continue."
     if thread_id is None: return debug_request(kc, "continue")
     return debug_request(kc, "continue", threadId=thread_id)
 
 
-def wait_for_debug_event(kc, event_name: str, timeout: float|None=None) -> dict:
+def wait_for_debug_event(kc, event_name:str, timeout:float|None=None) -> dict:
     "Wait for debug event."
     pred = lambda m: m.get("msg_type") == "debug_event" and m.get("content", {}).get("event") == event_name
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, poll=0.5, err=f"debug_event {event_name} not received")
 
 
-def wait_for_stop(kc, timeout: float|None=None) -> dict:
+def wait_for_stop(kc, timeout:float|None=None) -> dict:
     "Wait for stop."
     timeout = timeout or TIMEOUT
     try: return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
@@ -310,12 +310,12 @@ def wait_for_stop(kc, timeout: float|None=None) -> dict:
         raise AssertionError(f"stopped debug_event not received: {last}")
 
 
-def get_shell_reply(kc, msg_id, timeout: float|None=None):
+def get_shell_reply(kc, msg_id, timeout:float|None=None):
     "Get shell reply."
     return wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for matching shell reply")
 
 
-def collect_shell_replies(kc, msg_ids: set[str], timeout: float|None=None) -> dict:
+def collect_shell_replies(kc, msg_ids: set[str], timeout:float|None=None) -> dict:
     "Collect shell replies."
     replies = {}
     for _ in iter_timeout(timeout):
@@ -329,7 +329,7 @@ def collect_shell_replies(kc, msg_ids: set[str], timeout: float|None=None) -> di
     return replies
 
 
-def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float|None=None) -> dict:
+def collect_iopub_outputs(kc, msg_ids: set[str], timeout:float|None=None) -> dict:
     "Collect iopub outputs."
     outputs = {msg_id: [] for msg_id in msg_ids}
     idle = set()
@@ -346,18 +346,18 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float|None=None) -> di
     return outputs
 
 
-def wait_for_status(kc, state: str, timeout: float|None=None) -> dict:
+def wait_for_status(kc, state:str, timeout:float|None=None) -> dict:
     "Wait for status."
     pred = lambda m: m.get("msg_type") == "status" and m.get("content", {}).get("execution_state") == state
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
 
 
-def iopub_msgs(outputs: list[dict], msg_type: str|None=None) -> list[dict]:
+def iopub_msgs(outputs: list[dict], msg_type:str|None=None) -> list[dict]:
     "Iopub msgs."
     return outputs if msg_type is None else [m for m in outputs if m["msg_type"] == msg_type]
 
 
-def iopub_streams(outputs: list[dict], name: str|None=None) -> list[dict]:
+def iopub_streams(outputs: list[dict], name:str|None=None) -> list[dict]:
     "Iopub streams."
     streams = iopub_msgs(outputs, "stream")
     return streams if name is None else [m for m in streams if m["content"].get("name") == name]

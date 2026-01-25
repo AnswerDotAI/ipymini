@@ -69,7 +69,7 @@ def test_matplotlib_inline_default_backend(tmp_path):
     if not os.access(cache_dir, os.W_OK): raise AssertionError(f"no writable mpl cache dir: {cache_dir}")
     env = dict(MPLCONFIGDIR=str(cache_dir), XDG_CACHE_HOME=str(cache_dir))
     with temp_env(env): pytest.importorskip("matplotlib")
-    extra_env = {"MPLCONFIGDIR": str(cache_dir), "XDG_CACHE_HOME": str(cache_dir)}
+    extra_env = {"MPLCONFIGDIR":str(cache_dir), "XDG_CACHE_HOME":str(cache_dir)}
     with start_kernel(extra_env=extra_env) as (_, kc):
         code = (
             "import matplotlib.pyplot as plt\n"
