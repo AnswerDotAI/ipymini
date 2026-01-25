@@ -605,18 +605,28 @@ class MiniStream:
 
 
 class MiniDisplayPublisher(DisplayPublisher):
-    def __init__(self):
+    def __init__(self, sender=None):
         "Collect display_pub events for IOPub."
         super().__init__()
         self.events = []
+        self._sender = sender
+
+    def set_sender(self, sender):
+        "Set live display sender."
+        self._sender = sender
 
     def publish(self, data, metadata=None, transient=None, update=False, **kwargs):
         "Record display data/update for later emission."
         buffers = kwargs.get("buffers")
-        self.events.append(dict(type="display", data=data, metadata=metadata or {}, transient=transient or {},
-            update=bool(update), buffers=buffers))
+        event = dict(type="display", data=data, metadata=metadata or {}, transient=transient or {},
+            update=bool(update), buffers=buffers)
+        if self._sender is not None: self._sender(event)
+        else: self.events.append(event)
 
-    def clear_output(self, wait:bool=False): self.events.append({"type": "clear_output", "wait": bool(wait)})
+    def clear_output(self, wait:bool=False):
+        event = {"type": "clear_output", "wait": bool(wait)}
+        if self._sender is not None: self._sender(event)
+        else: self.events.append(event)
 
 
 class MiniDisplayHook(DisplayHook):
@@ -712,12 +722,14 @@ class KernelBridge:
 
         self.shell.compile.get_code_name = _code_name
         self._request_input = request_input
-        self.shell.display_pub = MiniDisplayPublisher()
+        self._display_sender = None
+        self.shell.display_pub = MiniDisplayPublisher(self._display_sender)
         self.shell.displayhook = MiniDisplayHook(shell=self.shell)
         self.shell.display_trap.hook = self.shell.displayhook
         self._stream_events = []
         self._stream_sender = None
         self._stream_live = contextvars.ContextVar("ipymini.stream_live", default=False)
+        self._current_exec_task = None
         self._stdout = MiniStream("stdout", self._stream_events, sink=self._emit_stream)
         self._stderr = MiniStream("stderr", self._stream_events, sink=self._emit_stream)
         if self.shell.display_page: hook = page.as_hook(page.display_page)
@@ -773,8 +785,11 @@ class KernelBridge:
             res = None
             coro = shell.run_cell_async(code, store_history=store_history, silent=silent,
                 transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
-            try: res = await asyncio.ensure_future(coro)
+            task = asyncio.create_task(coro)
+            self._current_exec_task = task
+            try: res = await task
             finally:
+                self._current_exec_task = None
                 shell.events.trigger("post_execute")
                 if not silent: shell.events.trigger("post_run_cell", res)
             return res
@@ -784,6 +799,8 @@ class KernelBridge:
         user_expressions=None, allow_stdin:bool=False)->dict:
         "Execute `code` in IPython and return captured outputs/errors."
         self._reset_capture_state()
+        display_sender = self._display_sender
+        if silent and display_sender is not None: self.set_display_sender(None)
         token = self._stream_live.set(not silent and self._stream_sender is not None)
         live = self._stream_live.get()
         try:
@@ -797,6 +814,7 @@ class KernelBridge:
                     self._stderr.flush()
                 except Exception: pass
             self._stream_live.reset(token)
+            if silent and display_sender is not None: self.set_display_sender(display_sender)
 
         payload = self.shell.payload_manager.read_payload()
         self.shell.payload_manager.clear_payload()
@@ -815,10 +833,23 @@ class KernelBridge:
 
         streams = [] if self._stream_sender is not None else list(self._stream_events)
         result_meta = self.shell.displayhook.last_metadata or {}
-        return dict(streams=streams, display=list(self.shell.display_pub.events), result=self.shell.displayhook.last, result_metadata=result_meta,
+        display_events = [] if self._display_sender is not None else list(self.shell.display_pub.events)
+        return dict(streams=streams, display=display_events, result=self.shell.displayhook.last, result_metadata=result_meta,
             execution_count=exec_count, error=error, user_expressions=user_expr, payload=payload)
 
     def set_stream_sender(self, sender: Callable[[str, str], None]|None): self._stream_sender = sender
+
+    def set_display_sender(self, sender: Callable[[dict], None]|None):
+        "Set live display sender; None to buffer display events."
+        self._display_sender = sender
+        if hasattr(self.shell.display_pub, "set_sender"): self.shell.display_pub.set_sender(sender)
+
+    def cancel_exec_task(self, loop: asyncio.AbstractEventLoop|None)->bool:
+        "Cancel the currently running async execution task, if any."
+        task = self._current_exec_task
+        if task is None or task.done() or loop is None: return False
+        loop.call_soon_threadsafe(task.cancel)
+        return True
 
     def _emit_stream(self, name:str, text:str):
         if self._stream_live.get() and self._stream_sender is not None and text: self._stream_sender(name, text)
