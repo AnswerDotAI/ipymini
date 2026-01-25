@@ -60,7 +60,7 @@ def load_connection(km) -> dict:
     with open(km.connection_file, encoding="utf-8") as f: return json.load(f)
 
 
-def ensure_separate_process(km: KernelManager) -> None:
+def ensure_separate_process(km: KernelManager):
     "Ensure separate process."
     pid = None
     provisioner = getattr(km, "provisioner", None)
@@ -104,15 +104,13 @@ def start_kernel(extra_env: dict | None = None, **kwargs):
 @patch
 def shell_reply(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> dict:
     "Return shell reply matching `msg_id`."
-    return wait_for_msg(self.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout,
-        err="timeout waiting for shell reply")
+    return wait_for_msg(self.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for shell reply")
 
 
 @patch
 def control_reply(self: KernelClient, msg_id: str, timeout: float = TIMEOUT) -> dict:
     "Return control reply matching `msg_id`."
-    return wait_for_msg(self.control_channel.get_msg, lambda m: parent_id(m) == msg_id, timeout,
-        err="timeout waiting for control reply")
+    return wait_for_msg(self.control_channel.get_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for control reply")
 
 
 @patch
@@ -165,7 +163,7 @@ async def interrupt_request_async(self: AsyncKernelClient, timeout: float = 2) -
 
 
 class _ReqProxy:
-    def __init__(self, kc: KernelClient, channel: str, suffix: str) -> None:
+    def __init__(self, kc: KernelClient, channel: str, suffix: str):
         self.kc = kc
         self.channel = channel
         self.suffix = suffix
@@ -191,7 +189,7 @@ def ctl(self: KernelClient) -> _ReqProxy:
 
 
 class _DapProxy:
-    def __init__(self, kc: KernelClient) -> None:
+    def __init__(self, kc: KernelClient):
         self.kc = kc
         self.seq = 1
 
@@ -215,11 +213,12 @@ def dap(self: KernelClient) -> _DapProxy:
 
 
 class ShellCommand:
-    def __init__(self, kc: KernelClient) -> None:
+    def __init__(self, kc: KernelClient):
         "Create shell command proxy for `kc`."
         self.kc = kc
 
     def __getattr__(self, name: str):
+        if name.startswith('_'): raise AttributeError(name)
         def _call(*, subshell_id: str | None = None, buffers: list[bytes] | None = None,
             content: dict | None = None, **kwargs):
             return self.kc.shell_send(name, content, subshell_id=subshell_id, buffers=buffers, **kwargs)
@@ -293,9 +292,8 @@ def debug_continue(kc, thread_id: int | None = None):
 
 def wait_for_debug_event(kc, event_name: str, timeout: float | None = None) -> dict:
     "Wait for debug event."
-    return wait_for_msg(kc.get_iopub_msg,
-        lambda m: m.get("msg_type") == "debug_event" and m.get("content", {}).get("event") == event_name,
-        timeout, poll=0.5, err=f"debug_event {event_name} not received")
+    pred = lambda m: m.get("msg_type") == "debug_event" and m.get("content", {}).get("event") == event_name
+    return wait_for_msg(kc.get_iopub_msg, pred, timeout, poll=0.5, err=f"debug_event {event_name} not received")
 
 
 def wait_for_stop(kc, timeout: float | None = None) -> dict:
@@ -314,8 +312,7 @@ def wait_for_stop(kc, timeout: float | None = None) -> dict:
 
 def get_shell_reply(kc, msg_id, timeout: float | None = None):
     "Get shell reply."
-    return wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout,
-        err="timeout waiting for matching shell reply")
+    return wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for matching shell reply")
 
 
 def collect_shell_replies(kc, msg_ids: set[str], timeout: float | None = None) -> dict:
@@ -351,9 +348,8 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout: float | None = None) -
 
 def wait_for_status(kc, state: str, timeout: float | None = None) -> dict:
     "Wait for status."
-    return wait_for_msg(kc.get_iopub_msg,
-        lambda m: m.get("msg_type") == "status" and m.get("content", {}).get("execution_state") == state,
-        timeout, err=f"timeout waiting for status: {state}")
+    pred = lambda m: m.get("msg_type") == "status" and m.get("content", {}).get("execution_state") == state
+    return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
 
 
 def iopub_msgs(outputs: list[dict], msg_type: str | None = None) -> list[dict]:

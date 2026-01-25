@@ -3,8 +3,7 @@ from .kernel_utils import *
 
 def test_stream_ordering() -> None:
     with start_kernel() as (_, kc):
-        _, reply, output_msgs = kc.exec_drain(
-            "import sys; print('out1'); print('err1', file=sys.stderr); print('out2')", store_history=False)
+        _, reply, output_msgs = kc.exec_drain("import sys; print('out1'); print('err1', file=sys.stderr); print('out2')", store_history=False)
         assert reply["content"]["status"] == "ok"
         streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
         assert streams == [("stdout", "out1\n"), ("stderr", "err1\n"), ("stdout", "out2\n")]
