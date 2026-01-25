@@ -1,4 +1,4 @@
-import json, logging, os, queue, signal, threading, traceback, time, uuid
+import asyncio, contextvars, json, logging, os, queue, signal, threading, traceback, time, uuid
 from contextlib import contextmanager
 from collections import deque
 from dataclasses import dataclass
@@ -12,6 +12,7 @@ from .comms import comm_context, get_comm_manager
 
 _LOG = logging.getLogger("ipymini.stdin")
 _SUBSHELL_STOP = object()
+_SUBSHELL_ABORT_CLEAR = object()
 
 @dataclass
 class ConnectionInfo:
@@ -46,6 +47,14 @@ def _raise_async_exception(thread_id:int, exc_type: type[BaseException])->bool:
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), None)
         return False
     return True
+
+
+def _env_float(name:str, default:float)->float:
+    "Return float env var `name`, or `default` on missing/invalid."
+    raw = os.environ.get(name)
+    if raw is None: return default
+    try: return float(raw)
+    except ValueError: return default
 
 class HeartbeatThread(threading.Thread):
     def __init__(self, context: zmq.Context, addr:str):
@@ -238,15 +247,22 @@ class Subshell:
         use_singleton: bool = False, run_in_thread: bool = True):
         "Create subshell worker thread and bridge for execution."
         store_attr("kernel,subshell_id")
-        self._queue = queue.Queue()
         self._stop = threading.Event()
         name = "subshell-parent" if subshell_id is None else f"subshell-{subshell_id}"
-        self._thread = None if not run_in_thread else threading.Thread(target=self._run, daemon=True, name=name)
+        self._thread = None if not run_in_thread else threading.Thread(target=self._run_loop, daemon=True, name=name)
+        self._loop = None
+        self._loop_ready = threading.Event()
+        self._pending = deque()
+        self._pending_lock = threading.Lock()
+        self._pending_event = None
+        self._aborting = False
+        self._abort_handle = None
+        self._async_lock = None
         self.bridge = KernelBridge(request_input=self.request_input, debug_event_callback=self.send_debug_event,
             zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton)
         self.bridge.set_stream_sender(self._send_stream)
-        self._parent_header = None
-        self._parent_idents = None
+        self._parent_header_var = contextvars.ContextVar("parent_header", default=None)
+        self._parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self._executing = threading.Event()
         self._shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
             complete_request=self._handle_complete, inspect_request=self._handle_inspect, history_request=self._handle_history,
@@ -254,17 +270,30 @@ class Subshell:
             comm_msg=self._handle_comm, comm_close=self._handle_comm, shutdown_request=self.handle_shutdown)
 
     def start(self):
-        if self._thread is not None: self._thread.start()
+        if self._thread is not None:
+            self._thread.start()
+            self._loop_ready.wait()
 
     def stop(self):
-        "Signal subshell thread to stop and wake it."
+        "Signal subshell loop to stop and wake it."
         self._stop.set()
-        if self._thread is not None: self._queue.put_nowait(_SUBSHELL_STOP)
+        if self._loop is None: return
+        def _stop_loop():
+            with self._pending_lock: self._pending.append((_SUBSHELL_STOP, None, None))
+            if self._pending_event is not None: self._pending_event.set()
+            self._loop.stop()
+        if self._loop.is_running(): self._loop.call_soon_threadsafe(_stop_loop)
+        else: _stop_loop()
 
     def join(self, timeout:float|None=None):
         if self._thread is not None: self._thread.join(timeout=timeout)
 
-    def submit(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket): self._queue.put((msg, idents, sock))
+    def submit(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
+        self._loop_ready.wait()
+        if self._loop is None: return
+        with self._pending_lock: self._pending.append((msg, idents, sock))
+        if self._pending_event is None: return
+        self._loop.call_soon_threadsafe(self._pending_event.set)
 
     def interrupt(self)->bool:
         "Raise KeyboardInterrupt in subshell thread if executing."
@@ -280,16 +309,19 @@ class Subshell:
             if os.sys.stdout is not None: os.sys.stdout.flush()
             if os.sys.stderr is not None: os.sys.stderr.flush()
         except (OSError, ValueError): pass
-        return self.kernel.stdin_router.request_input(prompt, password, self._parent_header, self._parent_idents)
+        parent = self._parent_header_var.get()
+        idents = self._parent_idents_var.get()
+        return self.kernel.stdin_router.request_input(prompt, password, parent, idents)
 
     def _send_stream(self, name:str, text:str):
         "Send stream output on IOPub for current parent message."
-        if not self._parent_header: return
-        self.kernel.iopub.stream(self._parent_header, name=name, text=text)
+        parent = self._parent_header_var.get()
+        if not parent: return
+        self.kernel.iopub.stream(parent, name=name, text=text)
 
     def send_debug_event(self, event: dict):
         "Send debug_event on IOPub for current parent message."
-        parent = self._parent_header or {}
+        parent = self._parent_header_var.get() or {}
         self.kernel.iopub.debug_event(parent, content=event)
 
     def send_status(self, state:str, parent: dict|None): self.kernel.iopub.status(parent, execution_state=state)
@@ -297,22 +329,102 @@ class Subshell:
     def send_reply(self, socket: zmq.Socket, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
         self.kernel.queue_shell_reply(msg_type, content, parent, idents)
 
-    def _run(self):
-        "Main subshell loop: read queue and dispatch messages."
-        while True:
-            item = self._queue.get()
-            if item is _SUBSHELL_STOP: break
-            msg, idents, sock = item
-            if not msg: continue
-            self._handle_message(msg, idents, sock)
+    def _run_loop(self):
+        "Run subshell asyncio loop in a background thread."
+        self._setup_loop()
+        try: self._loop.run_forever()
+        finally: self._shutdown_loop()
 
-    def _handle_message(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
+    def run_main(self):
+        "Run parent subshell loop in the main thread."
+        self._setup_loop()
+        try: self._loop.run_forever()
+        finally: self._shutdown_loop()
+
+    def _setup_loop(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._pending_event = asyncio.Event()
+        self._async_lock = asyncio.Lock()
+        self._loop_ready.set()
+        loop.create_task(self._consume_queue())
+
+    def _shutdown_loop(self):
+        if self._loop is None: return
+        loop = self._loop
+        asyncio.set_event_loop(loop)
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending: task.cancel()
+        if pending: loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        if hasattr(loop, "shutdown_asyncgens"): loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+        asyncio.set_event_loop(None)
+        self._loop = None
+        self._pending_event = None
+        self._async_lock = None
+
+    async def _consume_queue(self):
+        "Process queued shell messages on the subshell event loop."
+        while True:
+            await self._pending_event.wait()
+            while True:
+                with self._pending_lock:
+                    if not self._pending:
+                        self._pending_event.clear()
+                        break
+                    msg, idents, sock = self._pending.popleft()
+                if msg is _SUBSHELL_STOP: return
+                if msg is _SUBSHELL_ABORT_CLEAR:
+                    self._stop_aborting()
+                    continue
+                if not msg: continue
+                async with self._async_lock:
+                    try: await self._handle_message(msg, idents, sock)
+                    except Exception: _LOG.warning("Error in subshell handler", exc_info=True)
+
+    async def _handle_message(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Dispatch message based on msg_type, handling execute separately."
         msg_type = msg["header"]["msg_type"]
-        if msg_type == "execute_request":
-            self._handle_execute(msg, idents, sock)
-            return
-        self._dispatch_shell_non_execute(msg, idents, sock)
+        token_header = self._parent_header_var.set(msg)
+        token_idents = self._parent_idents_var.set(idents)
+        try:
+            if msg_type == "execute_request" and self._aborting:
+                self._send_abort_reply(sock, msg, idents)
+                return
+            if msg_type == "execute_request":
+                await self._handle_execute(msg, idents, sock)
+                return
+            self._dispatch_shell_non_execute(msg, idents, sock)
+        finally:
+            self._parent_header_var.reset(token_header)
+            self._parent_idents_var.reset(token_idents)
+
+    def _send_abort_reply(self, sock: zmq.Socket, msg: dict, idents: list[bytes]|None):
+        "Send an abort reply for `msg`."
+        self.kernel.send_status("busy", msg)
+        reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
+        self.send_reply(sock, "execute_reply", reply_content, msg, idents)
+        self.kernel.send_status("idle", msg)
+
+    def _start_aborting(self):
+        "Mark subshell aborting and schedule clearing."
+        self._aborting = True
+        if self._abort_handle is not None:
+            self._abort_handle.cancel()
+            self._abort_handle = None
+        timeout = self.kernel.stop_on_error_timeout
+        if timeout <= 0:
+            with self._pending_lock: self._pending.append((_SUBSHELL_ABORT_CLEAR, None, None))
+            if self._pending_event is not None: self._pending_event.set()
+        else: self._abort_handle = self._loop.call_later(timeout, self._stop_aborting)
+
+    def _stop_aborting(self):
+        "Clear aborting state after stop_on_error window."
+        self._aborting = False
+        if self._abort_handle is not None:
+            self._abort_handle.cancel()
+            self._abort_handle = None
 
     def _dispatch_shell_non_execute(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Dispatch non-execute shell requests to handlers."
@@ -326,10 +438,15 @@ class Subshell:
     def _abort_pending_executes(self):
         "Abort queued execute requests and reply aborted."
         drained = []
-        while True:
-            try: drained.append(self._queue.get_nowait())
-            except queue.Empty: break
+        with self._pending_lock:
+            while self._pending: drained.append(self._pending.popleft())
         for msg, idents, sock in drained:
+            if msg is _SUBSHELL_STOP:
+                with self._pending_lock: self._pending.append((msg, idents, sock))
+                break
+            if msg is _SUBSHELL_ABORT_CLEAR:
+                with self._pending_lock: self._pending.append((msg, idents, sock))
+                continue
             msg_type = msg.get("header", {}).get("msg_type")
             if msg_type == "execute_request":
                 reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count,
@@ -349,7 +466,7 @@ class Subshell:
             stdin_port=self.kernel.connection.stdin_port, control_port=self.kernel.connection.control_port, hb_port=self.kernel.connection.hb_port)
         self.send_reply(sock, "connect_reply", content, msg, idents)
 
-    def _handle_execute(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
+    async def _handle_execute(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Handle execute_request via KernelBridge and emit IOPub."
         content = msg.get("content", {})
         code = content.get("code", "")
@@ -359,8 +476,6 @@ class Subshell:
         user_expressions = content.get("user_expressions", {})
         allow_stdin = bool(content.get("allow_stdin", False))
 
-        self._parent_header = msg
-        self._parent_idents = idents
         self._executing.set()
         sent_reply = False
         sent_error = False
@@ -371,7 +486,7 @@ class Subshell:
         try:
             try:
                 with comm_context(iopub.send, msg):
-                    result = self.bridge.execute(code, silent=silent, store_history=store_history,
+                    result = await self.bridge.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             except BaseException as exc:
                 tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
@@ -412,7 +527,9 @@ class Subshell:
 
             self.send_reply(sock, "execute_reply", reply_content, msg, idents)
             sent_reply = True
-            if error and stop_on_error: self._abort_pending_executes()
+            if error and stop_on_error:
+                self._abort_pending_executes()
+                self._start_aborting()
         except KeyboardInterrupt as exc:
             error = dict(ename=type(exc).__name__, evalue=str(exc),
                 traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -422,11 +539,11 @@ class Subshell:
                     user_expressions={}, payload=[])
                 reply_content.update(error)
                 self.send_reply(sock, "execute_reply", reply_content, msg, idents)
-                if stop_on_error: self._abort_pending_executes()
+                if stop_on_error:
+                    self._abort_pending_executes()
+                    self._start_aborting()
         finally:
             self.kernel.send_status("idle", msg)
-            self._parent_header = None
-            self._parent_idents = None
             self._executing.clear()
 
     def _handle_complete(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
@@ -576,6 +693,7 @@ class MiniKernel:
         self._shell_thread = None
         self._control_thread = None
         self._shutdown_event = threading.Event()
+        self.stop_on_error_timeout = _env_float("IPYMINI_STOP_ON_ERROR_TIMEOUT", 0.0)
         self._iopub_cmd = None
         self._control_handlers = dict(shutdown_request=self.handle_shutdown, debug_request=self.handle_debug,
             interrupt_request=self.handle_interrupt, create_subshell_request=self.handle_create_subshell,
@@ -594,7 +712,7 @@ class MiniKernel:
         self._control_thread = threading.Thread(target=self.control_loop, daemon=True, name="control-thread")
         self._shell_thread.start()
         self._control_thread.start()
-        try: self.parent_loop()
+        try: self.subshells.parent.run_main()
         finally:
             self._shutdown_event.set()
             if self._shell_thread is not None: self._shell_thread.join(timeout=1)
@@ -651,17 +769,6 @@ class MiniKernel:
         finally:
             sock.close(0)
             if getattr(self, attr) is sock: setattr(self, attr, None)
-
-    def parent_loop(self):
-        "Run parent subshell requests in the main thread."
-        parent = self.subshells.parent
-        while not self._shutdown_event.is_set():
-            try: item = parent._queue.get(timeout=0.05)
-            except queue.Empty: continue
-            if item is _SUBSHELL_STOP: break
-            msg, idents, sock = item
-            if not msg: continue
-            parent._handle_message(msg, idents, sock)
 
     def drain_shell_send_queue(self):
         "Drain shell replies queued by subshell threads."
@@ -822,6 +929,7 @@ class MiniKernel:
         reply = {"status": "ok", "restart": bool(content.get("restart", False))}
         self.send_reply(sock, "shutdown_reply", reply, msg, idents)
         self._shutdown_event.set()
+        self.subshells.parent.stop()
 
 
 def run_kernel(connection_file:str):

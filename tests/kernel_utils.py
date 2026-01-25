@@ -214,8 +214,7 @@ class ShellCommand:
 
     def __getattr__(self, name:str):
         if name.startswith('_'): raise AttributeError(name)
-        def _call(*, subshell_id:str|None=None, buffers: list[bytes]|None=None,
-            content: dict|None=None, **kwargs):
+        def _call(*, subshell_id:str|None=None, buffers: list[bytes]|None=None, content: dict|None=None, **kwargs):
             return self.kc.shell_send(name, content, subshell_id=subshell_id, buffers=buffers, **kwargs)
 
         return _call
