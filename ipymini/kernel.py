@@ -360,9 +360,13 @@ class Subshell:
         self._shell_required = dict(execute_request=("code",), complete_request=("code", "cursor_pos"),
             inspect_request=("code", "cursor_pos"), history_request=("hist_access_type",), is_complete_request=("code",))
         self._shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
-            complete_request=self._handle_complete, inspect_request=self._handle_inspect, history_request=self._handle_history,
-            is_complete_request=self._handle_is_complete, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
+            complete_request=self._bridge_handler, inspect_request=self._bridge_handler, history_request=self._handle_history,
+            is_complete_request=self._bridge_handler, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
             comm_msg=self._handle_comm, comm_close=self._handle_comm, shutdown_request=self.handle_shutdown)
+        complete_req = ("complete_reply", dict(code=("code", ""), cursor_pos="cursor_pos"), "complete")
+        inspect_req = ("inspect_reply", dict(code=("code", ""), cursor_pos="cursor_pos", detail_level=("detail_level", 0)), "inspect")
+        is_complete_req = ("is_complete_reply", dict(code=("code", "")), "is_complete")
+        self._bridge_specs = dict(complete_request=complete_req, inspect_request=inspect_req, is_complete_request=is_complete_req)
 
     def start(self):
         if self._thread is not None:
@@ -531,16 +535,19 @@ class Subshell:
         if not required: return []
         return [key for key in required if key not in content]
 
+    def _missing_reply_defaults(self, msg_type:str)->dict:
+        cr = dict(matches=[], cursor_start=0, cursor_end=0, metadata={})
+        ir = dict(found=False, data={}, metadata={})
+        return dict(complete_request=cr, inspect_request=ir, history_request={"history": []},
+            is_complete_request={"indent": ""}).get(msg_type, {})
+
     def _send_missing_fields_reply(self, msg_type:str, missing: list[str], msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         reply_type = msg_type.replace("_request", "_reply")
         evalue = f"missing required fields: {', '.join(missing)}"
         reply = dict(status="error", ename="MissingField", evalue=evalue, traceback=[])
         if msg_type == "execute_request":
             reply |= dict(execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
-        elif msg_type == "complete_request": reply |= dict(matches=[], cursor_start=0, cursor_end=0, metadata={})
-        elif msg_type == "inspect_request": reply |= dict(found=False, data={}, metadata={})
-        elif msg_type == "history_request": reply |= dict(history=[])
-        elif msg_type == "is_complete_request": reply |= dict(indent="")
+        else: reply |= self._missing_reply_defaults(msg_type)
         self.send_reply(sock, reply_type, reply, msg, idents)
 
     def _send_abort_reply(self, sock: zmq.Socket, msg: dict, idents: list[bytes]|None):
@@ -702,14 +709,13 @@ class Subshell:
             self._executing.clear()
             self._set_exec_state(ExecState.IDLE)
 
-    def _handle_complete(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
-        "Reply to complete_request."
-        self._bridge_reply(msg, idents, sock, "complete_reply", "complete", code=("code", ""), cursor_pos="cursor_pos")
-
-    def _handle_inspect(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
-        "Reply to inspect_request."
-        self._bridge_reply(msg, idents, sock, "inspect_reply", "inspect", code=("code", ""), cursor_pos="cursor_pos",
-            detail_level=("detail_level", 0))
+    def _bridge_handler(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
+        "Handle simple bridge-request messages."
+        msg_type = msg.get("header", {}).get("msg_type")
+        spec = self._bridge_specs.get(msg_type)
+        if spec is None: return
+        reply_type, fields, method = spec
+        self._bridge_reply(msg, idents, sock, reply_type, method, **fields)
 
     def _handle_history(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Reply to history_request."
@@ -718,10 +724,6 @@ class Subshell:
             bool(content.get("raw", False)), session=int(content.get("session", 0)), start=int(content.get("start", 0)),
             stop=content.get("stop"), n=content.get("n"), pattern=content.get("pattern"), unique=bool(content.get("unique", False)))
         self.send_reply(sock, "history_reply", reply, msg, idents)
-
-    def _handle_is_complete(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
-        "Reply to is_complete_request."
-        self._bridge_reply(msg, idents, sock, "is_complete_reply", "is_complete", code=("code", ""))
 
     def _bridge_reply(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket, reply_type:str, method:str, **fields):
         "Call a bridge method and send reply."

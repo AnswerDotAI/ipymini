@@ -164,7 +164,7 @@ def iopub_drain(self: KernelClient, msg_id:str, timeout:float = TIMEOUT)->list[d
 
 
 @patch
-@delegates(KernelClient.execute, keep=True)
+@delegates(KernelClient.execute)
 def exec_drain(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
     "Execute `code` and return (msg_id, reply, outputs)."
     msg_id = self.execute(code, **kwargs)
@@ -280,7 +280,7 @@ def shell_send(self: KernelClient, msg_type:str, content: dict|None=None, subshe
 
 
 @patch
-@delegates(KernelClient.execute, keep=True)
+@delegates(KernelClient.execute)
 def exec_ok(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
     "Execute `code` and assert ok reply."
     msg_id, reply, outputs = self.exec_drain(code, timeout=timeout, **kwargs)
@@ -383,3 +383,4 @@ def iopub_msgs(outputs: list[dict], msg_type:str|None=None)->list[dict]:
 def iopub_streams(outputs: list[dict], name:str|None=None)->list[dict]:
     streams = iopub_msgs(outputs, "stream")
     return streams if name is None else [m for m in streams if m["content"].get("name") == name]
+

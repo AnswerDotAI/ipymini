@@ -11,6 +11,17 @@ async def _get_pubs(kc: AsyncKernelClient, timeout:float = 0.2)->list[dict]:
     except Empty: pass
     return res
 
+def _assert_interrupt(kc, msg_id:str, timeout:float = 2):
+    reply = kc.shell_reply(msg_id, timeout=timeout)
+    assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
+    outputs = kc.iopub_drain(msg_id)
+    errors = iopub_msgs(outputs, "error")
+    assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
+    assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
+        f"interrupt iopub: {errors[-1].get('content')}"
+    )
+    return reply
+
 
 def test_interrupt_request():
     with start_kernel() as (km, kc):
@@ -21,17 +32,9 @@ def test_interrupt_request():
             if use_control_channel: kc.interrupt_request()
             else: km.interrupt_kernel()
 
-            reply = kc.shell_reply(msg_id, timeout=10)
-            assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
+            reply = _assert_interrupt(kc, msg_id, timeout=10)
             assert reply["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}, (
                 f"interrupt ename: {reply.get('content')}"
-            )
-
-            outputs = kc.iopub_drain(msg_id)
-            errors = iopub_msgs(outputs, "error")
-            assert errors, f"expected iopub error after interrupt, got: {[m.get('msg_type') for m in outputs]}"
-            assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
-                f"interrupt iopub: {errors[-1].get('content')}"
             )
 
 
@@ -40,14 +43,7 @@ def test_interrupt_request_breaks_sleep():
         msg_id = kc.execute("import time; time.sleep(5); print('finished')")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
-        reply = kc.shell_reply(msg_id, timeout=2)
-        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
-        outputs = kc.iopub_drain(msg_id)
-        errors = iopub_msgs(outputs, "error")
-        assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
-        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
-            f"interrupt iopub: {errors[-1].get('content')}"
-        )
+        _assert_interrupt(kc, msg_id, timeout=2)
 
 
 def test_interrupt_request_breaks_asyncio_sleep():
@@ -55,14 +51,7 @@ def test_interrupt_request_breaks_asyncio_sleep():
         msg_id = kc.execute("import asyncio; await asyncio.sleep(5)")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
-        reply = kc.shell_reply(msg_id, timeout=2)
-        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
-        outputs = kc.iopub_drain(msg_id)
-        errors = iopub_msgs(outputs, "error")
-        assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
-        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
-            f"interrupt iopub: {errors[-1].get('content')}"
-        )
+        _assert_interrupt(kc, msg_id, timeout=2)
 
 
 def test_interrupt_request_breaks_busy_loop():
@@ -70,14 +59,7 @@ def test_interrupt_request_breaks_busy_loop():
         msg_id = kc.execute("while True: pass")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
-        reply = kc.shell_reply(msg_id, timeout=2)
-        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
-        outputs = kc.iopub_drain(msg_id)
-        errors = iopub_msgs(outputs, "error")
-        assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
-        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
-            f"interrupt iopub: {errors[-1].get('content')}"
-        )
+        _assert_interrupt(kc, msg_id, timeout=2)
 
 
 def test_interrupt_request_gateway_pattern():
