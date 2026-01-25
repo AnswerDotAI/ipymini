@@ -605,11 +605,12 @@ class MiniStream:
 
 
 class MiniDisplayPublisher(DisplayPublisher):
-    def __init__(self, sender=None):
+    def __init__(self, sender=None, live_var=None):
         "Collect display_pub events for IOPub."
         super().__init__()
         self.events = []
         self._sender = sender
+        self._live_var = live_var
 
     def set_sender(self, sender):
         "Set live display sender."
@@ -620,12 +621,14 @@ class MiniDisplayPublisher(DisplayPublisher):
         buffers = kwargs.get("buffers")
         event = dict(type="display", data=data, metadata=metadata or {}, transient=transient or {},
             update=bool(update), buffers=buffers)
-        if self._sender is not None: self._sender(event)
+        live = self._live_var.get() if self._live_var is not None else False
+        if self._sender is not None and live: self._sender(event)
         else: self.events.append(event)
 
     def clear_output(self, wait:bool=False):
         event = {"type": "clear_output", "wait": bool(wait)}
-        if self._sender is not None: self._sender(event)
+        live = self._live_var.get() if self._live_var is not None else False
+        if self._sender is not None and live: self._sender(event)
         else: self.events.append(event)
 
 
@@ -723,7 +726,8 @@ class KernelBridge:
         self.shell.compile.get_code_name = _code_name
         self._request_input = request_input
         self._display_sender = None
-        self.shell.display_pub = MiniDisplayPublisher(self._display_sender)
+        self._display_live = contextvars.ContextVar("ipymini.display_live", default=False)
+        self.shell.display_pub = MiniDisplayPublisher(self._display_sender, self._display_live)
         self.shell.displayhook = MiniDisplayHook(shell=self.shell)
         self.shell.display_trap.hook = self.shell.displayhook
         self._stream_events = []
@@ -787,7 +791,9 @@ class KernelBridge:
                 transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
             task = asyncio.create_task(coro)
             self._current_exec_task = task
-            try: res = await task
+            try:
+                try: res = await task
+                except asyncio.CancelledError as exc: raise KeyboardInterrupt() from exc
             finally:
                 self._current_exec_task = None
                 shell.events.trigger("post_execute")
@@ -799,8 +805,7 @@ class KernelBridge:
         user_expressions=None, allow_stdin:bool=False)->dict:
         "Execute `code` in IPython and return captured outputs/errors."
         self._reset_capture_state()
-        display_sender = self._display_sender
-        if silent and display_sender is not None: self.set_display_sender(None)
+        display_token = self._display_live.set(not silent and self._display_sender is not None)
         token = self._stream_live.set(not silent and self._stream_sender is not None)
         live = self._stream_live.get()
         try:
@@ -814,7 +819,7 @@ class KernelBridge:
                     self._stderr.flush()
                 except Exception: pass
             self._stream_live.reset(token)
-            if silent and display_sender is not None: self.set_display_sender(display_sender)
+            self._display_live.reset(display_token)
 
         payload = self.shell.payload_manager.read_payload()
         self.shell.payload_manager.clear_payload()

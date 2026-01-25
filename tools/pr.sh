@@ -21,7 +21,6 @@ trap cleanup EXIT
 
 # Ensure we're branching from an up-to-date main
 git switch "$base_branch"
-git pull --ff-only "$remote" "$base_branch"
 
 # Create a unique branch name
 branch="pr-$(date +%s)-$RANDOM"
