@@ -83,13 +83,14 @@ def temp_env(update: dict):
             else: os.environ[key] = value
 
 
+@delegates(KernelManager.start_kernel, but="env")
 @contextmanager
-def start_kernel(extra_env: dict | None = None):
+def start_kernel(extra_env: dict | None = None, **kwargs):
     "Start kernel."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
+    km.start_kernel(env=env, **kwargs)
     ensure_separate_process(km)
     kc = km.client()
     kc.start_channels()

@@ -25,7 +25,7 @@ This was almost entirely implemented by AI, closely referencing the `ipykernel`,
   - `kernel.py`: kernel loop + Jupyter protocol handling (ZMQ)
   - `bridge.py`: IPython integration (execute, display, history, comms, debug)
   - `__main__.py`: CLI entry (`python -m ipymini -f <connection_file>`)
-- `pytests/`: protocol + behavior tests
+- `tests/`: protocol + behavior tests
 - `share/jupyter/kernels/ipymini/kernel.json`: kernel spec
 
 ---
@@ -220,7 +220,7 @@ After the initial manual release, bump the version before running the release sc
 
 - `ipymini/kernel.py` – message loop + protocol handling
 - `ipymini/bridge.py` – IPython integration and output capture
-- `pytests/` – protocol expectations
+- `tests/` – protocol expectations
 
 ---
 

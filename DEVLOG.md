@@ -5,7 +5,7 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 ## Project snapshot
 - `ipymini` is a small, Python‑only Jupyter kernel with IPython parity as the goal.
 - Core modules: `ipymini/kernel.py` (ZMQ + protocol), `ipymini/bridge.py` (IPython integration, debug, comms), `ipymini/__main__.py` (CLI/installer).
-- Tests live in `pytests/` and aim for protocol‑level parity with `ipykernel`.
+- Tests live in `tests/` and aim for protocol‑level parity with `ipykernel`.
 - Reference trees (`ipykernel/`, `xeus/`, etc.) are kept for comparison, not edited.
 
 ## Coding style (fastai)
@@ -27,7 +27,7 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 - Cell source is written to temp files: `ipymini_<pid>/<murmur2(code)>.py` unless `IPYMINI_CELL_NAME` overrides.
 - Murmur2 implementation lives in `ipymini/murmur2.py`.
 - `debugpy` is required for tests; added to test/dev extras in `pyproject.toml`.
-- Debug helper APIs in tests are centralized in `pytests/kernel_utils.py` (`debug_request`, `debug_dump_cell`, `debug_set_breakpoints`, `debug_info`, `debug_configuration_done`, `debug_continue`, `wait_for_stop`).
+- Debug helper APIs in tests are centralized in `tests/kernel_utils.py` (`debug_request`, `debug_dump_cell`, `debug_set_breakpoints`, `debug_info`, `debug_configuration_done`, `debug_continue`, `wait_for_stop`).
 
 ## Protocol coverage (selected)
 - `kernel_info`, `connect_request`, `execute_request`, `complete`, `inspect`, `history`, `is_complete`.
@@ -39,7 +39,7 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 ## Tests
 - Test runner defaults to parallel: `pytest -n auto --dist=loadfile` (set in `pytest.ini`).
 - Fuzz tests are always on (no env toggle).
-- Typical test helpers in `pytests/kernel_utils.py`:
+- Typical test helpers in `tests/kernel_utils.py`:
   - `start_kernel`, `build_env`, `load_connection`.
   - `get_shell_reply`, `drain_iopub`, `execute_and_drain`.
   - IOPub filters: `iopub_msgs`, `iopub_streams`.

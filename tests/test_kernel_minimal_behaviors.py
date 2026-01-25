@@ -79,7 +79,7 @@ def test_execute_reply_after_keyboardinterrupt_during_send() -> None:
     try:
         patch = """import ipymini.kernel as _k
 if not hasattr(_k, "_orig_send_reply"):
-    _k._orig_send_reply = _k.Subshell._send_reply
+    _k._orig_send_reply = _k.Subshell.send_reply
 _k._interrupt_reply_once = True
 def _send_reply(self, socket, msg_type, content, parent, idents):
     code = parent.get("content", {}).get("code")
@@ -87,7 +87,7 @@ def _send_reply(self, socket, msg_type, content, parent, idents):
         _k._interrupt_reply_once = False
         raise KeyboardInterrupt("simulated interrupt")
     return _k._orig_send_reply(self, socket, msg_type, content, parent, idents)
-_k.Subshell._send_reply = _send_reply
+_k.Subshell.send_reply = _send_reply
 """
         msg_id = kc.execute(patch)
         reply = get_shell_reply(kc, msg_id, timeout=10)
