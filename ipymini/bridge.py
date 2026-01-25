@@ -1,4 +1,4 @@
-import builtins, getpass, json, logging, os, queue, socket, sys, tempfile, threading
+import asyncio, builtins, contextvars, getpass, json, logging, os, queue, socket, sys, tempfile, threading
 from contextlib import contextmanager
 from typing import Callable
 import zmq
@@ -12,6 +12,7 @@ from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
 from IPython.core.getipython import get_ipython
 from IPython.core.interactiveshell import InteractiveShell
+from IPython.core.async_helpers import _asyncio_runner
 from IPython.core.shellapp import InteractiveShellApp
 from IPython.core.application import BaseIPythonApplication
 import debugpy
@@ -31,7 +32,7 @@ class _ThreadLocalStream:
 
     def _target(self):
         "Return the current thread-local stream or the default."
-        target = getattr(_IO_STATE.local, self._name, None)
+        target = _IO_STATE.get(self._name)
         return self._default if target is None else target
 
     def write(self, value)->int:
@@ -64,8 +65,8 @@ _chans = ("shell", "stdout", "stderr", "request_input", "allow_stdin")
 class _ThreadLocalIO:
     def __init__(self):
         "Capture original IO hooks and prepare thread-local state."
-        self.local = threading.local()
         self._installed = False
+        self._vars = {name: contextvars.ContextVar(f"ipymini.{name}", default=None) for name in _chans}
         self._orig_stdout = sys.stdout
         self._orig_stderr = sys.stderr
         self._orig_input = builtins.input
@@ -82,16 +83,17 @@ class _ThreadLocalIO:
         _getipython_mod.get_ipython = _thread_local_get_ipython
         self._installed = True
 
+    def get(self, name: str): return self._vars[name].get()
+
     def push(self, shell, stdout, stderr, request_input: Callable[[str, bool], str], allow_stdin: bool)->dict:
         "Set per-thread IO bindings; returns the previous bindings."
-        prev = {name: getattr(self.local, name, None) for name in _chans}
         args = locals()
-        for name in _chans: setattr(self.local, name, args[name])
+        prev = {name: self._vars[name].set(args[name]) for name in _chans}
         return prev
 
     def pop(self, prev: dict):
         "Restore IO bindings from `prev`."
-        for name in _chans: setattr(self.local, name, prev.get(name))
+        for name in _chans: self._vars[name].reset(prev[name])
 
 
 _IO_STATE = _ThreadLocalIO()
@@ -99,14 +101,14 @@ _IO_STATE = _ThreadLocalIO()
 
 def _thread_local_get_ipython():
     "Return thread-local shell or fall back to original get_ipython."
-    shell = getattr(_IO_STATE.local, "shell", None)
+    shell = _IO_STATE.get("shell")
     return shell if shell is not None else _IO_STATE._orig_get_ipython()
 
 
 def _thread_local_input(prompt:str = "")->str:
     "Route input() through kernel stdin handler using `prompt`."
-    handler = getattr(_IO_STATE.local, "request_input", None)
-    allow = getattr(_IO_STATE.local, "allow_stdin", False)
+    handler = _IO_STATE.get("request_input")
+    allow = bool(_IO_STATE.get("allow_stdin"))
     if handler is None or not allow:
         msg = "raw_input was called, but this frontend does not support input requests."
         raise StdinNotImplementedError(msg)
@@ -115,8 +117,8 @@ def _thread_local_input(prompt:str = "")->str:
 
 def _thread_local_getpass(prompt:str = "Password: ", stream=None)->str:
     "Route getpass() through stdin handler using `prompt`."
-    handler = getattr(_IO_STATE.local, "request_input", None)
-    allow = getattr(_IO_STATE.local, "allow_stdin", False)
+    handler = _IO_STATE.get("request_input")
+    allow = bool(_IO_STATE.get("allow_stdin"))
     if handler is None or not allow:
         msg = "getpass was called, but this frontend does not support input requests."
         raise StdinNotImplementedError(msg)
@@ -715,7 +717,7 @@ class KernelBridge:
         self.shell.display_trap.hook = self.shell.displayhook
         self._stream_events = []
         self._stream_sender = None
-        self._stream_live = False
+        self._stream_live = contextvars.ContextVar("ipymini.stream_live", default=False)
         self._stdout = MiniStream("stdout", self._stream_events, sink=self._emit_stream)
         self._stderr = MiniStream("stderr", self._stream_events, sink=self._emit_stream)
         if self.shell.display_page: hook = page.as_hook(page.display_page)
@@ -753,22 +755,48 @@ class KernelBridge:
         self.shell._last_traceback = None
         self._stream_events.clear()
 
-    def execute(self, code:str, silent:bool=False, store_history:bool=True,
+    async def _run_cell(self, code:str, silent:bool, store_history:bool):
+        "Run `code` using IPython's sync/async helpers."
+        shell = self.shell
+        if not (hasattr(shell, "run_cell_async") and hasattr(shell, "should_run_async")):
+            return shell.run_cell(code, store_history=store_history, silent=silent)
+        try:
+            transformed = shell.transform_cell(code)
+            exc_tuple = None
+        except Exception:
+            transformed = code
+            exc_tuple = sys.exc_info()
+        try: loop_running = asyncio.get_running_loop().is_running()
+        except RuntimeError: loop_running = False
+        should_run_async = shell.should_run_async(code, transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
+        if loop_running and _asyncio_runner and shell.loop_runner is _asyncio_runner and should_run_async:
+            res = None
+            coro = shell.run_cell_async(code, store_history=store_history, silent=silent,
+                transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
+            try: res = await asyncio.ensure_future(coro)
+            finally:
+                shell.events.trigger("post_execute")
+                if not silent: shell.events.trigger("post_run_cell", res)
+            return res
+        return shell.run_cell(code, store_history=store_history, silent=silent)
+
+    async def execute(self, code:str, silent:bool=False, store_history:bool=True,
         user_expressions=None, allow_stdin:bool=False)->dict:
         "Execute `code` in IPython and return captured outputs/errors."
         self._reset_capture_state()
-        self._stream_live = not silent and self._stream_sender is not None
+        token = self._stream_live.set(not silent and self._stream_sender is not None)
+        live = self._stream_live.get()
         try:
             with _thread_local_io(self.shell, self._stdout, self._stderr, self._request_input, bool(allow_stdin)):
                 self._debugger.trace_current_thread()
-                result = self.shell.run_cell(code, store_history=store_history, silent=silent)
+                result = await self._run_cell(code, silent=silent, store_history=store_history)
         finally:
-            if self._stream_live:
+            if live:
                 try:
                     self._stdout.flush()
                     self._stderr.flush()
                 except Exception: pass
-            self._stream_live = False
+            self._stream_live.reset(token)
 
         payload = self.shell.payload_manager.read_payload()
         self.shell.payload_manager.clear_payload()
@@ -793,7 +821,7 @@ class KernelBridge:
     def set_stream_sender(self, sender: Callable[[str, str], None]|None): self._stream_sender = sender
 
     def _emit_stream(self, name:str, text:str):
-        if self._stream_live and self._stream_sender is not None and text: self._stream_sender(name, text)
+        if self._stream_live.get() and self._stream_sender is not None and text: self._stream_sender(name, text)
 
     def _dedupe_set_next_input(self, payload: list[dict])->list[dict]:
         "Deduplicate set_next_input payloads, keeping the newest."

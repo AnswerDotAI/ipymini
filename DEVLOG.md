@@ -20,6 +20,8 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 - `SubshellManager` + `Subshell` provide concurrent execute pipelines with shared user namespace.
 - Shell/control handlers are mapped once and dispatched by message type.
 - Shell/control ZMQ sockets run in background threads; the parent subshell executes in the main thread for signal‑driven interrupts.
+- Each subshell (including the parent) runs a persistent asyncio loop in its own thread; execution happens while the loop is running.
+- Subshell queues are drained by a single async consumer per loop; an `asyncio.Lock` serializes per‑subshell execution.
 - `KernelBridge` integrates IPython execution, display, history, comms, and debugger.
 
 ## Debugger (DAP) behavior
@@ -41,10 +43,11 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
 - Fuzz tests are always on (no env toggle).
 - Typical test helpers in `tests/kernel_utils.py`:
   - `start_kernel`, `build_env`, `load_connection`.
-  - `get_shell_reply`, `drain_iopub`, `execute_and_drain`.
+  - `get_shell_reply`, `wait_for_msg`, `iopub_msgs`.
   - IOPub filters: `iopub_msgs`, `iopub_streams`.
   - Debug helpers (see above).
 - CI expectation: all tests must pass; debug tests assume `debugpy` is installed.
+- `asyncio.create_task(...)` is covered in both main‑shell and subshell tests.
 
 ## Config conventions
 - Kernel spec lives in `share/jupyter/kernels/ipymini/kernel.json`.
@@ -53,12 +56,26 @@ This is a living, condensed log of what matters about ipymini: architecture, pro
   - `IPYMINI_USE_JEDI=0|1`
   - `IPYMINI_EXPERIMENTAL_COMPLETIONS=0|1`
 - Debug file name override: `IPYMINI_CELL_NAME`.
+- Stop‑on‑error abort window (optional): `IPYMINI_STOP_ON_ERROR_TIMEOUT` (seconds; default 0.0).
 
 ## Key behaviors
 - Interrupts are signal‑based (SIGINT) and handled by the kernel to avoid killing the process when idle.
 - `stop_on_error` aborts queued execute requests but lets non‑execute requests complete.
 - `set_next_input` payloads are de‑duplicated per execute.
 - Debugger uses `debugpy` and avoids sys.monitoring stalls by setting `PYDEVD_USE_SYS_MONITORING=0`.
+- Async support mirrors ipykernel: user code runs with a **running asyncio loop**, so `asyncio.create_task(...)` works in sync cells.
+- Stream and stdin routing use contextvars so task‑spawned output/input uses the correct parent message.
+
+## Recent changes (runloop + aborting)
+- Switched subshell execution to per‑thread asyncio loops, with a running loop in the execution thread.
+- Reworked IO routing from thread‑locals to contextvars to capture output/input across tasks.
+- Added aborting semantics modeled on ipykernel:
+  - On error with `stop_on_error`, the subshell enters an aborting window.
+  - Subshell posts a sentinel to its own queue to clear aborting after queued executes are handled.
+  - Optional timeout via `IPYMINI_STOP_ON_ERROR_TIMEOUT` for slow queues.
+- Adjusted execution to call `run_cell_async` directly when a loop is already running and IPython says the cell is async, preventing `RuntimeError: event loop is already running`.
+- Added gateway‑style client tests to validate eval/exec patterns used by Solveit (`tests/test_gateway_client.py`).
+- Cleared the default event loop after subshell shutdown to avoid atexit cleanup warnings (`tests/test_loop_cleanup.py`).
 
 ## Notes for contributors
 - Don’t touch reference implementations in `ipykernel/`, `xeus/`, etc.

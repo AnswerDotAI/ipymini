@@ -24,9 +24,8 @@ def test_asyncio_create_task() -> None:
         msg_id = kc.execute(code, store_history=False)
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
-        outputs = kc.iopub_drain(msg_id)
-        streams = iopub_streams(outputs, "stdout")
-        assert any("ok" in msg["content"].get("text", "") for msg in streams)
+        pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
+        wait_for_msg(kc.get_iopub_msg, pred, timeout=TIMEOUT, err="expected stdout from create_task")
         kc.iopub_drain(msg_id)
 
         reply = debug_request(kc, "initialize", DEBUG_INIT_ARGS)

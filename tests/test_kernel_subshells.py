@@ -94,6 +94,24 @@ def test_subshell_basics():
         assert _list_subshells(kc) == []
 
 
+def test_subshell_asyncio_create_task():
+    with start_kernel() as (_, kc):
+        subshell_id = _create_subshell(kc)
+        code = (
+            "import asyncio, time\n"
+            "async def f():\n"
+            "    await asyncio.sleep(0.01)\n"
+            "    print('ok')\n"
+            "asyncio.create_task(f())\n"
+            "time.sleep(0.05)\n"
+        )
+        msg_id = kc.cmd.execute_request(code=code, subshell_id=subshell_id)
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "ok"
+        pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
+        wait_for_msg(kc.get_iopub_msg, pred, timeout=TIMEOUT, err="expected stdout from subshell create_task")
+
+
 def test_subshell_concurrency_and_control():
     with start_kernel() as (_, kc):
         cmd = kc.cmd

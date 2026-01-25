@@ -126,6 +126,9 @@ km = KernelManager(kernel_name="ipymini")
 km.start_kernel(env={"MY_FLAG": "1"}, cwd="/path/to/workdir")
 ```
 
+Optional env flags:
+- `IPYMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
+
 ---
 
 ## Tests
@@ -194,10 +197,11 @@ After the initial manual release, bump the version before running the release sc
 ## Design notes
 
 - The parent subshell runs on the main thread; shell/control I/O live on background threads.
+- Each subshell (including the parent) runs a persistent asyncio loop in its execution thread, so `asyncio.create_task(...)` works in sync cells.
 - Interrupts use the kernelspec `interrupt_mode = signal`; SIGINT is handled by the kernel to interrupt active execution without killing the kernel when idle.
 - ``set_next_input`` is injected onto the IPython shell to emit the expected payloads.
 - `stop_on_error` aborts queued *execute* requests only; non-execute requests still return replies.
-- Subshells run in per‑subshell threads with a shared user namespace and thread‑local IO routing.
+- Subshells run in per‑subshell threads with a shared user namespace and contextvar‑based IO routing.
 - IOPub forwards `buffers` for display and comm messages when provided; comm handlers also accept binary buffers.
 - Interrupts while blocked on input cancel pending input waits and surface `KeyboardInterrupt`.
 
