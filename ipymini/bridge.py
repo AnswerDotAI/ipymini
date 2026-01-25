@@ -29,7 +29,7 @@ _STARTUP_DONE = False
 
 
 class _ThreadLocalStream:
-    def __init__(self, name: str, default) -> None:
+    def __init__(self, name: str, default):
         "Create a thread-local stream proxy for `name` with `default` fallback."
         self._name = name
         self._default = default
@@ -51,7 +51,7 @@ class _ThreadLocalStream:
         for line in lines: total += self.write(line) or 0
         return total
 
-    def flush(self) -> None:
+    def flush(self):
         "Flush the current stream if it supports `flush()`."
         target = self._target()
         if target is None: return None
@@ -64,9 +64,10 @@ class _ThreadLocalStream:
         if target is None: return False
         return bool(target.isatty()) if hasattr(target, "isatty") else False
 
+_chans = ("shell", "stdout", "stderr", "request_input", "allow_stdin")
 
 class _ThreadLocalIO:
-    def __init__(self) -> None:
+    def __init__(self):
         "Capture original IO hooks and prepare thread-local state."
         self.local = threading.local()
         self._installed = False
@@ -76,7 +77,7 @@ class _ThreadLocalIO:
         self._orig_getpass = getpass.getpass
         self._orig_get_ipython = _getipython_mod.get_ipython
 
-    def install(self) -> None:
+    def install(self):
         "Install thread-local stdout/stderr/input/getpass/get_ipython hooks."
         if self._installed: return
         sys.stdout = _ThreadLocalStream("stdout", self._orig_stdout)
@@ -98,7 +99,7 @@ class _ThreadLocalIO:
         self.local.allow_stdin = allow_stdin
         return prev
 
-    def pop(self, prev: dict) -> None:
+    def pop(self, prev: dict):
         "Restore IO bindings from `prev`."
         self.local.shell = prev.get("shell")
         self.local.stdout = prev.get("stdout")
@@ -150,27 +151,27 @@ class DebugpyMessageQueue:
     SEPARATOR = "\r\n\r\n"
     SEPARATOR_LENGTH = 4
 
-    def __init__(self, event_callback, response_callback) -> None:
+    def __init__(self, event_callback, response_callback):
         "Initialize a parser for debugpy TCP frames."
         self.tcp_buffer = ""
         self._reset_tcp_pos()
         self.event_callback = event_callback
         self.response_callback = response_callback
 
-    def _reset_tcp_pos(self) -> None:
+    def _reset_tcp_pos(self):
         "Reset header/size offsets for the TCP buffer."
         self.header_pos = -1
         self.separator_pos = -1
         self.message_size = 0
         self.message_pos = -1
 
-    def _put_message(self, raw_msg: str) -> None:
+    def _put_message(self, raw_msg: str):
         "Decode a JSON message and dispatch to event/response callback."
         msg = json.loads(raw_msg)
         if msg.get("type") == "event": self.event_callback(msg)
         else: self.response_callback(msg)
 
-    def put_tcp_frame(self, frame: str) -> None:
+    def put_tcp_frame(self, frame: str):
         "Append TCP frame data and emit complete debugpy messages."
         self.tcp_buffer += frame
         while True:
@@ -201,7 +202,7 @@ class DebugpyMessageQueue:
 
 
 class MiniDebugpyClient:
-    def __init__(self, context: zmq.Context, event_callback: Callable[[dict], None] | None) -> None:
+    def __init__(self, context: zmq.Context, event_callback: Callable[[dict], None] | None):
         "Initialize debugpy client state for a ZMQ connection."
         self.context = context
         self.next_seq = 1
@@ -216,38 +217,38 @@ class MiniDebugpyClient:
         self._endpoint = None
         self._message_queue = DebugpyMessageQueue(self._handle_event, self._handle_response)
 
-    def connect(self, host: str, port: int) -> None:
+    def connect(self, host: str, port: int):
         "Connect to debugpy adapter at `host:port` and start reader."
         self._endpoint = f"tcp://{host}:{port}"
         self._start_reader()
 
-    def _start_reader(self) -> None:
+    def _start_reader(self):
         "Start reader thread if not already running."
         if self._reader_thread and self._reader_thread.is_alive(): return
         self._stop.clear()
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
 
-    def close(self) -> None:
+    def close(self):
         "Stop reader thread and close debugpy socket."
         self._stop.set()
         self._initialized.clear()
         if self._reader_thread: self._reader_thread.join(timeout=1)
         self._reader_thread = None
 
-    def _handle_event(self, msg: dict) -> None:
+    def _handle_event(self, msg: dict):
         "Handle debugpy event messages and set init state."
         if msg.get("event") == "initialized": self._initialized.set()
         if self._event_callback: self._event_callback(msg)
 
-    def _handle_response(self, msg: dict) -> None:
+    def _handle_response(self, msg: dict):
         "Resolve a pending request from a debugpy response."
         req_seq = msg.get("request_seq")
         if isinstance(req_seq, int):
             with self._pending_lock: waiter = self._pending.get(req_seq)
             if waiter is not None: waiter.put(msg)
 
-    def _reader_loop(self) -> None:
+    def _reader_loop(self):
         "Read debugpy frames from ZMQ and feed the parser."
         if self._endpoint is None: return
         if debugpy:
@@ -272,7 +273,7 @@ class MiniDebugpyClient:
                     self._message_queue.put_tcp_frame(text)
         finally: sock.close(0)
 
-    def _drain_outgoing(self, sock: zmq.Socket) -> None:
+    def _drain_outgoing(self, sock: zmq.Socket):
         "Send queued debugpy requests to the socket."
         if self._routing_id is None: return
         while True:
@@ -321,7 +322,7 @@ class MiniDebugpyClient:
 
 class MiniDebugger:
     def __init__(self, event_callback: Callable[[dict], None] | None = None, *, zmq_context: zmq.Context | None = None,
-        kernel_modules: list[str] | None = None, debug_just_my_code: bool = False, filter_internal_frames: bool = True) -> None:
+        kernel_modules: list[str] | None = None, debug_just_my_code: bool = False, filter_internal_frames: bool = True):
         "Initialize DAP handler and debugpy client state."
         self.events = []
         self._event_callback = event_callback
@@ -346,7 +347,7 @@ class MiniDebugger:
         sock.close()
         return port
 
-    def _ensure_started(self) -> None:
+    def _ensure_started(self):
         "Start debugpy adapter and connect client once."
         if self.started: return
         if not debugpy: raise RuntimeError("debugpy not available")
@@ -362,7 +363,7 @@ class MiniDebugger:
         self._remove_cleanup_transforms()
         self.started = True
 
-    def _handle_event(self, msg: dict) -> None:
+    def _handle_event(self, msg: dict):
         "Track stopped/continued threads and collect events."
         if msg.get("event") == "stopped":
             thread_id = msg.get("body", {}).get("threadId")
@@ -420,7 +421,7 @@ class MiniDebugger:
         if command == "disconnect" and self.started: self._reset_session()
         return response or {}, self.events
 
-    def _reset_session(self) -> None:
+    def _reset_session(self):
         "Reset debugpy client session state."
         self.client.close()
         self.started = False
@@ -429,7 +430,7 @@ class MiniDebugger:
         self._traced_threads.clear()
         self._restore_cleanup_transforms()
 
-    def trace_current_thread(self) -> None:
+    def trace_current_thread(self):
         "Enable debugpy tracing on the current thread if needed."
         if not debugpy or not self.started: return
         thread_id = threading.get_ident()
@@ -438,7 +439,7 @@ class MiniDebugger:
         except Exception: return
         self._traced_threads.add(thread_id)
 
-    def _remove_cleanup_transforms(self) -> None:
+    def _remove_cleanup_transforms(self):
         "Temporarily remove IPython cleanup transforms."
         ip = get_ipython()
         if ip is None: return
@@ -449,7 +450,7 @@ class MiniDebugger:
             index = cleanup_transforms.index(leading_empty_lines)
             self._removed_cleanup[index] = cleanup_transforms.pop(index)
 
-    def _restore_cleanup_transforms(self) -> None:
+    def _restore_cleanup_transforms(self):
         "Restore IPython cleanup transforms removed earlier."
         if not self._removed_cleanup: return
         ip = get_ipython()
@@ -577,7 +578,7 @@ class MiniDebugger:
 
 
 class MiniStream:
-    def __init__(self, name: str, events: list[dict], sink: Callable[[str, str], None] | None = None) -> None:
+    def __init__(self, name: str, events: list[dict], sink: Callable[[str, str], None] | None = None):
         "Buffer stream text and emit events to `events`/`sink`."
         self.name = name
         self.events = events
@@ -602,7 +603,7 @@ class MiniStream:
         for line in lines: total += self.write(line) or 0
         return total
 
-    def flush(self) -> None:
+    def flush(self):
         "Flush buffered text to the sink."
         if self._sink is None: return None
         if self._buffer:
@@ -612,7 +613,7 @@ class MiniStream:
 
     def isatty(self) -> bool: return False
 
-    def _emit_live(self, text: str) -> None:
+    def _emit_live(self, text: str):
         "Emit complete lines from buffer to the sink."
         self._buffer += text
         if "\n" not in self._buffer: return
@@ -622,36 +623,36 @@ class MiniStream:
 
 
 class MiniDisplayPublisher(DisplayPublisher):
-    def __init__(self) -> None:
+    def __init__(self):
         "Collect display_pub events for IOPub."
         super().__init__()
         self.events = []
 
-    def publish(self, data, metadata=None, transient=None, update=False, **kwargs) -> None:
+    def publish(self, data, metadata=None, transient=None, update=False, **kwargs):
         "Record display data/update for later emission."
         buffers = kwargs.get("buffers")
         self.events.append(dict(type="display", data=data, metadata=metadata or {}, transient=transient or {},
             update=bool(update), buffers=buffers))
 
-    def clear_output(self, wait: bool = False) -> None: self.events.append({"type": "clear_output", "wait": bool(wait)})
+    def clear_output(self, wait: bool = False): self.events.append({"type": "clear_output", "wait": bool(wait)})
 
 
 class MiniDisplayHook(DisplayHook):
-    def __init__(self, shell=None) -> None:
+    def __init__(self, shell=None):
         "DisplayHook that captures last result metadata."
         super().__init__(shell=shell)
         self.last = None
         self.last_metadata = None
         self.last_execution_count = None
 
-    def write_output_prompt(self) -> None: self.last_execution_count = self.prompt_count
+    def write_output_prompt(self): self.last_execution_count = self.prompt_count
 
-    def write_format_data(self, format_dict, md_dict=None) -> None:
+    def write_format_data(self, format_dict, md_dict=None):
         "Capture formatted output from displayhook."
         self.last = format_dict
         self.last_metadata = md_dict or {}
 
-    def finish_displayhook(self) -> None: self._is_active = False
+    def finish_displayhook(self): self._is_active = False
 
 
 class StdinNotImplementedError(RuntimeError): pass
@@ -684,7 +685,7 @@ class _MiniShellApp(BaseIPythonApplication, InteractiveShellApp):
     def init_shell(self):
         if self.shell: self.shell.configurables.append(self)
 
-def _init_ipython_app(shell) -> None:
+def _init_ipython_app(shell):
     "Load IPython config, extensions, and startup via InteractiveShellApp."
     global _STARTUP_DONE
     if _STARTUP_DONE: return
@@ -715,7 +716,7 @@ def _debug_file_name(code: str) -> str:
 
 class KernelBridge:
     def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True) -> None:
+        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True):
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
 
@@ -757,7 +758,7 @@ class KernelBridge:
 
         self.shell.enable_gui = _enable_gui  # type: ignore[assignment]
 
-        def _set_next_input(text: str, replace: bool = False) -> None:
+        def _set_next_input(text: str, replace: bool = False):
             "Write a set_next_input payload for the frontend."
             payload = dict(source="set_next_input", text=text, replace=bool(replace))
             self.shell.payload_manager.write_payload(payload)
@@ -768,14 +769,14 @@ class KernelBridge:
         self._debugger = MiniDebugger(debug_event_callback, zmq_context=zmq_context, kernel_modules=kernel_modules,
             debug_just_my_code=False, filter_internal_frames=True)
 
-    def _payloadpage_page(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None) -> None:
+    def _payloadpage_page(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None):
         "Send pager output as a payload starting at `start`."
         start = max(0, start)
         data = strg if isinstance(strg, dict) else {"text/plain": strg}
         payload = dict(source="page", data=data, start=start)
         self.shell.payload_manager.write_payload(payload)
 
-    def _reset_capture_state(self) -> None:
+    def _reset_capture_state(self):
         "Clear display/output capture state for next execution."
         self.shell.display_pub.events.clear()
         self.shell.displayhook.last = None
@@ -824,9 +825,9 @@ class KernelBridge:
         return dict(streams=streams, display=list(self.shell.display_pub.events), result=self.shell.displayhook.last, result_metadata=result_meta,
             execution_count=exec_count, error=error, user_expressions=user_expr, payload=payload)
 
-    def set_stream_sender(self, sender: Callable[[str, str], None] | None) -> None: self._stream_sender = sender
+    def set_stream_sender(self, sender: Callable[[str, str], None] | None): self._stream_sender = sender
 
-    def _emit_stream(self, name: str, text: str) -> None:
+    def _emit_stream(self, name: str, text: str):
         if self._stream_live and self._stream_sender is not None and text: self._stream_sender(name, text)
 
     def _dedupe_set_next_input(self, payload: list[dict]) -> list[dict]:
