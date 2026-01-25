@@ -19,27 +19,12 @@ This was almost entirely implemented by AI, closely referencing the `ipykernel`,
 
 ---
 
-## Repository layout
-
-- `ipymini/`
-  - `kernel.py`: kernel loop + Jupyter protocol handling (ZMQ)
-  - `bridge.py`: IPython integration (execute, display, history, comms, debug)
-  - `__main__.py`: CLI entry (`python -m ipymini -f <connection_file>`)
-- `tests/`: protocol + behavior tests
-- `share/jupyter/kernels/ipymini/kernel.json`: kernel spec
-
----
-
 ## Requirements
 
-### Python / Jupyter
 - Python 3.11+ recommended (we test with 3.12)
 - `jupyter_client`, `jupyter_core`, `ipython`, `pyzmq`
-- `pytest` if running tests
-- `ipykernel` is a test-only dependency (used by some e2e/debug harnesses)
 
-### ZMQ
-`pyzmq` bundles or links against `libzmq`. If you need to install system libs on MacOS:
+If you need system ZMQ libs on macOS:
 
 ```
 brew install libzmq
@@ -131,120 +116,6 @@ Optional env flags:
 
 ---
 
-## Tests
+## Developer guide
 
-All tests must pass before changes are considered complete:
-
-```
-pytest -q
-```
-
-To run the full suite (including slow tests), use:
-
-```
-tools/run_tests.sh
-```
-
-Note: e2e tests launch the kernel via `jupyter_client.KernelManager` in a separate process; make sure the kernelspec is discoverable (see `JUPYTER_PATH` above).
-
-Note: debugger breakpoint-stop tests are enabled and pass; the kernel forces `PYDEVD_USE_SYS_MONITORING=0` to avoid sys.monitoring stalls (see `DEVLOG.md`).
-
----
-
-## PRs and releases
-
-Create a PR (GitHub CLI required):
-
-```
-tools/pr.sh "Message" [label] [body|body-file]
-```
-
-Release flow (tags trigger GitHub Actions publish):
-
-```
-tools/release.sh [patch|minor|major]
-```
-
-Initial PyPI permission setup (one-time):
-
-```
-hatch build
-twine upload dist/*
-```
-
-After the initial manual release, bump the version before running the release script.
-
----
-
-## Behavior implemented so far
-
-- `kernel_info` replies
-- `connect_request` replies
-- stdout/stderr stream messages
-- `execute_result`
-- `display_data` + `update_display_data`
-- `clear_output`
-- comms (open/msg/close/info)
-- history (tail/search/range)
-- inspect
-- `is_complete`
-- completion (IPython-based; can use Jedi and the experimental completion API)
-- interrupts (signal‑based)
-- `stop_on_error` (aborts queued execute requests by default)
-- stdin input requests
-- kernel subshells (create/list/delete; concurrent shell handling; per‑subshell execution counts/history)
-- pager payloads (`?` / `help`)
-- `set_next_input` payloads (coalesced to one per execute)
-- `iopub_welcome` (XPUB)
-- `debug_request` (debugpy in-process adapter: initialize/attach/evaluate, breakpoints, stackTrace/scopes/variables, continue)
-
----
-
-## Design notes
-
-- The parent subshell runs on the main thread; shell/control I/O live on background threads.
-- Each subshell (including the parent) runs a persistent asyncio loop in its execution thread, so `asyncio.create_task(...)` works in sync cells.
-- Interrupts use the kernelspec `interrupt_mode = signal`; SIGINT is handled by the kernel to interrupt active execution without killing the kernel when idle.
-- ``set_next_input`` is injected onto the IPython shell to emit the expected payloads.
-- `stop_on_error` aborts queued *execute* requests only; non-execute requests still return replies.
-- Subshells run in per‑subshell threads with a shared user namespace and contextvar‑based IO routing.
-- IOPub forwards `buffers` for display and comm messages when provided; comm handlers also accept binary buffers.
-- Interrupts while blocked on input cancel pending input waits and surface `KeyboardInterrupt`.
-
-## Style notes (fastcore)
-
-- Prefer `store_attr()` with no args when storing all params (except `self`).
-- If most params are stored and only a few are excluded, use `store_attr(but='a,b')`.
-- Pass an explicit list (e.g. `store_attr("a,b")`) only when storing a subset of params.
-
-## Completion configuration (no traitlets required)
-
-`ipymini` reads simple environment flags at startup:
-
-- `IPYMINI_USE_JEDI=0|1` (defaults to IPython’s own default)
-- `IPYMINI_EXPERIMENTAL_COMPLETIONS=0|1` (default: enabled if IPython supports it)
-
----
-
-## Where to start reading
-
-- `ipymini/kernel.py` – message loop + protocol handling
-- `ipymini/bridge.py` – IPython integration and output capture
-- `tests/` – protocol expectations
-
----
-
-## Coding style
-
-We follow the [fastai style guide](https://github.com/AnswerDotAI/fastaistyle) (not PEP8). Key points from the style guide:
-
-- Favor brevity and clarity: aim for one idea per line
-  - Use single-line `if`/`def` when the body is a single statement.
-- Keep code readable at a glance: wrap at ~140 chars and avoid unnecessary vertical whitespace
-  - e.g., group imports
-- Use short, conventional names and align similar statements where it helps scanning.
-- Avoid auto-formatters/linters that fight this style.
-- Dicts with 3+ identifier keys use `dict(...)` instead of `{...}`.
-- Repeated request/response plumbing is factored into small helpers
-  - e.g., subshell send, DAP breakpoint helpers
-- No semicolons for chaining; only single-statement bodies are one-liners.
+All contributor and architecture details have moved to `DEV.md`.

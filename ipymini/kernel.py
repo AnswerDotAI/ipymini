@@ -260,7 +260,7 @@ class AsyncRouterThread(threading.Thread):
         self._queue = None
         self._ready = threading.Event()
         self._socket_ready = threading.Event()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._pending = queue.Queue()
 
     def enqueue(self, item):
@@ -271,7 +271,7 @@ class AsyncRouterThread(threading.Thread):
         except RuntimeError: _LOG.debug("Router loop closed; dropping %s item", self.log_label)
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
         if self._loop is None or self._queue is None: return
         try: self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
         except RuntimeError: pass
@@ -308,7 +308,7 @@ class AsyncRouterThread(threading.Thread):
                 except asyncio.QueueEmpty: break
                 if item is not None: self.kernel._send_router_item(sock, item)
         try:
-            while not self.kernel._shutdown_event.is_set() and not self._stop.is_set():
+            while not self.kernel._shutdown_event.is_set() and not self._stop_event.is_set():
                 poll_task = asyncio.ensure_future(poller.poll())
                 send_task = asyncio.create_task(self._queue.get())
                 done, pending = await asyncio.wait({poll_task, send_task}, return_when=asyncio.FIRST_COMPLETED)
