@@ -24,7 +24,7 @@ else
   gh pr create --fill --label "$label"
 fi
 
-gh pr merge --squash
+gh pr merge --squash --delete-branch
 git checkout main
 git pull --ff-only
 
