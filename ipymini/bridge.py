@@ -2,6 +2,7 @@ import builtins, getpass, json, logging, os, queue, socket, sys, tempfile, threa
 from contextlib import contextmanager
 from typing import Callable
 import zmq
+from fastcore.basics import str2bool
 from .murmur2 import DEBUG_HASH_SEED, murmur2_x86
 
 # Ensure debugpy avoids sys.monitoring mode, which can stall kernel threads.
@@ -13,15 +14,9 @@ from IPython.core.getipython import get_ipython
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.shellapp import InteractiveShellApp
 from IPython.core.application import BaseIPythonApplication
-
-try: import debugpy
-except Exception: debugpy = None
-
-try:
-    from IPython.core.completer import provisionalcompleter as _provisionalcompleter
-    from IPython.core.completer import rectify_completions as _rectify_completions
-    _EXPERIMENTAL_COMPLETIONS_AVAILABLE = True
-except Exception: _EXPERIMENTAL_COMPLETIONS_AVAILABLE = False
+import debugpy
+from IPython.core.completer import provisionalcompleter as _provisionalcompleter
+from IPython.core.completer import rectify_completions as _rectify_completions
 
 _EXPERIMENTAL_COMPLETIONS_KEY = "_jupyter_types_experimental"
 _LOG = logging.getLogger("ipymini.startup")
@@ -39,13 +34,13 @@ class _ThreadLocalStream:
         target = getattr(_IO_STATE.local, self._name, None)
         return self._default if target is None else target
 
-    def write(self, value) -> int:
+    def write(self, value)->int:
         "Write `value` to the current stream and return bytes written."
         target = self._target()
         if target is None: return 0
         return target.write(value)
 
-    def writelines(self, lines) -> int:
+    def writelines(self, lines)->int:
         "Write a sequence of lines to the current stream."
         total = 0
         for line in lines: total += self.write(line) or 0
@@ -58,7 +53,7 @@ class _ThreadLocalStream:
         if hasattr(target, "flush"): target.flush()
         return None
 
-    def isatty(self) -> bool:
+    def isatty(self)->bool:
         "Report whether the current stream is a TTY."
         target = self._target()
         if target is None: return False
@@ -87,25 +82,16 @@ class _ThreadLocalIO:
         _getipython_mod.get_ipython = _thread_local_get_ipython
         self._installed = True
 
-    def push( self, shell, stdout, stderr, request_input: Callable[[str, bool], str], allow_stdin: bool) -> dict:
+    def push(self, shell, stdout, stderr, request_input: Callable[[str, bool], str], allow_stdin: bool)->dict:
         "Set per-thread IO bindings; returns the previous bindings."
-        prev = dict(shell=getattr(self.local, "shell", None), stdout=getattr(self.local, "stdout", None),
-            stderr=getattr(self.local, "stderr", None), request_input=getattr(self.local, "request_input", None),
-            allow_stdin=getattr(self.local, "allow_stdin", None))
-        self.local.shell = shell
-        self.local.stdout = stdout
-        self.local.stderr = stderr
-        self.local.request_input = request_input
-        self.local.allow_stdin = allow_stdin
+        prev = {name: getattr(self.local, name, None) for name in _chans}
+        args = locals()
+        for name in _chans: setattr(self.local, name, args[name])
         return prev
 
     def pop(self, prev: dict):
         "Restore IO bindings from `prev`."
-        self.local.shell = prev.get("shell")
-        self.local.stdout = prev.get("stdout")
-        self.local.stderr = prev.get("stderr")
-        self.local.request_input = prev.get("request_input")
-        self.local.allow_stdin = prev.get("allow_stdin")
+        for name in _chans: setattr(self.local, name, prev.get(name))
 
 
 _IO_STATE = _ThreadLocalIO()
@@ -117,7 +103,7 @@ def _thread_local_get_ipython():
     return shell if shell is not None else _IO_STATE._orig_get_ipython()
 
 
-def _thread_local_input(prompt: str = "") -> str:
+def _thread_local_input(prompt: str = "")->str:
     "Route input() through kernel stdin handler using `prompt`."
     handler = getattr(_IO_STATE.local, "request_input", None)
     allow = getattr(_IO_STATE.local, "allow_stdin", False)
@@ -127,7 +113,7 @@ def _thread_local_input(prompt: str = "") -> str:
     return handler(str(prompt), False)
 
 
-def _thread_local_getpass(prompt: str = "Password: ", stream=None) -> str:
+def _thread_local_getpass(prompt: str = "Password: ", stream=None)->str:
     "Route getpass() through stdin handler using `prompt`."
     handler = getattr(_IO_STATE.local, "request_input", None)
     allow = getattr(_IO_STATE.local, "allow_stdin", False)
@@ -251,9 +237,7 @@ class MiniDebugpyClient:
     def _reader_loop(self):
         "Read debugpy frames from ZMQ and feed the parser."
         if self._endpoint is None: return
-        if debugpy:
-            try: debugpy.trace_this_thread(False)
-            except Exception: pass
+        debugpy.trace_this_thread(False)
         sock = self.context.socket(zmq.STREAM)
         sock.linger = 0
         sock.connect(self._endpoint)
@@ -283,7 +267,7 @@ class MiniDebugpyClient:
             header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
             sock.send_multipart([self._routing_id, header + payload])
 
-    def send_request(self, msg: dict, timeout: float = 10.0) -> dict:
+    def send_request(self, msg: dict, timeout: float = 10.0)->dict:
         "Send a debugpy request and wait for a response."
         req_seq = msg.get("seq")
         if not isinstance(req_seq, int) or req_seq <= 0:
@@ -292,7 +276,7 @@ class MiniDebugpyClient:
         req_seq, waiter = self.send_request_async(msg)
         return self.wait_for_response(req_seq, waiter, timeout=timeout)
 
-    def send_request_async(self, msg: dict) -> tuple[int, queue.Queue]:
+    def send_request_async(self, msg: dict)->tuple[int, queue.Queue]:
         "Send a request and return `(seq, waiter)` without waiting."
         req_seq = msg.get("seq")
         if not isinstance(req_seq, int) or req_seq <= 0:
@@ -303,7 +287,7 @@ class MiniDebugpyClient:
         self._outgoing.put(msg)
         return req_seq, waiter
 
-    def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0) -> dict:
+    def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0)->dict:
         "Wait for a response on `waiter` until `timeout`."
         try: reply = waiter.get(timeout=timeout)
         except queue.Empty as exc: raise TimeoutError("timed out waiting for debugpy response") from exc
@@ -311,9 +295,9 @@ class MiniDebugpyClient:
             with self._pending_lock: self._pending.pop(req_seq, None)
         return reply
 
-    def wait_initialized(self, timeout: float = 5.0) -> bool: return self._initialized.wait(timeout=timeout)
+    def wait_initialized(self, timeout: float = 5.0)->bool: return self._initialized.wait(timeout=timeout)
 
-    def next_internal_seq(self) -> int:
+    def next_internal_seq(self)->int:
         "Return the next internal sequence number."
         seq = self.next_seq
         self.next_seq += 1
@@ -321,8 +305,8 @@ class MiniDebugpyClient:
 
 
 class MiniDebugger:
-    def __init__(self, event_callback: Callable[[dict], None] | None = None, *, zmq_context: zmq.Context | None = None,
-        kernel_modules: list[str] | None = None, debug_just_my_code: bool = False, filter_internal_frames: bool = True):
+    def __init__(self, event_callback: Callable[[dict], None]|None=None, *, zmq_context: zmq.Context|None=None,
+        kernel_modules: list[str]|None=None, debug_just_my_code:bool=False, filter_internal_frames:bool=True):
         "Initialize DAP handler and debugpy client state."
         self.events = []
         self._event_callback = event_callback
@@ -339,7 +323,7 @@ class MiniDebugger:
         self.just_my_code = debug_just_my_code
         self.filter_internal_frames = filter_internal_frames
 
-    def _get_free_port(self) -> int:
+    def _get_free_port(self)->int:
         "Select a free localhost TCP port."
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
@@ -350,7 +334,6 @@ class MiniDebugger:
     def _ensure_started(self):
         "Start debugpy adapter and connect client once."
         if self.started: return
-        if not debugpy: raise RuntimeError("debugpy not available")
         if self.port is not None:
             self.client.connect(self.host, self.port)
             self._remove_cleanup_transforms()
@@ -374,11 +357,10 @@ class MiniDebugger:
         if self._event_callback: self._event_callback(msg)
         else: self.events.append(msg)
 
-    def process_request(self, request: dict) -> tuple[dict, list]:
+    def process_request(self, request: dict)->tuple[dict, list]:
         "Handle a DAP request and return response plus queued events."
         self.events = []
         command = request.get("command")
-        if not debugpy: return {}, []
         if command == "terminate":
             if self.started: self._reset_session()
             return self._response(request, True, body={}), self.events
@@ -432,19 +414,17 @@ class MiniDebugger:
 
     def trace_current_thread(self):
         "Enable debugpy tracing on the current thread if needed."
-        if not debugpy or not self.started: return
+        if not self.started: return
         thread_id = threading.get_ident()
         if thread_id in self._traced_threads: return
-        try: debugpy.trace_this_thread(True)
-        except Exception: return
+        debugpy.trace_this_thread(True)
         self._traced_threads.add(thread_id)
 
     def _remove_cleanup_transforms(self):
         "Temporarily remove IPython cleanup transforms."
         ip = get_ipython()
         if ip is None: return
-        try: from IPython.core.inputtransformer2 import leading_empty_lines
-        except Exception: return
+        from IPython.core.inputtransformer2 import leading_empty_lines
         cleanup_transforms = ip.input_transformer_manager.cleanup_transforms
         if leading_empty_lines in cleanup_transforms:
             index = cleanup_transforms.index(leading_empty_lines)
@@ -460,20 +440,20 @@ class MiniDebugger:
             func = self._removed_cleanup.pop(index)
             cleanup_transforms.insert(index, func)
 
-    def _request_payload(self, command: str, arguments: dict | None = None, seq: int | None = None) -> dict:
+    def _request_payload(self, command: str, arguments: dict|None=None, seq: int|None=None)->dict:
         "Build a DAP request payload for `command`."
         if seq is None: seq = self.client.next_internal_seq()
         if arguments is None: arguments = {}
         return dict(type="request", command=command, seq=seq, arguments=arguments)
 
-    def _response(self, request: dict, success: bool, body: dict | None = None, message: str | None = None) -> dict:
+    def _response(self, request: dict, success: bool, body: dict|None=None, message: str|None=None)->dict:
         "Build a DAP response dict for `request`."
         reply = dict(type="response", request_seq=request.get("seq"), success=bool(success), command=request.get("command"))
         if message: reply["message"] = message
         if body is not None: reply["body"] = body
         return reply
 
-    def _dump_cell(self, request: dict) -> dict:
+    def _dump_cell(self, request: dict)->dict:
         "Write debug cell to disk and return its path."
         code = request.get("arguments", {}).get("code", "")
         file_name = _debug_file_name(code)
@@ -481,7 +461,7 @@ class MiniDebugger:
         with open(file_name, "w", encoding="utf-8") as f: f.write(code)
         return self._response(request, True, body=dict(sourcePath=file_name))
 
-    def _debug_info(self, request: dict) -> dict:
+    def _debug_info(self, request: dict)->dict:
         "Return debugInfo response."
         breakpoints = [{"source": key, "breakpoints": value} for key, value in self.breakpoint_list.items()]
         body = dict(isStarted=self.started, hashMethod="Murmur2", hashSeed=DEBUG_HASH_SEED,
@@ -489,7 +469,7 @@ class MiniDebugger:
             stoppedThreads=list(self.stopped_threads), richRendering=True, exceptionPaths=["Python Exceptions"], copyToGlobals=True)
         return self._response(request, True, body=body)
 
-    def _source(self, request: dict) -> dict:
+    def _source(self, request: dict)->dict:
         "Return source response."
         source_path = request.get("arguments", {}).get("source", {}).get("path", "")
         if source_path and os.path.isfile(source_path):
@@ -497,7 +477,7 @@ class MiniDebugger:
             return self._response(request, True, body=dict(content=content))
         return self._response(request, False, body={}, message="source unavailable")
 
-    def _inspect_variables(self, request: dict) -> dict:
+    def _inspect_variables(self, request: dict)->dict:
         "Return a variables response from the user namespace."
         ip = get_ipython()
         if ip is None: return self._response(request, False, body={"variables": []}, message="no ipython")
@@ -507,7 +487,7 @@ class MiniDebugger:
             variables.append(dict(name=name, value=repr(value), type=type(value).__name__, evaluateName=name, variablesReference=0))
         return self._response(request, True, body={"variables": variables})
 
-    def _rich_inspect_variables(self, request: dict) -> dict:
+    def _rich_inspect_variables(self, request: dict)->dict:
         "Return rich variable data, including frame-based rendering."
         args = request.get("arguments", {}) if isinstance(request.get("arguments"), dict) else {}
         var_name = args.get("variableName")
@@ -533,7 +513,7 @@ class MiniDebugger:
             except TimeoutError: return self._response(request, False, body={"data": {}, "metadata": {}}, message="timeout")
             if reply.get("success"):
                 try: repr_data, repr_metadata = eval(reply.get("body", {}).get("result", ""), {}, {})
-                except Exception: repr_data, repr_metadata = {}, {}
+                except (SyntaxError, NameError, TypeError, ValueError): repr_data, repr_metadata = {}, {}
                 body = dict(data=repr_data or {}, metadata={k: v for k, v in (repr_metadata or {}).items() if k in (repr_data or {})})
                 return self._response(request, True, body=body)
             return self._response(request, False, body={"data": {}, "metadata": {}}, message="evaluate failed")
@@ -544,7 +524,7 @@ class MiniDebugger:
             return self._response(request, True, body=body)
         return self._response(request, False, body={"data": {}, "metadata": {}}, message="not found")
 
-    def _copy_to_globals(self, request: dict) -> dict:
+    def _copy_to_globals(self, request: dict)->dict:
         "Copy a frame variable into globals via setExpression."
         args = request.get("arguments", {}) if isinstance(request.get("arguments"), dict) else {}
         dst_var_name = args.get("dstVariableName")
@@ -559,7 +539,7 @@ class MiniDebugger:
         except TimeoutError: return self._response(request, False, body={}, message="timeout")
         return reply
 
-    def _modules(self, request: dict) -> dict:
+    def _modules(self, request: dict)->dict:
         "Return module list for DAP `modules` request."
         args = request.get("arguments", {})
         if not isinstance(args, dict): args = {}
@@ -578,14 +558,14 @@ class MiniDebugger:
 
 
 class MiniStream:
-    def __init__(self, name: str, events: list[dict], sink: Callable[[str, str], None] | None = None):
+    def __init__(self, name: str, events: list[dict], sink: Callable[[str, str], None]|None=None):
         "Buffer stream text and emit events to `events`/`sink`."
         self.name = name
         self.events = events
         self._sink = sink
         self._buffer = ""
 
-    def write(self, value) -> int:
+    def write(self, value)->int:
         "Write text to buffer and optionally emit live output."
         if value is None: return 0
         if isinstance(value, bytes): text = value.decode(errors="replace")
@@ -597,7 +577,7 @@ class MiniStream:
         if self._sink is not None: self._emit_live(text)
         return len(text)
 
-    def writelines(self, lines) -> int:
+    def writelines(self, lines)->int:
         "Write multiple lines to the stream buffer."
         total = 0
         for line in lines: total += self.write(line) or 0
@@ -611,7 +591,7 @@ class MiniStream:
             self._buffer = ""
         return None
 
-    def isatty(self) -> bool: return False
+    def isatty(self)->bool: return False
 
     def _emit_live(self, text: str):
         "Emit complete lines from buffer to the sink."
@@ -634,7 +614,7 @@ class MiniDisplayPublisher(DisplayPublisher):
         self.events.append(dict(type="display", data=data, metadata=metadata or {}, transient=transient or {},
             update=bool(update), buffers=buffers))
 
-    def clear_output(self, wait: bool = False): self.events.append({"type": "clear_output", "wait": bool(wait)})
+    def clear_output(self, wait:bool=False): self.events.append({"type": "clear_output", "wait": bool(wait)})
 
 
 class MiniDisplayHook(DisplayHook):
@@ -661,7 +641,7 @@ def _maybe_json(value):
     "Parse JSON strings to objects; return {} on decode errors."
     if isinstance(value, str):
         try: return json.loads(value)
-        except Exception: return {}
+        except json.JSONDecodeError: return {}
     return value
 
 
@@ -669,10 +649,8 @@ def _env_flag(name: str) -> bool | None:
     "Parse env var `name` to bool; return None if unset/invalid."
     raw = os.environ.get(name)
     if raw is None: return None
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on", "y", "t"}: return True
-    if value in {"0", "false", "no", "off", "n", "f"}: return False
-    return None
+    try: return str2bool(raw)
+    except TypeError: return None
 
 class _MiniShellApp(BaseIPythonApplication, InteractiveShellApp):
     "Minimal IPython app for loading config/extensions/startup."
@@ -690,22 +668,20 @@ def _init_ipython_app(shell):
     global _STARTUP_DONE
     if _STARTUP_DONE: return
     app = _MiniShellApp(shell)
-    try:
-        app.init_profile_dir()
-        app.init_config_files()
-        app.load_config_file()
-        app.init_path()
-        app.init_shell()
-        app.init_extensions()
-        app.init_code()
-    except Exception: _LOG.warning("Error during IPython startup integration", exc_info=True)
+    app.init_profile_dir()
+    app.init_config_files()
+    app.load_config_file()
+    app.init_path()
+    app.init_shell()
+    app.init_extensions()
+    app.init_code()
     _STARTUP_DONE = True
 
 
-def _debug_tmp_directory() -> str: return os.path.join(tempfile.gettempdir(), f"ipymini_{os.getpid()}")
+def _debug_tmp_directory()->str: return os.path.join(tempfile.gettempdir(), f"ipymini_{os.getpid()}")
 
 
-def _debug_file_name(code: str) -> str:
+def _debug_file_name(code: str)->str:
     "Compute debug cell filename; respects IPYMINI_CELL_NAME."
     cell_name = os.environ.get("IPYMINI_CELL_NAME")
     if cell_name is None:
@@ -715,8 +691,8 @@ def _debug_file_name(code: str) -> str:
 
 
 class KernelBridge:
-    def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True):
+    def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None]|None=None,
+        zmq_context: zmq.Context|None=None, *, user_ns: dict|None=None, use_singleton:bool=True):
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
 
@@ -728,11 +704,11 @@ class KernelBridge:
         if use_jedi is not None: self.shell.Completer.use_jedi = use_jedi
         experimental = _env_flag("IPYMINI_EXPERIMENTAL_COMPLETIONS")
         if experimental is None: experimental = True
-        self._use_experimental_completions = bool(experimental and _EXPERIMENTAL_COMPLETIONS_AVAILABLE)
+        self._use_experimental_completions = bool(experimental)
 
-        def _code_name(raw_code: str, transformed_code: str, number: int) -> str: return _debug_file_name(raw_code)
+        def _code_name(raw_code: str, transformed_code: str, number: int)->str: return _debug_file_name(raw_code)
 
-        self.shell.compile.get_code_name = _code_name  # type: ignore[assignment]
+        self.shell.compile.get_code_name = _code_name
         self._request_input = request_input
         self.shell.display_pub = MiniDisplayPublisher()
         self.shell.displayhook = MiniDisplayHook(shell=self.shell)
@@ -748,28 +724,20 @@ class KernelBridge:
         self.shell._last_traceback = None
 
         def _showtraceback(etype, evalue, stb): self.shell._last_traceback = stb
-
-        self.shell._showtraceback = _showtraceback
-
-        def _enable_gui(gui=None):
-            "Set the active GUI event loop for IPython."
-            self.shell.active_eventloop = gui
-            return None
-
-        self.shell.enable_gui = _enable_gui  # type: ignore[assignment]
-
-        def _set_next_input(text: str, replace: bool = False):
-            "Write a set_next_input payload for the frontend."
+        def _enable_gui(gui=None): self.shell.active_eventloop = gui
+        def _set_next_input(text: str, replace:bool=False):
             payload = dict(source="set_next_input", text=text, replace=bool(replace))
             self.shell.payload_manager.write_payload(payload)
 
-        self.shell.set_next_input = _set_next_input  # type: ignore[assignment]
+        self.shell._showtraceback = _showtraceback
+        self.shell.enable_gui = _enable_gui
+        self.shell.set_next_input = _set_next_input
         _init_ipython_app(self.shell)
         kernel_modules = [module.__file__ for module in sys.modules.values() if getattr(module, "__file__", None)]
         self._debugger = MiniDebugger(debug_event_callback, zmq_context=zmq_context, kernel_modules=kernel_modules,
             debug_just_my_code=False, filter_internal_frames=True)
 
-    def _payloadpage_page(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None):
+    def _payloadpage_page(self, strg, start:int=0, screen_lines:int=0, pager_cmd=None):
         "Send pager output as a payload starting at `start`."
         start = max(0, start)
         data = strg if isinstance(strg, dict) else {"text/plain": strg}
@@ -785,16 +753,13 @@ class KernelBridge:
         self.shell._last_traceback = None
         self._stream_events.clear()
 
-    def execute(self, code: str, silent: bool = False, store_history: bool = True,
-        user_expressions=None, allow_stdin: bool = False) -> dict:
+    def execute(self, code: str, silent:bool=False, store_history:bool=True,
+        user_expressions=None, allow_stdin:bool=False)->dict:
         "Execute `code` in IPython and return captured outputs/errors."
         self._reset_capture_state()
         self._stream_live = not silent and self._stream_sender is not None
         try:
-            with _thread_local_io(
-                self.shell, self._stdout, self._stderr,
-                self._request_input, bool(allow_stdin),
-            ):
+            with _thread_local_io(self.shell, self._stdout, self._stderr, self._request_input, bool(allow_stdin)):
                 self._debugger.trace_current_thread()
                 result = self.shell.run_cell(code, store_history=store_history, silent=silent)
         finally:
@@ -830,7 +795,7 @@ class KernelBridge:
     def _emit_stream(self, name: str, text: str):
         if self._stream_live and self._stream_sender is not None and text: self._stream_sender(name, text)
 
-    def _dedupe_set_next_input(self, payload: list[dict]) -> list[dict]:
+    def _dedupe_set_next_input(self, payload: list[dict])->list[dict]:
         "Deduplicate set_next_input payloads, keeping the newest."
         if not payload: return payload
         seen = False
@@ -842,9 +807,9 @@ class KernelBridge:
             deduped.append(item)
         return list(reversed(deduped))
 
-    def complete(self, code: str, cursor_pos: int | None = None) -> dict:
+    def complete(self, code: str, cursor_pos: int|None=None)->dict:
         "Return completion matches for `code` at `cursor_pos`."
-        if self._use_experimental_completions and _EXPERIMENTAL_COMPLETIONS_AVAILABLE:
+        if self._use_experimental_completions:
             if cursor_pos is None: cursor_pos = len(code)
             with _provisionalcompleter():
                 completions = list(_rectify_completions(code, self.shell.Completer.completions(code, cursor_pos)))
@@ -867,19 +832,18 @@ class KernelBridge:
         txt, matches = self.shell.complete("", line, line_cursor)
         return dict(matches=matches, cursor_start=cursor_pos - len(txt), cursor_end=cursor_pos, metadata={}, status="ok")
 
-    def inspect(self, code: str, cursor_pos: int | None = None, detail_level: int = 0) -> dict:
+    def inspect(self, code: str, cursor_pos: int|None=None, detail_level:int=0)->dict:
         "Return inspection data for `code` at `cursor_pos`."
         if cursor_pos is None: cursor_pos = len(code)
-        try:
-            from IPython.utils.tokenutil import token_at_cursor
+        from IPython.utils.tokenutil import token_at_cursor
 
-            name = token_at_cursor(code, cursor_pos)
-            bundle = self.shell.object_inspect_mime(name, detail_level=detail_level)
-            if not self.shell.enable_html_pager: bundle.pop("text/html", None)
-            return dict(status="ok", found=True, data=bundle, metadata={})
-        except Exception: return dict(status="ok", found=False, data={}, metadata={})
+        name = token_at_cursor(code, cursor_pos)
+        if not name: return dict(status="ok", found=False, data={}, metadata={})
+        bundle = self.shell.object_inspect_mime(name, detail_level=detail_level)
+        if not self.shell.enable_html_pager: bundle.pop("text/html", None)
+        return dict(status="ok", found=True, data=bundle, metadata={})
 
-    def is_complete(self, code: str) -> dict:
+    def is_complete(self, code: str)->dict:
         "Report completeness status and indentation for `code`."
         tm = getattr(self.shell, "input_transformer_manager", None)
         if tm is None: tm = self.shell.input_splitter
@@ -888,8 +852,8 @@ class KernelBridge:
         if status == "incomplete": reply["indent"] = " " * indent_spaces
         return reply
 
-    def history( self, hist_access_type: str, output: bool, raw: bool, session: int = 0, start: int = 0,
-        stop=None, n=None, pattern=None, unique: bool = False) -> dict:
+    def history(self, hist_access_type: str, output: bool, raw: bool, session:int=0, start:int=0,
+        stop=None, n=None, pattern=None, unique:bool=False)->dict:
         "Return history entries based on `hist_access_type` query."
         if hist_access_type == "tail": hist = self.shell.history_manager.get_tail(n, raw=raw, output=output, include_latest=True)
         elif hist_access_type == "range":
@@ -899,11 +863,10 @@ class KernelBridge:
         else: hist = []
         return {"status": "ok", "history": list(hist)}
 
-    def debug_available(self) -> bool: return bool(debugpy)
 
-    def debug_request(self, request_json: str) -> dict:
+    def debug_request(self, request_json: str)->dict:
         "Handle a debug_request DAP message in JSON."
         try: request = json.loads(request_json)
-        except Exception: request = {}
+        except json.JSONDecodeError: request = {}
         response, events = self._debugger.process_request(request)
         return {"response": response, "events": events}

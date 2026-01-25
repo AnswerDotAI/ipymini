@@ -39,7 +39,7 @@ class ConnectionInfo:
 def _raise_async_exception(thread_id: int, exc_type: type[BaseException]) -> bool:
     "Inject `exc_type` into a thread by id; returns success."
     try: import ctypes
-    except Exception: return False
+    except ImportError: return False
     res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), ctypes.py_object(exc_type))
     if res == 0: return False
     if res > 1:
@@ -279,7 +279,7 @@ class Subshell:
         try:
             if os.sys.stdout is not None: os.sys.stdout.flush()
             if os.sys.stderr is not None: os.sys.stderr.flush()
-        except Exception: pass
+        except (OSError, ValueError): pass
         return self.kernel.stdin_router.request_input(prompt, password, self._parent_header, self._parent_idents)
 
     def _send_stream(self, name: str, text: str):
@@ -631,7 +631,7 @@ class MiniKernel:
         try: return self.session.recv(sock, mode=0)
         except ValueError as err:
             if "Duplicate Signature" not in str(err): _LOG.warning("Bad message signature", exc_info=True)
-        except Exception: pass
+        except zmq.ZMQError: pass
         return None, None
 
     def router_loop(self, port: int, attr: str, handler, pre=None, log_label: str = "router"):
@@ -773,8 +773,7 @@ class MiniKernel:
         "Build kernel_info_reply content."
         try: impl_version = version("ipymini")
         except PackageNotFoundError: impl_version = "0.0.0+local"
-        supported_features = ["kernel subshells"]
-        if self.bridge.debug_available(): supported_features.append("debugger")
+        supported_features = ["kernel subshells", "debugger"]
         return dict(status="ok", protocol_version="5.3", implementation="ipymini", implementation_version=impl_version,
             language_info=dict(name="python", version=self.python_version(), mimetype="text/x-python",
                 file_extension=".py", pygments_lexer="python", codemirror_mode={"name": "ipython", "version": 3},
@@ -803,7 +802,7 @@ class MiniKernel:
             return
         pid = os.getpid()
         try: pgid = os.getpgid(pid)
-        except Exception: pgid = None
+        except OSError: pgid = None
         try:
             # Only signal the process group if we're the leader; otherwise avoid killing unrelated processes.
             if pgid and pgid == pid and hasattr(os, "killpg"): os.killpg(pgid, signal.SIGINT)

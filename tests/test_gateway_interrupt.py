@@ -18,7 +18,6 @@ async def _router(kc, waiters: dict, stop: asyncio.Event) -> None:
         try: msg = await kc.get_shell_msg(timeout=0.1)
         except Empty: continue
         except asyncio.CancelledError: break
-        except Exception: continue
         parent_id = msg.get("parent_header", {}).get("msg_id")
         waiter = waiters.get(parent_id)
         if waiter is not None: waiter.put_nowait(msg)
