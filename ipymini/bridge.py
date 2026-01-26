@@ -29,11 +29,8 @@ startup_done = False
 
 
 class _ThreadLocalStream:
-    def __init__(self, name:str, default):
-        self.name, self.default = name, default
-
-    def _target(self):
-        return io_state.get(self.name) or self.default
+    def __init__(self, name:str, default): self.name, self.default = name, default
+    def _target(self): return io_state.get(self.name) or self.default
 
     def write(self, value)->int:
         t = self._target()

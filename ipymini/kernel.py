@@ -920,12 +920,10 @@ class MiniKernel:
         self.iopub_cmd = None
         self.control_handlers = dict(shutdown_request=self.handle_shutdown, debug_request=self.handle_debug,
             interrupt_request=self.handle_interrupt)
-        self.control_specs = dict(
-            kernel_info_request=("kernel_info_reply", lambda msg: self.kernel_info_content()),
+        self.control_specs = dict(kernel_info_request=("kernel_info_reply", lambda msg: self.kernel_info_content()),
             create_subshell_request=("create_subshell_reply", lambda msg: dict(subshell_id=self.subshells.create())),
             list_subshell_request=("list_subshell_reply", lambda msg: dict(subshell_id=self.subshells.list())),
-            delete_subshell_request=("delete_subshell_reply", self._delete_subshell),
-        )
+            delete_subshell_request=("delete_subshell_reply", self._delete_subshell))
 
     def start(self):
         "Start kernel threads and serve shell/control messages."
