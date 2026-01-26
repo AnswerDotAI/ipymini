@@ -1,6 +1,6 @@
-import time, asyncio, os
+import asyncio
 from queue import Empty
-from jupyter_client import AsyncKernelClient, KernelManager
+from jupyter_client import AsyncKernelClient
 from .kernel_utils import *
 
 
@@ -64,16 +64,7 @@ def test_interrupt_request_breaks_busy_loop():
 
 def test_interrupt_request_gateway_pattern():
     async def _run():
-        env = build_env()
-        os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-        km = KernelManager(kernel_name="ipymini")
-        km.start_kernel(env=env)
-        ensure_separate_process(km)
-        kc = AsyncKernelClient(**km.get_connection_info(session=True))
-        kc.parent = km
-        kc.start_channels()
-        await kc.wait_for_ready(timeout=2)
-        try:
+        async with start_kernel_async(ready_timeout=2) as (_km, kc):
             cmd = kc.cmd
             msg_id = cmd.execute_request(code="import time; time.sleep(1); print('finished')")
             await asyncio.sleep(0.2)
@@ -83,8 +74,5 @@ def test_interrupt_request_gateway_pattern():
             outs = [o for o in pubs if o.get("parent_header", {}).get("msg_id") == msg_id]
             errors = [o for o in outs if o.get("msg_type") == "error"]
             assert errors, f"expected error output after interrupt, got: {[o.get('msg_type') for o in outs]}"
-        finally:
-            kc.stop_channels()
-            km.shutdown_kernel(now=True)
 
     asyncio.run(_run())
