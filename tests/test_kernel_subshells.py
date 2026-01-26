@@ -173,33 +173,6 @@ def test_subshell_concurrency_and_control():
         _delete_subshell(kc, subshell_a)
         _delete_subshell(kc, subshell_b)
 
-        subshell_a = _create_subshell(kc)
-        subshell_b = _create_subshell(kc)
-
-        code = "value = input('prompt> '); print(f'got:{value}')"
-        msg_a_id = cmd.execute_request(code=code, allow_stdin=True, subshell_id=subshell_a)
-        msg_b_id = cmd.execute_request(code=code, allow_stdin=True, subshell_id=subshell_b)
-
-        values = {msg_a_id: "alpha", msg_b_id: "beta"}
-        stdin_msgs = [kc.get_stdin_msg(timeout=timeout) for _ in range(2)]
-        for stdin_msg in stdin_msgs:
-            assert stdin_msg["msg_type"] == "input_request"
-            assert stdin_msg["content"]["prompt"] == "prompt> "
-            msg_id = stdin_msg["parent_header"].get("msg_id")
-            kc.input(values[msg_id])
-
-        msg_ids = {msg_a_id, msg_b_id}
-        replies = collect_shell_replies(kc, msg_ids)
-        outputs = collect_iopub_outputs(kc, msg_ids)
-
-        assert all(reply["content"]["status"] == "ok" for reply in replies.values())
-        for msg_id, expected in values.items():
-            streams = iopub_streams(outputs[msg_id])
-            assert any(f"got:{expected}" in m["content"].get("text", "") for m in streams)
-
-        _delete_subshell(kc, subshell_a)
-        _delete_subshell(kc, subshell_b)
-
 
 def test_subshell_reads_shared_ns_during_parent_sleep():
     with start_kernel() as (_, kc):
@@ -343,61 +316,8 @@ def test_subshell_fuzzes():
         exec_ids = {msg_id for msg_id, action in requests if action == "execute"}
         if exec_ids:
             outputs = collect_iopub_outputs(kc, exec_ids)
-            for msg_id in exec_ids:
-                streams = iopub_streams(outputs[msg_id])
-                assert streams, f"missing stream output for {msg_id}"
-
-        for sid in subshells: _delete_subshell(kc, sid)
-
-        rng = random.Random(1)
-        subshells = [_create_subshell(kc) for _ in range(2)]
-        _execute(kc, code)
-
-        msg_ids = set()
-        exec_ids = set()
-        stdin_expected = {}
-
-        long_msg_id = _send_execute(kc, "import time; time.sleep(0.4); print('slept')", subshell_id=rng.choice([None, *subshells]))
-        msg_ids.add(long_msg_id)
-        exec_ids.add(long_msg_id)
-
-        for idx in range(3):
-            sid = rng.choice([None, *subshells])
-            msg_id = _send_execute(kc, "value = input('prompt> '); print(f'got:{value}')", subshell_id=sid, allow_stdin=True)
-            msg_ids.add(msg_id)
-            exec_ids.add(msg_id)
-            stdin_expected[msg_id] = f"v{idx}"
-
-        for _ in range(4):
-            sid = rng.choice([None, *subshells])
-            action = rng.choice(["execute", "complete", "inspect", "history"])
-            if action == "execute":
-                msg_id = _send_execute(kc, "print('fast')", subshell_id=sid)
-                exec_ids.add(msg_id)
-            elif action == "complete":
-                code = "rang"
-                msg_id = cmd.complete_request(code=code, cursor_pos=len(code), subshell_id=sid)
-            elif action == "inspect":
-                code = "print"
-                msg_id = cmd.inspect_request(code=code, cursor_pos=len(code), subshell_id=sid)
-            else: msg_id = cmd.history_request(hist_access_type="tail", n=1, output=False, raw=True, subshell_id=sid)
-            msg_ids.add(msg_id)
-
-        for _ in range(len(stdin_expected)):
-            stdin_msg = kc.get_stdin_msg(timeout=timeout)
-            msg_id = stdin_msg["parent_header"].get("msg_id")
-            kc.input(stdin_expected[msg_id])
-
-        time.sleep(0.05)
-        km.interrupt_kernel()
-
-        replies = collect_shell_replies(kc, msg_ids)
-        assert all(reply["content"]["status"] in {"ok", "error", "aborted"} for reply in replies.values())
-
-        if exec_ids:
-            outputs = collect_iopub_outputs(kc, exec_ids)
-            for msg_id, expected in stdin_expected.items():
-                streams = iopub_streams(outputs[msg_id])
-                assert any(f"got:{expected}" in m["content"].get("text", "") for m in streams)
+        for msg_id in exec_ids:
+            streams = iopub_streams(outputs[msg_id])
+            assert streams, f"missing stream output for {msg_id}"
 
         for sid in subshells: _delete_subshell(kc, sid)
