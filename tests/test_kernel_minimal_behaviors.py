@@ -64,12 +64,12 @@ def test_execute_reply_after_keyboardinterrupt_during_send():
 if not hasattr(_k, "_orig_send_reply"):
     _k._orig_send_reply = _k.Subshell.send_reply
 _k._interrupt_reply_once = True
-def _send_reply(self, socket, msg_type, content, parent, idents):
+def _send_reply(self, msg_type, content, parent, idents):
     code = parent.get("content", {}).get("code")
     if msg_type == "execute_reply" and code == "1+1" and _k._interrupt_reply_once:
         _k._interrupt_reply_once = False
         raise KeyboardInterrupt("simulated interrupt")
-    return _k._orig_send_reply(self, socket, msg_type, content, parent, idents)
+    return _k._orig_send_reply(self, msg_type, content, parent, idents)
 _k.Subshell.send_reply = _send_reply
 """
         msg_id = kc.execute(patch)
