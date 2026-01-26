@@ -1,4 +1,4 @@
-from ipymini.bridge import MiniStream
+from ipymini_term import MiniStream
 
 
 def test_stream_appends_event():

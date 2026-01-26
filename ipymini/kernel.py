@@ -10,10 +10,11 @@ import zmq, zmq.asyncio
 from jupyter_client.session import Session
 from .bridge import KernelBridge
 from .comms import comm_context, get_comm_manager
-from . import debug as _dbg_mod
+from ipymini_debug import DebugFlags, setup_debug, trace_msg
 
 log = logging.getLogger("ipymini.kernel")
-_debug = _dbg_mod.enabled
+_debug_flags = DebugFlags.from_env("IPYMINI")
+_debug = _debug_flags.enabled
 _dbg_lock = threading.Lock()
 def dbg(*args, **kw):
     if _debug:
@@ -426,7 +427,7 @@ class AsyncRouterThread(threading.Thread):
                 msg_type = msg.get("header", {}).get("msg_type", "?")
                 msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
                 dbg(f"{self.log_label} RECV {msg_type} id={msg_id}")
-                _dbg_mod.tlog(log, f"{self.log_label} recv", msg)
+                trace_msg(log, f"{self.log_label} recv", msg, enabled=_debug_flags.trace_msgs)
                 self.handler(msg, idents)
         finally: dbg(f"{self.log_label} RECV EXITING")
 
@@ -927,7 +928,7 @@ class MiniKernel:
 
     def start(self):
         "Start kernel threads and serve shell/control messages."
-        _dbg_mod.setup()
+        setup_debug(_debug_flags)
         dbg("kernel starting...")
         prev_hook = _install_thread_excepthook(self)
         self.iopub_thread.start()
@@ -1047,7 +1048,7 @@ class MiniKernel:
         if self.shell_router is None:
             dbg("QUEUE shell reply - NO ROUTER!")
             return
-        _dbg_mod.tlog(log, "shell reply", parent)
+        trace_msg(log, "shell reply", parent, enabled=_debug_flags.trace_msgs)
         self.shell_router.enqueue((msg_type, content, parent, idents))
 
     def queue_control_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
@@ -1056,7 +1057,8 @@ class MiniKernel:
         self.control_router.enqueue((msg_type, content, parent, idents))
 
     def send_status(self, state:str, parent: dict|None):
-        if _dbg_mod.trace_msgs and parent: _dbg_mod.tlog(log, f"iopub status={state}", parent)
+        if _debug_flags.trace_msgs and parent:
+            trace_msg(log, f"iopub status={state}", parent, enabled=True)
         self.iopub.status(parent, execution_state=state)
 
     @contextmanager

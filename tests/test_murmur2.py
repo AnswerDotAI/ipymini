@@ -2,7 +2,7 @@ import random
 
 import murmurhash2
 
-from ipymini.murmur2 import DEBUG_HASH_SEED, murmur2_x86
+from ipymini_debug import DEBUG_HASH_SEED, murmur2_x86
 
 def test_murmur2_matches_reference():
     rng = random.Random(0)
