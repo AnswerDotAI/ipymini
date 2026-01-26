@@ -14,7 +14,6 @@ This guide is for contributors working on ipymini. It consolidates architecture,
 
 - `IPYMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
 - `IPYMINI_USE_JEDI=0|1` – override IPython’s Jedi setting.
-- `IPYMINI_EXPERIMENTAL_COMPLETIONS=0|1` – enable IPython experimental completions.
 - `IPYMINI_CELL_NAME` – override debug cell filename.
 
 ## Tests
@@ -139,4 +138,3 @@ Key files:
 `links/` (not commited to git) contains source for reference projects such as ipykernel. These should be reviewed carefully since they are mature, well-tested solutions.
 
 NB: `meta/` is not commited to git -- it is used for code reviews, timing details, etc.
-

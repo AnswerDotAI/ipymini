@@ -30,39 +30,29 @@ startup_done = False
 
 class _ThreadLocalStream:
     def __init__(self, name:str, default):
-        "Create a thread-local stream proxy for `name` with `default` fallback."
-        self.name = name
-        self.default = default
+        self.name, self.default = name, default
 
     def _target(self):
-        "Return the current thread-local stream or the default."
-        target = io_state.get(self.name)
-        return self.default if target is None else target
+        return io_state.get(self.name) or self.default
 
     def write(self, value)->int:
-        "Write `value` to the current stream and return bytes written."
-        target = self._target()
-        if target is None: return 0
-        return target.write(value)
+        t = self._target()
+        return 0 if t is None else t.write(value)
 
     def writelines(self, lines)->int:
-        "Write a sequence of lines to the current stream."
         total = 0
         for line in lines: total += self.write(line) or 0
         return total
 
     def flush(self):
-        "Flush the current stream if it supports `flush()`."
-        target = self._target()
-        if target is None: return None
-        if hasattr(target, "flush"): target.flush()
-        return None
+        t = self._target()
+        if t is not None and hasattr(t, "flush"): t.flush()
 
     def isatty(self)->bool:
-        "Report whether the current stream is a TTY."
-        target = self._target()
-        if target is None: return False
-        return bool(target.isatty()) if hasattr(target, "isatty") else False
+        t = self._target()
+        return bool(getattr(t, "isatty", lambda: False)())
+
+    def __getattr__(self, k): return getattr(self._target(), k)
 
 _chans = ("shell", "stdout", "stderr", "request_input", "allow_stdin")
 
@@ -104,7 +94,6 @@ io_state = _ThreadLocalIO()
 
 
 def _thread_local_get_ipython():
-    "Return thread-local shell or fall back to original get_ipython."
     shell = io_state.get("shell")
     return shell if shell is not None else io_state.orig_get_ipython()
 
@@ -131,7 +120,6 @@ def _thread_local_getpass(prompt:str = "Password: ", stream=None)->str:
 
 @contextmanager
 def _thread_local_io( shell, stdout, stderr, request_input: Callable[[str, bool], str], allow_stdin: bool):
-    "Context manager that installs thread-local IO for a request."
     prev = io_state.push(shell, stdout, stderr, request_input, allow_stdin)
     try: yield
     finally: io_state.pop(prev)
@@ -151,14 +139,12 @@ class DebugpyMessageQueue:
         self.response_callback = response_callback
 
     def _reset_tcp_pos(self):
-        "Reset header/size offsets for the TCP buffer."
         self.header_pos = -1
         self.separator_pos = -1
         self.message_size = 0
         self.message_pos = -1
 
     def _put_message(self, raw_msg:str):
-        "Decode a JSON message and dispatch to event/response callback."
         msg = json.loads(raw_msg)
         if msg.get("type") == "event": self.event_callback(msg)
         else: self.response_callback(msg)
@@ -215,7 +201,6 @@ class MiniDebugpyClient:
         self._start_reader()
 
     def _start_reader(self):
-        "Start reader thread if not already running."
         if self.reader_thread and self.reader_thread.is_alive(): return
         self.stop.clear()
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
@@ -229,19 +214,16 @@ class MiniDebugpyClient:
         self.reader_thread = None
 
     def _handle_event(self, msg: dict):
-        "Handle debugpy event messages and set init state."
         if msg.get("event") == "initialized": self.initialized.set()
         if self.event_callback: self.event_callback(msg)
 
     def _handle_response(self, msg: dict):
-        "Resolve a pending request from a debugpy response."
         req_seq = msg.get("request_seq")
         if isinstance(req_seq, int):
             with self.pending_lock: waiter = self.pending.get(req_seq)
             if waiter is not None: waiter.put(msg)
 
     def _reader_loop(self):
-        "Read debugpy frames from ZMQ and feed the parser."
         if self.endpoint is None: return
         debugpy.trace_this_thread(False)
         sock = self.context.socket(zmq.STREAM)
@@ -264,7 +246,6 @@ class MiniDebugpyClient:
         finally: sock.close(0)
 
     def _drain_outgoing(self, sock: zmq.Socket):
-        "Send queued debugpy requests to the socket."
         if self.routing_id is None: return
         while True:
             try: msg = self.outgoing.get_nowait()
@@ -342,7 +323,6 @@ class MiniDebugger:
         return port
 
     def _ensure_started(self):
-        "Start debugpy adapter and connect client once."
         if self.started: return
         if self.port is not None:
             self.client.connect(self.host, self.port)
@@ -357,7 +337,6 @@ class MiniDebugger:
         self.started = True
 
     def _handle_event(self, msg: dict):
-        "Track stopped/continued threads and collect events."
         if msg.get("event") == "stopped":
             thread_id = msg.get("body", {}).get("threadId")
             if isinstance(thread_id, int): self.stopped_threads.add(thread_id)
@@ -408,7 +387,6 @@ class MiniDebugger:
         return response or {}, self.events
 
     def _reset_session(self):
-        "Reset debugpy client session state."
         self.client.close()
         self.started = False
         self.breakpoint_list = {}
@@ -425,7 +403,6 @@ class MiniDebugger:
         self.traced_threads.add(thread_id)
 
     def _remove_cleanup_transforms(self):
-        "Temporarily remove IPython cleanup transforms."
         ip = get_ipython()
         if ip is None: return
         from IPython.core.inputtransformer2 import leading_empty_lines
@@ -435,7 +412,6 @@ class MiniDebugger:
             self.removed_cleanup[index] = cleanup_transforms.pop(index)
 
     def _restore_cleanup_transforms(self):
-        "Restore IPython cleanup transforms removed earlier."
         if not self.removed_cleanup: return
         ip = get_ipython()
         if ip is None: return
@@ -596,7 +572,6 @@ class MiniStream:
     def isatty(self)->bool: return False
 
     def _emit_live(self, text:str):
-        "Emit complete lines from buffer to the sink."
         self.buffer += text
         if "\n" not in self.buffer: return
         parts = self.buffer.split("\n")
@@ -653,7 +628,6 @@ class MiniDisplayHook(DisplayHook):
 class StdinNotImplementedError(RuntimeError): pass
 
 def _maybe_json(value):
-    "Parse JSON strings to objects; return {} on decode errors."
     if isinstance(value, str):
         try: return json.loads(value)
         except json.JSONDecodeError: return {}
@@ -679,7 +653,6 @@ class _MiniShellApp(BaseIPythonApplication, InteractiveShellApp):
         if self.shell: self.shell.configurables.append(self)
 
 def _init_ipython_app(shell):
-    "Load IPython config, extensions, and startup via InteractiveShellApp."
     global startup_done
     if startup_done: return
     app = _MiniShellApp(shell)
@@ -717,10 +690,6 @@ class KernelBridge:
         else: self.shell = InteractiveShell(user_ns=user_ns)
         use_jedi = _env_flag("IPYMINI_USE_JEDI")
         if use_jedi is not None: self.shell.Completer.use_jedi = use_jedi
-        experimental = _env_flag("IPYMINI_EXPERIMENTAL_COMPLETIONS")
-        if experimental is None: experimental = True
-        self.use_experimental_completions = bool(experimental)
-
         def _code_name(raw_code:str, transformed_code:str, number:int)->str: return _debug_file_name(raw_code)
 
         self.shell.compile.get_code_name = _code_name
@@ -756,14 +725,12 @@ class KernelBridge:
             debug_just_my_code=False, filter_internal_frames=True)
 
     def _payloadpage_page(self, strg, start:int=0, screen_lines:int=0, pager_cmd=None):
-        "Send pager output as a payload starting at `start`."
         start = max(0, start)
         data = strg if isinstance(strg, dict) else {"text/plain": strg}
         payload = dict(source="page", data=data, start=start)
         self.shell.payload_manager.write_payload(payload)
 
     def _reset_capture_state(self):
-        "Clear display/output capture state for next execution."
         self.shell.display_pub.events.clear()
         self.shell.displayhook.last = None
         self.shell.displayhook.last_metadata = None
@@ -772,7 +739,6 @@ class KernelBridge:
         self.stream_events.clear()
 
     async def _run_cell(self, code:str, silent:bool, store_history:bool):
-        "Run `code` using IPython's sync/async helpers."
         shell = self.shell
         if not (hasattr(shell, "run_cell_async") and hasattr(shell, "should_run_async")):
             _dbg("_run_cell: using sync run_cell")
@@ -892,28 +858,20 @@ class KernelBridge:
 
     def complete(self, code:str, cursor_pos:int|None=None)->dict:
         "Return completion matches for `code` at `cursor_pos`."
-        if self.use_experimental_completions:
-            if cursor_pos is None: cursor_pos = len(code)
-            with _provisionalcompleter():
-                completions = list(_rectify_completions(code, self.shell.Completer.completions(code, cursor_pos)))
-            if completions:
-                cursor_start = completions[0].start
-                cursor_end = completions[0].end
-                matches = [c.text for c in completions]
-            else:
-                cursor_start = cursor_pos
-                cursor_end = cursor_pos
-                matches = []
-            exp = [dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature) for c in completions]
-            return dict(matches=matches, cursor_start=cursor_start, cursor_end=cursor_end,
-                metadata={experimental_completions_key: exp}, status="ok")
         if cursor_pos is None: cursor_pos = len(code)
-        from IPython.utils.tokenutil import line_at_cursor
-
-        line, offset = line_at_cursor(code, cursor_pos)
-        line_cursor = cursor_pos - offset
-        txt, matches = self.shell.complete("", line, line_cursor)
-        return dict(matches=matches, cursor_start=cursor_pos - len(txt), cursor_end=cursor_pos, metadata={}, status="ok")
+        with _provisionalcompleter():
+            completions = list(_rectify_completions(code, self.shell.Completer.completions(code, cursor_pos)))
+        if completions:
+            cursor_start = completions[0].start
+            cursor_end = completions[0].end
+            matches = [c.text for c in completions]
+        else:
+            cursor_start = cursor_pos
+            cursor_end = cursor_pos
+            matches = []
+        exp = [dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature) for c in completions]
+        return dict(matches=matches, cursor_start=cursor_start, cursor_end=cursor_end,
+            metadata={experimental_completions_key: exp}, status="ok")
 
     def inspect(self, code:str, cursor_pos:int|None=None, detail_level:int=0)->dict:
         "Return inspection data for `code` at `cursor_pos`."

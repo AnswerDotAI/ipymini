@@ -118,4 +118,4 @@ Optional env flags:
 
 ## Developer guide
 
-All contributor and architecture details have moved to `DEV.md`.
+See `DEV.md`.

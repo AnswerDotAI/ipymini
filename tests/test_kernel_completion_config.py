@@ -3,9 +3,6 @@ from IPython.core.completer import provisionalcompleter as _provisionalcompleter
 from IPython.core.completer import rectify_completions as _rectify_completions
 from .kernel_utils import *
 
-_EXPERIMENTAL_AVAILABLE = True
-
-
 def _execute_plain(kc, code:str)->str:
     msg_id = kc.execute(code, store_history=False)
     reply = kc.shell_reply(msg_id)
@@ -25,11 +22,9 @@ def test_use_jedi_env_toggle(value:str, expected:str):
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not _EXPERIMENTAL_AVAILABLE, reason="experimental completions not available")
-@pytest.mark.parametrize("value,expected", [("1", True), ("0", False)])
-def test_experimental_completions_env_toggle(value:str, expected: bool):
-    with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": value}) as (_, kc):
+def test_experimental_completions_always_on():
+    with start_kernel() as (_, kc):
         msg_id = kc.complete("pri", 3)
         reply = kc.shell_reply(msg_id)
         metadata = reply["content"]["metadata"]
-        assert ("_jupyter_types_experimental" in metadata) is expected
+        assert "_jupyter_types_experimental" in metadata
