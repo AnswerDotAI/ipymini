@@ -41,6 +41,7 @@ class ThreadBoundAsyncQueue:
 
     def __init__(self):
         self.loop, self.q, self.pending, self.lock = None, None, deque(), threading.Lock()
+        self.suppress_late = False
         self.bound_once = False
 
     def bind(self, loop: asyncio.AbstractEventLoop):
@@ -54,6 +55,7 @@ class ThreadBoundAsyncQueue:
     def put(self, item):
         if self.loop is None or self.q is None:
             if self.bound_once:
+                if self.suppress_late: return
                 log.error("Queue put after loop lost; dropping")
                 return
             with self.lock: self.pending.append(item)
@@ -61,6 +63,7 @@ class ThreadBoundAsyncQueue:
         try: self.loop.call_soon_threadsafe(self.q.put_nowait, item)
         except RuntimeError:
             if self.bound_once:
+                if self.suppress_late: return
                 log.error("Queue put after loop lost; dropping")
                 return
             with self.lock: self.pending.append(item)
@@ -75,6 +78,8 @@ class ThreadBoundAsyncQueue:
         while True:
             try: out.append(self.q.get_nowait())
             except asyncio.QueueEmpty: return out
+
+    def suppress_late_puts(self): self.suppress_late = True
 
 @dataclass
 class ConnectionInfo:
@@ -360,6 +365,7 @@ class AsyncRouterThread(threading.Thread):
 
     def stop(self):
         self.stop_event.set()
+        self.outbox.suppress_late_puts()
         self.outbox.put(None)
         if self.loop is not None and self.sock is not None:
             try: self.loop.call_soon_threadsafe(self.sock.close, 0)
@@ -424,7 +430,6 @@ class AsyncRouterThread(threading.Thread):
                 self.handler(msg, idents)
         finally: dbg(f"{self.log_label} RECV EXITING")
 
-
 class Subshell:
     def __init__(self, kernel: "MiniKernel", subshell_id:str|None, user_ns: dict,
         use_singleton: bool = False, run_in_thread: bool = True):
@@ -462,6 +467,7 @@ class Subshell:
     def stop(self):
         "Signal subshell loop to stop and wake it."
         self.stop_event.set()
+        self.inbox.suppress_late_puts()
         self.inbox.put((subshell_stop, None, None))
         if self.loop is not None and self.loop.is_running(): self.loop.call_soon_threadsafe(self.loop.stop)
 
