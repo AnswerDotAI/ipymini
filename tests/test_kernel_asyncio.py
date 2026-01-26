@@ -1,7 +1,7 @@
 import time
 from .kernel_utils import *
 
-TIMEOUT = 3
+default_timeout = 3
 
 
 def test_asyncio_scenario():
@@ -25,10 +25,10 @@ def test_asyncio_create_task() -> None:
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
-        wait_for_msg(kc.get_iopub_msg, pred, timeout=TIMEOUT, err="expected stdout from create_task")
+        wait_for_msg(kc.get_iopub_msg, pred, timeout=default_timeout, err="expected stdout from create_task")
         kc.iopub_drain(msg_id)
 
-        reply = debug_request(kc, "initialize", DEBUG_INIT_ARGS)
+        reply = kc.dap.initialize(**debug_init_args)
         assert reply.get("success"), f"initialize: {reply}"
 
         msg_ids = [kc.execute(f"{i}+1", store_history=False) for i in range(5)]
@@ -38,9 +38,9 @@ def test_asyncio_create_task() -> None:
 
         msg_id = kc.execute("import time; time.sleep(0.5)", store_history=False)
         wait_for_status(kc, "busy")
-        kc.interrupt_request(timeout=TIMEOUT)
+        kc.interrupt_request(timeout=default_timeout)
 
-        reply = kc.shell_reply(msg_id, timeout=TIMEOUT)
+        reply = kc.shell_reply(msg_id, timeout=default_timeout)
         assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
         wait_for_status(kc, "idle")
 

@@ -5,7 +5,7 @@ from .kernel_utils import *
 
 def _reset_kernel(kc):
     msg_id = kc.execute("get_ipython().run_line_magic('reset', '-f')", silent=True, store_history=False)
-    get_shell_reply(kc, msg_id)
+    kc.shell_reply(msg_id)
     kc.iopub_drain(msg_id)
 
 
@@ -20,7 +20,7 @@ class E2EKernel:
         if self.kc is not None: self.kc.stop_channels()
         self.kc = self.km.client()
         self.kc.start_channels()
-        self.kc.wait_for_ready(timeout=TIMEOUT)
+        self.kc.wait_for_ready(timeout=default_timeout)
 
     def restart(self):
         self.km.restart_kernel(now=True)
@@ -30,9 +30,9 @@ class E2EKernel:
 
     def ensure_debug(self):
         if self._debug_initialized: return
-        reply = debug_request(self.kc, "initialize", DEBUG_INIT_ARGS)
+        reply = self.kc.dap.initialize(**debug_init_args)
         assert reply.get("success")
-        attach = debug_request(self.kc, "attach")
+        attach = self.kc.dap.attach()
         if attach and attach.get("success") is False:
             message = attach.get("message", "")
             assert "already attached" in message or "already initialized" in message
@@ -40,7 +40,7 @@ class E2EKernel:
 
     def debug_config_done(self):
         if self._debug_config_done: return
-        debug_configuration_done(self.kc)
+        self.kc.dap.configurationDone()
         self._debug_config_done = True
 
 
@@ -86,7 +86,7 @@ def test_e2e_restart_and_debug(kernel, e2e_kernel):
 
     kernel.ensure_debug()
     kernel.debug_config_done()
-    reply = debug_request(kc, "evaluate", expression="'a' + 'b'", context="repl")
+    reply = kc.dap.evaluate(expression="'a' + 'b'", context="repl")
     assert reply.get("success"), f"evaluate: {reply}"
 
     code = """def f(a, b):
@@ -94,17 +94,17 @@ def test_e2e_restart_and_debug(kernel, e2e_kernel):
     return c
 
 f(2, 3)"""
-    r = debug_dump_cell(kc, code)
+    r = kc.dap.dumpCell(code=code)
     source = r["body"]["sourcePath"]
-    debug_set_breakpoints(kc, source, 2)
-    debug_info(kc)
+    kc.dap.setBreakpoints(breakpoints=[dict(line=2)], source=dict(path=source), sourceModified=False)
+    kc.dap.debugInfo()
     kernel.debug_config_done()
     msg_id = kc.execute(code)
-    stopped = wait_for_stop(kc, timeout=TIMEOUT)
+    stopped = wait_for_stop(kc, timeout=default_timeout)
     assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"]["threadId"]
-    debug_continue(kc, thread_id)
-    get_shell_reply(kc, msg_id)
+    kc.dap.continue_(threadId=thread_id)
+    kc.shell_reply(msg_id)
     kc.iopub_drain(msg_id)
 
     code = """
@@ -113,15 +113,15 @@ def f(a, b):
     return c
 
 f(2, 3)"""
-    r = debug_dump_cell(kc, code)
+    r = kc.dap.dumpCell(code=code)
     source = r["body"]["sourcePath"]
-    debug_set_breakpoints(kc, source, 6)
-    debug_info(kc)
+    kc.dap.setBreakpoints(breakpoints=[dict(line=6)], source=dict(path=source), sourceModified=False)
+    kc.dap.debugInfo()
     kernel.debug_config_done()
     msg_id = kc.execute(code)
-    stopped = wait_for_stop(kc, timeout=TIMEOUT)
+    stopped = wait_for_stop(kc, timeout=default_timeout)
     assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"]["threadId"]
-    debug_continue(kc, thread_id)
-    get_shell_reply(kc, msg_id)
+    kc.dap.continue_(threadId=thread_id)
+    kc.shell_reply(msg_id)
     kc.iopub_drain(msg_id)

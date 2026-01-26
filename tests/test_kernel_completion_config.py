@@ -8,7 +8,7 @@ _EXPERIMENTAL_AVAILABLE = True
 
 def _execute_plain(kc, code:str)->str:
     msg_id = kc.execute(code, store_history=False)
-    reply = get_shell_reply(kc, msg_id)
+    reply = kc.shell_reply(msg_id)
     assert reply["content"]["status"] == "ok"
     output_msgs = kc.iopub_drain(msg_id)
     results = iopub_msgs(output_msgs, "execute_result")
@@ -30,6 +30,6 @@ def test_use_jedi_env_toggle(value:str, expected:str):
 def test_experimental_completions_env_toggle(value:str, expected: bool):
     with start_kernel(extra_env={"IPYMINI_EXPERIMENTAL_COMPLETIONS": value}) as (_, kc):
         msg_id = kc.complete("pri", 3)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         metadata = reply["content"]["metadata"]
         assert ("_jupyter_types_experimental" in metadata) is expected

@@ -4,7 +4,7 @@ from .kernel_utils import *
 
 
 def test_kernelspec_file():
-    spec_path = ROOT / "share" / "jupyter" / "kernels" / "ipymini" / "kernel.json"
+    spec_path = root / "share" / "jupyter" / "kernels" / "ipymini" / "kernel.json"
     assert spec_path.exists()
     data = json.loads(spec_path.read_text(encoding="utf-8"))
     argv = data["argv"]

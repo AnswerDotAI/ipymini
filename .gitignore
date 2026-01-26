@@ -1,4 +1,5 @@
 EVENTLOOP.md
+tests/test_gateway_e2e.py
 meta/
 REVIEW.md
 _docs

@@ -37,6 +37,6 @@ assert EXEC_LINE == 123
 assert STARTUP_OK == 456
 """
         msg_id = kc.execute(code, store_history=False)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         kc.iopub_drain(msg_id)

@@ -1,19 +1,19 @@
 from queue import Empty
 from .kernel_utils import *
 
-TIMEOUT = 3
+timeout = 3
 
 
 def test_input_request_and_stream_ordering():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print('before'); print(input('prompt> '))", allow_stdin=True)
-        stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
+        stdin_msg = kc.get_stdin_msg(timeout=timeout)
         assert stdin_msg["msg_type"] == "input_request"
         assert stdin_msg["content"]["prompt"] == "prompt> "
         assert not stdin_msg["content"]["password"]
 
         pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream"
-        stream_msg = wait_for_msg(kc.get_iopub_msg, pred, timeout=TIMEOUT, err="expected stream before input reply")
+        stream_msg = wait_for_msg(kc.get_iopub_msg, pred, timeout=timeout, err="expected stream before input reply")
         assert stream_msg["content"]["text"] == "before\n"
 
         text = "some text"
@@ -45,10 +45,10 @@ def test_input_request_disallowed():
 def test_interrupt_while_waiting_for_input():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("input('prompt> ')", allow_stdin=True)
-        stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
+        stdin_msg = kc.get_stdin_msg(timeout=timeout)
         assert stdin_msg["msg_type"] == "input_request"
 
-        kc.interrupt_request(timeout=TIMEOUT)
+        kc.interrupt_request(timeout=timeout)
 
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "error"
@@ -64,7 +64,7 @@ def test_interrupt_while_waiting_for_input():
 def test_duplicate_input_reply_does_not_break_stdin():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("user_input = input('Enter something: ')", allow_stdin=True, store_history=False)
-        stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
+        stdin_msg = kc.get_stdin_msg(timeout=timeout)
         reply = kc.session.msg("input_reply", {"value": "bbb"}, parent=stdin_msg)
         kc.stdin_channel.send(reply)
         kc.stdin_channel.send(reply)
@@ -73,7 +73,7 @@ def test_duplicate_input_reply_does_not_break_stdin():
         kc.iopub_drain(msg_id)
 
         msg_id2 = kc.execute("user_input = input('Again: ')", allow_stdin=True, store_history=False)
-        _stdin_msg2 = kc.get_stdin_msg(timeout=TIMEOUT)
+        _stdin_msg2 = kc.get_stdin_msg(timeout=timeout)
         kc.input("ccc")
         reply_msg2 = kc.shell_reply(msg_id2)
         assert reply_msg2["content"]["status"] == "ok"

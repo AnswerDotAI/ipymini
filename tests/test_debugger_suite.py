@@ -2,7 +2,7 @@ import time, pytest
 from contextlib import contextmanager
 from .kernel_utils import *
 
-TIMEOUT = 3
+timeout = 3
 
 
 @contextmanager
@@ -23,7 +23,7 @@ def get_scope_vars(dap, scopes, name):
 
 def ensure_configuration_done(kernel):
     if getattr(kernel, "_debug_config_done", False): return
-    reply = debug_configuration_done(kernel)
+    reply = kernel.dap.configurationDone()
     assert reply.get("success"), f"configurationDone failed: {reply}"
     setattr(kernel, "_debug_config_done", True)
 
@@ -44,7 +44,7 @@ def kernel():
 
 @pytest.fixture()
 def debug_kernel(kernel):
-    reply = kernel.dap.initialize(**DEBUG_INIT_ARGS)
+    reply = kernel.dap.initialize(**debug_init_args)
     assert reply.get("success"), f"initialize failed: {reply}"
     reply = kernel.dap.attach()
     assert reply.get("success"), f"attach failed: {reply}"
@@ -67,7 +67,7 @@ def test_debugger_basic_features(debug_kernel):
     value = "Hello the world"
     code = f"{var_name}='{value}'\nprint({var_name})\n"
     debug_kernel.execute(code)
-    debug_kernel.get_shell_msg(timeout=TIMEOUT)
+    debug_kernel.get_shell_msg(timeout=timeout)
     dap.inspectVariables()
     dap.richInspectVariables(variableName=var_name)
 
@@ -84,8 +84,8 @@ def g():
 
 g()
 """
-    source = debug_dump_cell(debug_kernel, code)["body"]["sourcePath"]
-    reply = debug_set_breakpoints(debug_kernel, source, 7)
+    source = dap.dumpCell(code=code)["body"]["sourcePath"]
+    reply = dap.setBreakpoints(breakpoints=[dict(line=7)], source=dict(path=source), sourceModified=False)
     assert reply["success"], f"setBreakpoints failed: {reply}"
     ensure_configuration_done(debug_kernel)
 

@@ -7,7 +7,7 @@ def test_display_data_samples():
     with start_kernel() as (_, kc):
         for code, mime in samples:
             msg_id = kc.execute(code, store_history=False)
-            reply = get_shell_reply(kc, msg_id)
+            reply = kc.shell_reply(msg_id)
             assert reply["content"]["status"] == "ok"
             output_msgs = kc.iopub_drain(msg_id)
             displays = iopub_msgs(output_msgs, "display_data")
@@ -18,7 +18,7 @@ def test_display_data_samples():
 def test_pager_payload():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print?")
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         payloads = reply["content"]["payload"]
         assert len(payloads) == 1
@@ -32,7 +32,7 @@ def test_set_next_input_single_payload():
     code = "ip = get_ipython()\nfor i in range(3):\n   ip.set_next_input('Hello There')\n"
     with start_kernel() as (_, kc):
         msg_id = kc.execute(code)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         payloads = reply["content"]["payload"]
         next_inputs = [pl for pl in payloads if pl["source"] == "set_next_input"]

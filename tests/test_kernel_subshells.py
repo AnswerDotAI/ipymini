@@ -2,7 +2,7 @@ import time, random
 from .kernel_utils import *
 
 
-TIMEOUT = 10
+timeout = 10
 
 
 def _create_subshell(kc)->str:
@@ -109,7 +109,7 @@ def test_subshell_asyncio_create_task():
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
-        wait_for_msg(kc.get_iopub_msg, pred, timeout=TIMEOUT, err="expected stdout from subshell create_task")
+        wait_for_msg(kc.get_iopub_msg, pred, timeout=timeout, err="expected stdout from subshell create_task")
 
 
 def test_subshell_concurrency_and_control():
@@ -181,7 +181,7 @@ def test_subshell_concurrency_and_control():
         msg_b_id = cmd.execute_request(code=code, allow_stdin=True, subshell_id=subshell_b)
 
         values = {msg_a_id: "alpha", msg_b_id: "beta"}
-        stdin_msgs = [kc.get_stdin_msg(timeout=TIMEOUT) for _ in range(2)]
+        stdin_msgs = [kc.get_stdin_msg(timeout=timeout) for _ in range(2)]
         for stdin_msg in stdin_msgs:
             assert stdin_msg["msg_type"] == "input_request"
             assert stdin_msg["content"]["prompt"] == "prompt> "
@@ -235,7 +235,7 @@ def test_subshell_interrupt_request_breaks_sleep():
         msg_id = _send_execute(kc, "import time; time.sleep(2); print('done')", subshell_id=subshell_id)
         time.sleep(0.1)
         kc.interrupt_request()
-        reply = kc.shell_reply(msg_id, timeout=TIMEOUT)
+        reply = kc.shell_reply(msg_id, timeout=timeout)
         assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
         outputs = kc.iopub_drain(msg_id)
         errors = iopub_msgs(outputs, "error")
@@ -384,7 +384,7 @@ def test_subshell_fuzzes():
             msg_ids.add(msg_id)
 
         for _ in range(len(stdin_expected)):
-            stdin_msg = kc.get_stdin_msg(timeout=TIMEOUT)
+            stdin_msg = kc.get_stdin_msg(timeout=timeout)
             msg_id = stdin_msg["parent_header"].get("msg_id")
             kc.input(stdin_expected[msg_id])
 

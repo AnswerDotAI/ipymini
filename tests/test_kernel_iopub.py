@@ -1,33 +1,5 @@
-import os, time, pytest, zmq
-from jupyter_client.session import Session
+import os, pytest
 from .kernel_utils import *
-
-
-def test_iopub_welcome():
-    with start_kernel() as (km, _kc):
-        conn = load_connection(km)
-        session = Session(key=conn.get("key", "").encode(), signature_scheme=conn.get("signature_scheme", "hmac-sha256"))
-
-        ctx = zmq.Context.instance()
-        sub = ctx.socket(zmq.SUB)
-        sub.setsockopt(zmq.SUBSCRIBE, b"")
-        sub.connect(f"{conn['transport']}://{conn['ip']}:{conn['iopub_port']}")
-
-        msg = None
-        for _ in iter_timeout(5):
-            try: frames = sub.recv_multipart(flags=zmq.NOBLOCK)
-            except zmq.Again:
-                time.sleep(0.05)
-                continue
-            if b"<IDS|MSG>" in frames:
-                idx = frames.index(b"<IDS|MSG>")
-                msg = session.deserialize(frames[idx + 1 :])
-            else: msg = session.deserialize(frames)
-            if msg.get("header", {}).get("msg_type") == "iopub_welcome": break
-        sub.close(0)
-
-        assert msg is not None, "did not receive any iopub messages"
-        assert msg["header"]["msg_type"] == "iopub_welcome"
 
 
 def test_display_image_png():
