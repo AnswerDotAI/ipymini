@@ -10,10 +10,57 @@ import zmq, zmq.asyncio
 from jupyter_client.session import Session
 from .bridge import KernelBridge
 from .comms import comm_context, get_comm_manager
+from . import debug as _dbg_mod
 
-_LOG = logging.getLogger("ipymini.stdin")
-_SUBSHELL_STOP = object()
-_SUBSHELL_ABORT_CLEAR = object()
+log = logging.getLogger("ipymini.kernel")
+_debug = _dbg_mod.enabled
+_dbg_lock = threading.Lock()
+def dbg(*args, **kw):
+    if _debug:
+        with _dbg_lock: print("[ipymini]", *args, **kw, file=sys.__stderr__, flush=True)
+subshell_stop = object()
+subshell_abort_clear = object()
+
+
+class ThreadBoundAsyncQueue:
+    "Thread-safe put + asyncio get once bound to an event loop."
+
+    def __init__(self):
+        self.loop, self.q, self.pending, self.lock = None, None, deque(), threading.Lock()
+        self.bound_once = False
+
+    def bind(self, loop: asyncio.AbstractEventLoop):
+        self.loop = loop
+        self.q = asyncio.Queue()
+        self.bound_once = True
+        with self.lock:
+            for item in self.pending: self.q.put_nowait(item)
+            self.pending.clear()
+
+    def put(self, item):
+        if self.loop is None or self.q is None:
+            if self.bound_once:
+                log.error("Queue put after loop lost; dropping")
+                return
+            with self.lock: self.pending.append(item)
+            return
+        try: self.loop.call_soon_threadsafe(self.q.put_nowait, item)
+        except RuntimeError:
+            if self.bound_once:
+                log.error("Queue put after loop lost; dropping")
+                return
+            with self.lock: self.pending.append(item)
+
+    async def get(self):
+        if self.q is None: raise RuntimeError("queue not bound")
+        return await self.q.get()
+
+    def drain_nowait(self)->list:
+        if self.q is None: return []
+        out = []
+        while True:
+            try: out.append(self.q.get_nowait())
+            except asyncio.QueueEmpty: return out
 
 @dataclass
 class ConnectionInfo:
@@ -45,6 +92,14 @@ class ExecState(str, Enum):
     COMPLETED = "completed"
     ABORTED = "aborted"
 
+shell_required = dict(execute_request=("code",), complete_request=("code", "cursor_pos"),
+    inspect_request=("code", "cursor_pos"), history_request=("hist_access_type",), is_complete_request=("code",))
+bridge_specs = dict(complete_request=("complete_reply", dict(code=("code", ""), cursor_pos="cursor_pos"), "complete"),
+    inspect_request=("inspect_reply", dict(code=("code", ""), cursor_pos="cursor_pos", detail_level=("detail_level", 0)), "inspect"),
+    is_complete_request=("is_complete_reply", dict(code=("code", "")), "is_complete"))
+missing_defaults = dict(complete_request=dict(matches=[], cursor_start=0, cursor_end=0, metadata={}),
+    inspect_request=dict(found=False, data={}, metadata={}), history_request={"history": []}, is_complete_request={"indent": ""})
+
 
 def _raise_async_exception(thread_id:int, exc_type: type[BaseException])->bool:
     "Inject `exc_type` into a thread by id; returns success."
@@ -70,71 +125,101 @@ class HeartbeatThread(threading.Thread):
         "Initialize heartbeat thread bound to `addr`."
         super().__init__(daemon=True)
         store_attr()
-        self._stop_event = threading.Event()
+        self.stop_event = threading.Event()
+        self.exc = None
+        self.exc_tb = None
 
     def run(self):
         "Echo heartbeat requests on REP socket until stopped."
-        sock = self.context.socket(zmq.REP)
-        sock.linger = 0
-        sock.bind(self.addr)
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
+        sock = None
         try:
-            while not self._stop_event.is_set():
+            sock = self.context.socket(zmq.REP)
+            sock.linger = 0
+            sock.bind(self.addr)
+            poller = zmq.Poller()
+            poller.register(sock, zmq.POLLIN)
+            while not self.stop_event.is_set():
                 events = dict(poller.poll(100))
                 if sock in events and events[sock] & zmq.POLLIN:
                     msg = sock.recv()
                     sock.send(msg)
-        finally: sock.close(0)
+        except BaseException as exc:
+            self.exc = exc
+            self.exc_tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            log.error("HeartbeatThread crashed: %s", exc, exc_info=exc)
+            raise
+        finally:
+            if sock is not None: sock.close(0)
 
-    def stop(self): self._stop_event.set()
+    def stop(self): self.stop_event.set()
 
 
 class IOPubThread(threading.Thread):
+    "IOPub sender thread using a sync PUB socket with a bounded queue."
+
     def __init__(self, context: zmq.Context, addr:str, session: Session):
-        "Initialize IOPub sender thread."
-        super().__init__(daemon=True)
+        super().__init__(daemon=True, name="iopub")
         store_attr()
-        self.queue = queue.Queue()
-        self._stop_event = threading.Event()
-        self._socket = None
+        self.stop_event = threading.Event()
+        self.q = queue.Queue(maxsize=int(os.environ.get("IPYMINI_IOPUB_QMAX", "10000")))
+        self.enqueued = 0
+        self.sent = 0
+        self.send_errors = 0
+        self.exc = None
+        self.exc_tb = None
 
     def send(self, msg_type:str, content: dict, parent: dict|None, metadata: dict|None=None,
         ident: bytes | list[bytes]|None=None, buffers: list[bytes | memoryview]|None=None):
-        "Queue an IOPub message for async send."
-        self.queue.put((msg_type, content, parent, metadata, ident, buffers))
+        "Queue an IOPub message for send; drop on full queue."
+        self.enqueued += 1
+        try: self.q.put_nowait((msg_type, content, parent, metadata, ident, buffers))
+        except queue.Full:
+            backlog = self.enqueued - self.sent
+            if backlog in (100, 500, 1000): log.warning("IOPub queue full; dropping. enq=%d sent=%d", self.enqueued, self.sent)
 
     def run(self):
-        "Send queued IOPub messages and handle subscription handshake."
-        sock = self.context.socket(zmq.XPUB)
-        sock.linger = 0
-        sock.setsockopt(zmq.XPUB_VERBOSE, 1)
-        sock.bind(self.addr)
-        self._socket = sock
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
+        dbg("IOPubThread starting...")
+        sock = None
         try:
-            while not self._stop_event.is_set():
-                self._drain_queue()
-                events = dict(poller.poll(50))
-                if sock in events and events[sock] & zmq.POLLIN:
-                    msg = sock.recv()
-                    if msg and msg[0] == 1: self.session.send(sock, "iopub_welcome", {}, parent=None)
-        finally: sock.close(0)
+            sock = self.context.socket(zmq.PUB)
+            sock.linger = 0
+            if (hwm := os.environ.get("IPYMINI_IOPUB_SNDHWM")):
+                try: sock.sndhwm = int(hwm)
+                except ValueError: pass
+            sock.bind(self.addr)
+            dbg(f"IOPubThread bound to {self.addr}")
+            while True:
+                item = self.q.get()
+                if item is None or self.stop_event.is_set(): break
+                msg_type, content, parent, metadata, ident, buffers = item
+                parent_id = (parent or {}).get("header", {}).get("msg_id", "?")[:8]
+                if msg_type == "status": dbg(f"iopub SEND {msg_type} state={content.get('execution_state')} parent={parent_id}")
+                else: dbg(f"iopub SEND {msg_type} parent={parent_id}")
+                self.session.send(sock, msg_type, content, parent=parent, metadata=metadata, ident=ident, buffers=buffers)
+                self.sent += 1
+                dbg(f"iopub SENT {msg_type} parent={parent_id}")
+        except BaseException as exc:
+            self.exc = exc
+            self.exc_tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            log.error("IOPubThread crashed: %s", exc, exc_info=exc)
+            raise
+        finally:
+            dbg("IOPubThread exiting")
+            try:
+                if sock is not None: sock.close(0)
+            except Exception: pass
 
-    def _drain_queue(self):
-        "Send queued IOPub messages to the socket."
-        if self._socket is None: return
-        while True:
-            try: msg_type, content, parent, metadata, ident, buffers = self.queue.get_nowait()
-            except queue.Empty: break
-            self.session.send(self._socket, msg_type, content, parent=parent, metadata=metadata, ident=ident,
-                buffers=buffers)
-
-    def stop(self): self._stop_event.set()
+    def stop(self):
+        self.stop_event.set()
+        try: self.q.put_nowait(None)
+        except queue.Full:
+            while True:
+                try: self.q.get_nowait()
+                except queue.Empty: break
+            self.q.put_nowait(None)
 
 
-_INPUT_INTERRUPTED = object()
+input_interrupted = object()
 
 
 class StdinRouterThread(threading.Thread):
@@ -142,54 +227,57 @@ class StdinRouterThread(threading.Thread):
         "Initialize stdin router for input_request/reply."
         super().__init__(daemon=True)
         store_attr()
-        self._stop_event = threading.Event()
-        self._interrupt_event = threading.Event()
-        self._pending_lock = threading.Lock()
-        self._requests = queue.Queue()
-        self._pending = {}
-        self._pending_by_ident = {}
-        self._socket = None
+        self.stop_event = threading.Event()
+        self.interrupt_event = threading.Event()
+        self.pending_lock = threading.Lock()
+        self.requests = queue.Queue()
+        self.pending = {}
+        self.pending_by_ident = {}
+        self.socket = None
+        self.exc = None
+        self.exc_tb = None
 
     def request_input( self, prompt:str, password: bool, parent: dict|None,
         ident: list[bytes]|None, timeout:float|None=None,)->str:
         "Send input_request and wait for input_reply; honors `timeout`."
         response_queue = queue.Queue()
-        self._requests.put((prompt, password, parent, ident, response_queue))
+        self.requests.put((prompt, password, parent, ident, response_queue))
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            if self._interrupt_event.is_set():
-                self._interrupt_event.clear()
+            if self.interrupt_event.is_set():
+                self.interrupt_event.clear()
                 raise KeyboardInterrupt
-            if self._stop_event.is_set(): raise RuntimeError("stdin router stopped")
+            if self.stop_event.is_set(): raise RuntimeError("stdin router stopped")
             try:
                 if deadline is None: value = response_queue.get(timeout=0.1)
                 else:
                     remaining = max(0.0, deadline - time.monotonic())
                     if remaining == 0.0: raise TimeoutError("timed out waiting for input reply")
                     value = response_queue.get(timeout=min(0.1, remaining))
-                if value is _INPUT_INTERRUPTED:
-                    self._interrupt_event.clear()
+                if value is input_interrupted:
+                    self.interrupt_event.clear()
                     raise KeyboardInterrupt
                 return value
             except queue.Empty: continue
 
     def run(self):
         "Route input_reply messages to waiting queues."
-        sock = self.context.socket(zmq.ROUTER)
-        sock.linger = 0
-        if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
-        sock.bind(self.addr)
-        self._socket = sock
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
+        sock = None
         try:
-            while not self._stop_event.is_set():
+            sock = self.context.socket(zmq.ROUTER)
+            sock.linger = 0
+            if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
+            sock.bind(self.addr)
+            self.socket = sock
+            poller = zmq.Poller()
+            poller.register(sock, zmq.POLLIN)
+            while not self.stop_event.is_set():
                 self._drain_requests(sock)
                 events = dict(poller.poll(50))
                 if sock in events and events[sock] & zmq.POLLIN:
                     try: idents, msg = self.session.recv(sock, mode=0)
                     except ValueError as err:
-                        if "Duplicate Signature" not in str(err): _LOG.warning("Error decoding stdin message: %s", err)
+                        if "Duplicate Signature" not in str(err): log.warning("Error decoding stdin message: %s", err)
                         continue
                     if msg is None: continue
                     if msg.get("msg_type") != "input_reply": continue
@@ -197,58 +285,64 @@ class StdinRouterThread(threading.Thread):
                     msg_id = parent.get("msg_id")
                     waiter = None
                     if msg_id:
-                        with self._pending_lock:
-                            pending = self._pending.pop(msg_id, None)
+                        with self.pending_lock:
+                            pending = self.pending.pop(msg_id, None)
                             if pending is not None:
                                 ident_key, waiter = pending
-                                waiters = self._pending_by_ident.get(ident_key)
+                                waiters = self.pending_by_ident.get(ident_key)
                                 if waiters:
                                     try: waiters.remove(waiter)
                                     except ValueError: pass
-                                    if not waiters: self._pending_by_ident.pop(ident_key, None)
+                                    if not waiters: self.pending_by_ident.pop(ident_key, None)
                     if waiter is None:
                         key = tuple(idents or [])
-                        with self._pending_lock:
-                            waiters = self._pending_by_ident.get(key)
+                        with self.pending_lock:
+                            waiters = self.pending_by_ident.get(key)
                             if waiters:
                                 waiter = waiters.popleft()
-                                if not waiters: self._pending_by_ident.pop(key, None)
+                                if not waiters: self.pending_by_ident.pop(key, None)
                     if waiter is not None:
                         value = msg.get("content", {}).get("value", "")
                         waiter.put(value)
-        finally: sock.close(0)
+        except BaseException as exc:
+            self.exc = exc
+            self.exc_tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            log.error("StdinRouterThread crashed: %s", exc, exc_info=exc)
+            raise
+        finally:
+            if sock is not None: sock.close(0)
 
     def _drain_requests(self, sock: zmq.Socket):
         "Send pending input_request messages."
         while True:
-            try: prompt, password, parent, ident, waiter = self._requests.get_nowait()
+            try: prompt, password, parent, ident, waiter = self.requests.get_nowait()
             except queue.Empty: return
-            if self._interrupt_event.is_set():
-                waiter.put(_INPUT_INTERRUPTED)
+            if self.interrupt_event.is_set():
+                waiter.put(input_interrupted)
                 continue
             msg = self.session.send(sock, "input_request", {"prompt": prompt, "password": password},
                 parent=parent, ident=ident)
             msg_id = msg.get("header", {}).get("msg_id")
             key = tuple(ident or [])
-            with self._pending_lock:
-                if msg_id: self._pending[msg_id] = (key, waiter)
-                self._pending_by_ident.setdefault(key, deque()).append(waiter)
+            with self.pending_lock:
+                if msg_id: self.pending[msg_id] = (key, waiter)
+                self.pending_by_ident.setdefault(key, deque()).append(waiter)
 
-    def stop(self): self._stop_event.set()
+    def stop(self): self.stop_event.set()
 
     def interrupt_pending(self):
         "Cancel pending input requests and wake any waiters."
-        self._interrupt_event.set()
+        self.interrupt_event.set()
         waiters = []
-        with self._pending_lock:
-            waiters.extend(waiter for _, waiter in self._pending.values())
-            self._pending.clear()
-            self._pending_by_ident.clear()
+        with self.pending_lock:
+            waiters.extend(waiter for _, waiter in self.pending.values())
+            self.pending.clear()
+            self.pending_by_ident.clear()
         while True:
-            try: _prompt, _password, _parent, _ident, waiter = self._requests.get_nowait()
+            try: _prompt, _password, _parent, _ident, waiter = self.requests.get_nowait()
             except queue.Empty: break
             waiters.append(waiter)
-        for waiter in waiters: waiter.put(_INPUT_INTERRUPTED)
+        for waiter in waiters: waiter.put(input_interrupted)
 
 
 class AsyncRouterThread(threading.Thread):
@@ -256,159 +350,184 @@ class AsyncRouterThread(threading.Thread):
         "Async ROUTER loop for shell/control sockets."
         super().__init__(daemon=True, name=f"{log_label}-router")
         store_attr("kernel,port,socket_attr,handler,log_label")
-        self._loop = None
-        self._queue = None
-        self._ready = threading.Event()
-        self._socket_ready = threading.Event()
-        self._stop_event = threading.Event()
-        self._pending = queue.Queue()
+        self.loop = None
+        self.sock = None
+        self.ready = threading.Event()
+        self.stop_event = threading.Event()
+        self.outbox = ThreadBoundAsyncQueue()
+        self.enqueued = 0
+        self.sent = 0
+        self.send_errors = 0
+        self.exc = None
+        self.exc_tb = None
 
     def enqueue(self, item):
-        if self._queue is None or self._loop is None or not self._ready.is_set():
-            self._pending.put(item)
-            return
-        try: self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
-        except RuntimeError: _LOG.debug("Router loop closed; dropping %s item", self.log_label)
+        self.enqueued += 1
+        backlog = self.enqueued - self.sent
+        if backlog in (1000, 2000, 5000):
+            log.warning("%s backlog growing: enq=%d sent=%d", self.log_label, self.enqueued, self.sent)
+        self.outbox.put(item)
 
     def stop(self):
-        self._stop_event.set()
-        if self._loop is None or self._queue is None: return
-        try: self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
-        except RuntimeError: pass
+        self.stop_event.set()
+        self.outbox.put(None)
+        if self.loop is not None and self.sock is not None:
+            try: self.loop.call_soon_threadsafe(self.sock.close, 0)
+            except RuntimeError: pass
 
     def run(self):
-        loop = asyncio.new_event_loop()
-        if sys.platform.startswith("win") and not isinstance(loop, asyncio.SelectorEventLoop):
-            _LOG.warning("Windows event loop may not support zmq.asyncio; consider SelectorEventLoop policy.")
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._queue = asyncio.Queue()
-        self._ready.set()
-        while True:
-            try: item = self._pending.get_nowait()
-            except queue.Empty: break
-            self._queue.put_nowait(item)
-        try: loop.run_until_complete(self._router_loop())
+        try: asyncio.run(self._run())
+        except BaseException as exc:
+            self.exc = exc
+            self.exc_tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            log.error("%s crashed: %s", self.name, exc, exc_info=exc)
+            raise
         finally:
-            if hasattr(loop, "shutdown_asyncgens"): loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.close()
-            asyncio.set_event_loop(None)
-            self._loop = None
-            self._queue = None
+            self.loop = None
+            self.sock = None
+            self.ready.clear()
 
-    async def _router_loop(self):
+    async def _run(self):
+        self.loop = asyncio.get_running_loop()
+        if sys.platform.startswith("win") and not isinstance(self.loop, asyncio.SelectorEventLoop):
+            log.warning("Windows event loop may not support zmq.asyncio; consider SelectorEventLoop policy.")
+        self.outbox.bind(self.loop)
         sock = self.kernel.bind_router_async(self.port)
+        self.sock = sock
         setattr(self.kernel, self.socket_attr, sock)
-        self._socket_ready.set()
-        poller = zmq.asyncio.Poller()
-        poller.register(sock, zmq.POLLIN)
-        def _drain_send_queue():
-            while True:
-                try: item = self._queue.get_nowait()
-                except asyncio.QueueEmpty: break
-                if item is not None: self.kernel._send_router_item(sock, item)
-        try:
-            while not self.kernel._shutdown_event.is_set() and not self._stop_event.is_set():
-                poll_task = asyncio.ensure_future(poller.poll())
-                send_task = asyncio.create_task(self._queue.get())
-                done, pending = await asyncio.wait({poll_task, send_task}, return_when=asyncio.FIRST_COMPLETED)
-                if send_task in done:
-                    item = send_task.result()
-                    if item is not None: self.kernel._send_router_item(sock, item)
-                    _drain_send_queue()
-                if poll_task in done:
-                    events = dict(poll_task.result())
-                    if sock in events and events[sock] & zmq.POLLIN:
-                        idents, msg = await self.kernel.recv_msg_async(sock)
-                        if msg is not None:
-                            try: self.handler(msg, idents)
-                            except Exception: _LOG.warning("Error in %s: %s", self.log_label, msg.get("msg_type"), exc_info=True)
-                        _drain_send_queue()
-                for task in pending: task.cancel()
-                if pending: await asyncio.gather(*pending, return_exceptions=True)
+        self.ready.set()
+        try: await asyncio.gather(self._send_loop(sock), self._recv_loop(sock))
         finally:
-            poller.unregister(sock)
-            sock.close(0)
+            try: sock.close(0)
+            except Exception: pass
             if getattr(self.kernel, self.socket_attr) is sock: setattr(self.kernel, self.socket_attr, None)
 
+    async def _send_loop(self, sock: zmq.asyncio.Socket):
+        while not self.stop_event.is_set():
+            item = await self.outbox.get()
+            if item is None: return
+            msg_type, content, parent, idents = item
+            parent_id = parent.get("header", {}).get("msg_id", "?")[:8]
+            dbg(f"{self.log_label} SEND {msg_type} parent={parent_id}")
+            msg = self.kernel.session.msg(msg_type, content, parent=parent)
+            frames = self.kernel.session.serialize(msg, ident=idents)
+            try:
+                fut = sock.send_multipart(frames)
+                if asyncio.isfuture(fut): await fut
+                self.sent += 1
+            except Exception as exc:
+                self.send_errors += 1
+                log.error("%s send error: %s", self.log_label, exc, exc_info=exc)
+            dbg(f"{self.log_label} SENT {msg_type} parent={parent_id}")
+
+    async def _recv_loop(self, sock: zmq.asyncio.Socket):
+        try:
+            while not self.stop_event.is_set() and not self.kernel.shutdown_event.is_set():
+                dbg(f"{self.log_label} RECV waiting")
+                try: idents, msg = await self.kernel.recv_msg_async(sock)
+                except (zmq.ZMQError, asyncio.CancelledError) as e:
+                    dbg(f"{self.log_label} RECV error: {type(e).__name__}: {e}")
+                    self.outbox.put(None)  # wake sender to exit
+                    return
+                if msg is None:
+                    dbg(f"{self.log_label} RECV None (signature?)")
+                    continue
+                msg_type = msg.get("header", {}).get("msg_type", "?")
+                msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
+                dbg(f"{self.log_label} RECV {msg_type} id={msg_id}")
+                _dbg_mod.tlog(log, f"{self.log_label} recv", msg)
+                try: self.handler(msg, idents)
+                except Exception: log.warning("Error in %s: %s", self.log_label, msg.get("msg_type"), exc_info=True)
+        except Exception as e:
+            dbg(f"{self.log_label} RECV UNEXPECTED: {type(e).__name__}: {e}")
+            traceback.print_exc()
+        finally: dbg(f"{self.log_label} RECV EXITING")
+
+
+class KernelWatchdog(threading.Thread):
+    "Terminate kernel if critical threads die."
+
+    def __init__(self, kernel, interval: float = 0.5):
+        super().__init__(daemon=True, name="watchdog")
+        store_attr()
+
+    def run(self):
+        while not self.kernel.shutdown_event.is_set():
+            time.sleep(self.interval)
+            dead = []
+            threads = [self.kernel.iopub_thread, self.kernel.shell_router, self.kernel.control_router, self.kernel.stdin_router]
+            for t in threads:
+                if t is None: continue
+                if not t.is_alive(): dead.append(t)
+            if not dead: continue
+            for t in dead:
+                log.error("Critical thread dead: %s exc=%r", t.name, getattr(t, "exc", None))
+                tb = getattr(t, "exc_tb", None)
+                if tb: log.error("Thread traceback:\n%s", tb)
+            self.kernel.shutdown_event.set()
+            self.kernel.subshells.parent.stop()
+            return
 class Subshell:
     def __init__(self, kernel: "MiniKernel", subshell_id:str|None, user_ns: dict,
         use_singleton: bool = False, run_in_thread: bool = True):
         "Create subshell worker thread and bridge for execution."
         store_attr("kernel,subshell_id")
-        self._stop = threading.Event()
+        self.stop_event = threading.Event()  # not `_stop` since that shadows Thread._stop
         name = "subshell-parent" if subshell_id is None else f"subshell-{subshell_id}"
-        self._thread = None if not run_in_thread else threading.Thread(target=self._run_loop, daemon=True, name=name)
-        self._loop = None
-        self._loop_ready = threading.Event()
-        self._pending = deque()
-        self._pending_lock = threading.Lock()
-        self._pending_event = None
-        self._aborting = False
-        self._abort_handle = None
-        self._async_lock = None
+        self.thread = None if not run_in_thread else threading.Thread(target=self._run_loop, daemon=True, name=name)
+        self.loop = None
+        self.loop_ready = threading.Event()
+        self.inbox = ThreadBoundAsyncQueue()
+        self.aborting = False
+        self.abort_handle = None
+        self.async_lock = None
         self.bridge = KernelBridge(request_input=self.request_input, debug_event_callback=self.send_debug_event,
             zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton)
         self.bridge.set_stream_sender(self._send_stream)
         self.bridge.set_display_sender(self._send_display_event)
-        self._parent_header_var = contextvars.ContextVar("parent_header", default=None)
-        self._parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
-        self._executing = threading.Event()
-        self._exec_state = ExecState.IDLE
-        self._last_exec_state = None
-        self._state_lock = threading.Lock()
-        self._shell_required = dict(execute_request=("code",), complete_request=("code", "cursor_pos"),
-            inspect_request=("code", "cursor_pos"), history_request=("hist_access_type",), is_complete_request=("code",))
-        self._shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
+        self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
+        self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
+        self.executing = threading.Event()
+        self.exec_state = ExecState.IDLE
+        self.last_exec_state = None
+        self.state_lock = threading.Lock()
+        self.shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
             complete_request=self._bridge_handler, inspect_request=self._bridge_handler, history_request=self._handle_history,
             is_complete_request=self._bridge_handler, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
             comm_msg=self._handle_comm, comm_close=self._handle_comm, shutdown_request=self.handle_shutdown)
-        complete_req = ("complete_reply", dict(code=("code", ""), cursor_pos="cursor_pos"), "complete")
-        inspect_req = ("inspect_reply", dict(code=("code", ""), cursor_pos="cursor_pos", detail_level=("detail_level", 0)), "inspect")
-        is_complete_req = ("is_complete_reply", dict(code=("code", "")), "is_complete")
-        self._bridge_specs = dict(complete_request=complete_req, inspect_request=inspect_req, is_complete_request=is_complete_req)
 
     def start(self):
-        if self._thread is not None:
-            self._thread.start()
-            self._loop_ready.wait()
+        if self.thread is not None:
+            self.thread.start()
+            self.loop_ready.wait()
 
     def stop(self):
         "Signal subshell loop to stop and wake it."
-        self._stop.set()
-        if self._loop is None: return
-        def _stop_loop():
-            with self._pending_lock: self._pending.append((_SUBSHELL_STOP, None, None))
-            if self._pending_event is not None: self._pending_event.set()
-            self._loop.stop()
-        if self._loop.is_running(): self._loop.call_soon_threadsafe(_stop_loop)
-        else: _stop_loop()
+        self.stop_event.set()
+        self.inbox.put((subshell_stop, None, None))
+        if self.loop is not None and self.loop.is_running(): self.loop.call_soon_threadsafe(self.loop.stop)
 
     def join(self, timeout:float|None=None):
-        if self._thread is not None: self._thread.join(timeout=timeout)
+        if self.thread is not None: self.thread.join(timeout=timeout)
 
-    def submit(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
-        with self._pending_lock: self._pending.append((msg, idents, sock))
-        if self._pending_event is None: return
-        if self._loop is not None and self._loop.is_running(): self._loop.call_soon_threadsafe(self._pending_event.set)
-        else: self._pending_event.set()
+    def submit(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket): self.inbox.put((msg, idents, sock))
 
     def _set_exec_state(self, state: ExecState):
-        with self._state_lock: self._exec_state = state
+        with self.state_lock: self.exec_state = state
 
     def _set_last_exec_state(self, state: ExecState):
-        with self._state_lock: self._last_exec_state = state
+        with self.state_lock: self.last_exec_state = state
 
     def _get_exec_state(self)->ExecState:
-        with self._state_lock: return self._exec_state
+        with self.state_lock: return self.exec_state
 
     def interrupt(self)->bool:
         "Raise KeyboardInterrupt in subshell thread if executing."
-        if self._thread is None: return False
+        if self.thread is None: return False
         if self._get_exec_state() != ExecState.RUNNING: return False
         self._set_exec_state(ExecState.CANCELLING)
-        if self.bridge.cancel_exec_task(self._loop): return True
-        thread_id = self._thread.ident
+        if self.bridge.cancel_exec_task(self.loop): return True
+        thread_id = self.thread.ident
         if thread_id is None: return False
         return _raise_async_exception(thread_id, KeyboardInterrupt)
 
@@ -418,19 +537,19 @@ class Subshell:
             if sys.stdout is not None: sys.stdout.flush()
             if sys.stderr is not None: sys.stderr.flush()
         except (OSError, ValueError): pass
-        parent = self._parent_header_var.get()
-        idents = self._parent_idents_var.get()
+        parent = self.parent_header_var.get()
+        idents = self.parent_idents_var.get()
         return self.kernel.stdin_router.request_input(prompt, password, parent, idents)
 
     def _send_stream(self, name:str, text:str):
         "Send stream output on IOPub for current parent message."
-        parent = self._parent_header_var.get()
+        parent = self.parent_header_var.get()
         if not parent: return
         self.kernel.iopub.stream(parent, name=name, text=text)
 
     def _send_display_event(self, event: dict):
         "Send display/clear events on IOPub for current parent message."
-        parent = self._parent_header_var.get()
+        parent = self.parent_header_var.get()
         if not parent: return
         if event.get("type") == "clear_output":
             self.kernel.iopub.clear_output(parent, wait=event.get("wait", False))
@@ -445,40 +564,41 @@ class Subshell:
 
     def send_debug_event(self, event: dict):
         "Send debug_event on IOPub for current parent message."
-        parent = self._parent_header_var.get() or {}
+        parent = self.parent_header_var.get() or {}
         self.kernel.iopub.debug_event(parent, content=event)
 
     def send_status(self, state:str, parent: dict|None): self.kernel.iopub.status(parent, execution_state=state)
 
     def send_reply(self, socket: zmq.Socket, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
+        parent_id = parent.get("header", {}).get("msg_id", "?")[:8]
+        dbg(f"REPLY {msg_type} id={parent_id}")
         if socket is self.kernel.control_socket: self.kernel.queue_control_reply(msg_type, content, parent, idents)
         else: self.kernel.queue_shell_reply(msg_type, content, parent, idents)
 
     def _run_loop(self):
         "Run subshell asyncio loop in a background thread."
         self._setup_loop()
-        try: self._loop.run_forever()
+        try: self.loop.run_forever()
         finally: self._shutdown_loop()
 
     def run_main(self):
         "Run parent subshell loop in the main thread."
         self._setup_loop()
-        try: self._loop.run_forever()
+        try: self.loop.run_forever()
         finally: self._shutdown_loop()
 
     def _setup_loop(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._pending_event = asyncio.Event()
-        self._async_lock = asyncio.Lock()
-        self._loop_ready.set()
-        if self._pending: self._pending_event.set()
+        self.loop = loop
+        self.inbox.bind(loop)
+        self.async_lock = asyncio.Lock()
+        self.loop_ready.set()
         loop.create_task(self._consume_queue())
 
     def _shutdown_loop(self):
-        if self._loop is None: return
-        loop = self._loop
+        if self.loop is None: return
+        loop = self.loop
         asyncio.set_event_loop(loop)
         pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
         for task in pending: task.cancel()
@@ -486,69 +606,88 @@ class Subshell:
         if hasattr(loop, "shutdown_asyncgens"): loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
         asyncio.set_event_loop(None)
-        self._loop = None
-        self._pending_event = None
-        self._async_lock = None
+        self.loop = None
+        self.async_lock = None
 
     async def _consume_queue(self):
         "Process queued shell messages on the subshell event loop."
+        dbg(f"SUBSHELL started id={self.subshell_id}")
         while True:
-            await self._pending_event.wait()
-            while True:
-                with self._pending_lock:
-                    if not self._pending:
-                        self._pending_event.clear()
-                        break
-                    msg, idents, sock = self._pending.popleft()
-                if msg is _SUBSHELL_STOP: return
-                if msg is _SUBSHELL_ABORT_CLEAR:
-                    self._stop_aborting()
-                    continue
-                if not msg: continue
-                async with self._async_lock:
-                    try: await self._handle_message(msg, idents, sock)
-                    except Exception: _LOG.warning("Error in subshell handler", exc_info=True)
+            msg, idents, sock = await self.inbox.get()
+            if msg is subshell_stop:
+                dbg("SUBSHELL stopping")
+                return
+            if msg is subshell_abort_clear:
+                self._stop_aborting()
+                continue
+            if not msg: continue
+            msg_type = msg.get("header", {}).get("msg_type", "?")
+            msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
+            dbg(f"EXEC {msg_type} id={msg_id}")
+            dbg(f"LOCK_WAIT id={msg_id}")
+            async with self.async_lock:
+                dbg(f"LOCK_ACQ id={msg_id}")
+                try: await self._handle_message(msg, idents, sock)
+                except Exception as exc: self._handle_internal_error(msg, idents, sock, exc)
+            dbg(f"DONE {msg_type} id={msg_id}")
+
+    def _handle_internal_error(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket, exc: Exception):
+        "Send error reply for internal exceptions. Never drops a _request on the floor."
+        msg_type = msg.get("header", {}).get("msg_type", "")
+        log.warning("Internal error in %s handler", msg_type, exc_info=exc)
+        if not msg_type.endswith("_request"): return
+        reply_type = msg_type.replace("_request", "_reply")
+        tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        reply = dict(status="error", ename=type(exc).__name__, evalue=str(exc), traceback=tb)
+        if msg_type == "execute_request":
+            reply |= dict(execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
+            self.kernel.send_status("busy", msg)
+            self.kernel.iopub.error(msg, ename=type(exc).__name__, evalue=str(exc), traceback=tb)
+        else: reply |= missing_defaults.get(msg_type, {})
+        self.send_reply(sock, reply_type, reply, msg, idents)
+        if msg_type == "execute_request": self.kernel.send_status("idle", msg)
 
     async def _handle_message(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Dispatch message based on msg_type, handling execute separately."
         msg_type = msg["header"]["msg_type"]
-        token_header = self._parent_header_var.set(msg)
-        token_idents = self._parent_idents_var.set(idents)
+        msg_id = msg["header"].get("msg_id", "?")[:8]
+        dbg(f"HANDLE_MSG {msg_type} id={msg_id}")
+        token_header = self.parent_header_var.set(msg)
+        token_idents = self.parent_idents_var.set(idents)
         try:
             missing = self._missing_fields(msg_type, msg.get("content", {}))
             if missing:
                 self._send_missing_fields_reply(msg_type, missing, msg, idents, sock)
                 return
-            if msg_type == "execute_request" and self._aborting:
+            if msg_type == "execute_request" and self.aborting:
+                dbg(f"ABORTING id={msg_id}")
                 self._send_abort_reply(sock, msg, idents)
                 return
             if msg_type == "execute_request":
+                dbg(f"DISPATCH_EXEC id={msg_id}")
                 await self._handle_execute(msg, idents, sock)
                 return
             self._dispatch_shell_non_execute(msg, idents, sock)
         finally:
-            self._parent_header_var.reset(token_header)
-            self._parent_idents_var.reset(token_idents)
+            self.parent_header_var.reset(token_header)
+            self.parent_idents_var.reset(token_idents)
 
     def _missing_fields(self, msg_type:str, content: dict)->list[str]:
-        required = self._shell_required.get(msg_type)
-        if not required: return []
-        return [key for key in required if key not in content]
-
-    def _missing_reply_defaults(self, msg_type:str)->dict:
-        cr = dict(matches=[], cursor_start=0, cursor_end=0, metadata={})
-        ir = dict(found=False, data={}, metadata={})
-        return dict(complete_request=cr, inspect_request=ir, history_request={"history": []},
-            is_complete_request={"indent": ""}).get(msg_type, {})
+        required = shell_required.get(msg_type)
+        return [key for key in required if key not in content] if required else []
 
     def _send_missing_fields_reply(self, msg_type:str, missing: list[str], msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
+        "Send error reply for missing required fields. Always sends busy/idle for execute_request."
         reply_type = msg_type.replace("_request", "_reply")
         evalue = f"missing required fields: {', '.join(missing)}"
         reply = dict(status="error", ename="MissingField", evalue=evalue, traceback=[])
         if msg_type == "execute_request":
             reply |= dict(execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
-        else: reply |= self._missing_reply_defaults(msg_type)
+            self.kernel.send_status("busy", msg)
+            self.kernel.iopub.error(msg, ename="MissingField", evalue=evalue, traceback=[])
+        else: reply |= missing_defaults.get(msg_type, {})
         self.send_reply(sock, reply_type, reply, msg, idents)
+        if msg_type == "execute_request": self.kernel.send_status("idle", msg)
 
     def _send_abort_reply(self, sock: zmq.Socket, msg: dict, idents: list[bytes]|None):
         "Send an abort reply for `msg`."
@@ -560,48 +699,48 @@ class Subshell:
 
     def _start_aborting(self):
         "Mark subshell aborting and schedule clearing."
-        self._aborting = True
-        if self._abort_handle is not None:
-            self._abort_handle.cancel()
-            self._abort_handle = None
+        self.aborting = True
+        if self.abort_handle is not None:
+            self.abort_handle.cancel()
+            self.abort_handle = None
         timeout = self.kernel.stop_on_error_timeout
-        if timeout > 0: self._abort_handle = self._loop.call_later(timeout, self._stop_aborting)
+        if timeout > 0: self.abort_handle = self.loop.call_later(timeout, self._stop_aborting)
 
     def _stop_aborting(self):
         "Clear aborting state after stop_on_error window."
-        self._aborting = False
-        if self._abort_handle is not None:
-            self._abort_handle.cancel()
-            self._abort_handle = None
+        self.aborting = False
+        if self.abort_handle is not None:
+            self.abort_handle.cancel()
+            self.abort_handle = None
 
     def _dispatch_shell_non_execute(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Dispatch non-execute shell requests to handlers."
         msg_type = msg["header"]["msg_type"]
-        handler = self._shell_handlers.get(msg_type)
+        handler = self.shell_handlers.get(msg_type)
         if handler is None:
             self.send_reply(sock, msg_type.replace("_request", "_reply"), {}, msg, idents)
             return
         handler(msg, idents, sock)
 
     def _abort_pending_executes(self, append_abort_clear: bool = False):
-        "Abort queued execute requests and reply aborted."
-        drained = []
-        with self._pending_lock:
-            while self._pending: drained.append(self._pending.popleft())
-            if append_abort_clear: self._pending.append((_SUBSHELL_ABORT_CLEAR, None, None))
+        "Abort queued execute requests and reply aborted with busy/idle."
+        drained = self.inbox.drain_nowait()
+        if append_abort_clear: self.inbox.put((subshell_abort_clear, None, None))
         for msg, idents, sock in drained:
-            if msg is _SUBSHELL_STOP:
-                with self._pending_lock: self._pending.append((msg, idents, sock))
+            if msg is subshell_stop:
+                self.inbox.put((msg, idents, sock))
                 break
-            if msg is _SUBSHELL_ABORT_CLEAR:
-                with self._pending_lock: self._pending.append((msg, idents, sock))
+            if msg is subshell_abort_clear:
+                self.inbox.put((msg, idents, sock))
                 continue
             msg_type = msg.get("header", {}).get("msg_type")
             if msg_type == "execute_request":
+                self.kernel.send_status("busy", msg)
                 self._set_last_exec_state(ExecState.ABORTED)
                 reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count,
                     user_expressions={}, payload=[])
                 self.send_reply(sock, "execute_reply", reply_content, msg, idents)
+                self.kernel.send_status("idle", msg)
             elif msg_type: self._dispatch_shell_non_execute(msg, idents, sock)
 
     def _handle_kernel_info(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
@@ -618,6 +757,7 @@ class Subshell:
 
     async def _handle_execute(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Handle execute_request via KernelBridge and emit IOPub."
+        msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
         content = msg.get("content", {})
         code = content.get("code", "")
         silent = bool(content.get("silent", False))
@@ -626,93 +766,83 @@ class Subshell:
         user_expressions = content.get("user_expressions", {})
         allow_stdin = bool(content.get("allow_stdin", False))
 
+        dbg(f"HANDLE_EXEC id={msg_id} code={code[:30]!r}...")
         self._set_exec_state(ExecState.RUNNING)
-        self._executing.set()
-        sent_reply = False
-        sent_error = False
-        exec_count = None
+        self.executing.set()
         terminal_state = ExecState.COMPLETED
+        iopub = self.kernel.iopub
+        sent_reply = sent_error = False
+        exec_count = None
 
         self.kernel.send_status("busy", msg)
-        iopub = self.kernel.iopub
         try:
             exec_count_pre = self.bridge.shell.execution_count
-            if not silent: exec_count_pre += 1 if store_history else 0
-            # pre-send execute_input before any live output to match ipykernel ordering
             if not silent: iopub.execute_input(msg, code=code, execution_count=exec_count_pre)
+
+            dbg(f"BRIDGE_EXEC id={msg_id}")
+            timeout_handle = None
+            if _debug:
+                loop = asyncio.get_running_loop()
+                timeout_handle = loop.call_later(2.0, lambda: log.warning("execute still running msg_id=%s", msg_id))
             try:
                 with comm_context(iopub.send, msg):
                     result = await self.bridge.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
-            except BaseException as exc:
-                tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
-                result = dict(streams=[], display=[], result=None, result_metadata={}, execution_count=self.bridge.shell.execution_count,
-                    error=dict(ename=type(exc).__name__, evalue=str(exc), traceback=tb), user_expressions={}, payload=[])
-
-            exec_count = result.get("execution_count")
+            finally:
+                if timeout_handle: timeout_handle.cancel()
+            dbg(f"BRIDGE_DONE id={msg_id}")
 
             error = result.get("error")
             if error and error.get("ename") == "CancelledError" and self._get_exec_state() == ExecState.CANCELLING:
                 error = dict(error) | dict(ename="KeyboardInterrupt", evalue="")
+            exec_count = result.get("execution_count")
+
             if not silent:
                 for stream in result.get("streams", []): iopub.stream(msg, name=stream["name"], text=stream["text"])
                 for event in result.get("display", []):
-                    if event.get("type") == "clear_output":
-                        iopub.clear_output(msg, wait=event.get("wait", False))
-                        continue
-                    if event.get("type") == "display":
-                        data = event.get("data", {})
-                        metadata = event.get("metadata", {})
-                        transient = event.get("transient", {})
-                        buffers = event.get("buffers")
-                        payload = dict(data=data, metadata=metadata, transient=transient)
-                        if event.get("update"): iopub.update_display_data(msg, payload, buffers=buffers)
-                        else: iopub.display_data(msg, payload, buffers=buffers)
+                    if event.get("type") == "clear_output": iopub.clear_output(msg, wait=event.get("wait", False))
+                    elif event.get("type") == "display":
+                        payload = dict(data=event.get("data", {}), metadata=event.get("metadata", {}), transient=event.get("transient", {}))
+                        if event.get("update"): iopub.update_display_data(msg, payload, buffers=event.get("buffers"))
+                        else: iopub.display_data(msg, payload, buffers=event.get("buffers"))
 
             if error:
                 if error.get("ename") == "KeyboardInterrupt": terminal_state = ExecState.ABORTED
-                tb = error.get("traceback", [])
-                iopub.error(msg, ename=error["ename"], evalue=error["evalue"], traceback=tb)
+                iopub.error(msg, ename=error["ename"], evalue=error["evalue"], traceback=error.get("traceback", []))
                 sent_error = True
+            elif not silent and result.get("result") is not None:
+                iopub.execute_result(msg, dict(execution_count=exec_count, data=result["result"], metadata=result.get("result_metadata", {})))
 
-            if not silent and not error and result.get("result") is not None:
-                result_content = dict(execution_count=exec_count, data=result.get("result"), metadata=result.get("result_metadata", {}))
-                iopub.execute_result(msg, result_content)
-
-            reply_content = dict(status="ok" if not error else "error", execution_count=exec_count,
+            reply = dict(status="error" if error else "ok", execution_count=exec_count,
                 user_expressions=result.get("user_expressions", {}), payload=result.get("payload", []))
-            if error: reply_content.update(error)
-
-            self.send_reply(sock, "execute_reply", reply_content, msg, idents)
+            if error: reply.update(error)
+            self.send_reply(sock, "execute_reply", reply, msg, idents)
             sent_reply = True
+
             if error and stop_on_error:
-                append_abort_clear = self.kernel.stop_on_error_timeout <= 0
-                self._abort_pending_executes(append_abort_clear=append_abort_clear)
+                self._abort_pending_executes(append_abort_clear=self.kernel.stop_on_error_timeout <= 0)
                 self._start_aborting()
         except KeyboardInterrupt as exc:
             terminal_state = ExecState.ABORTED
-            error = dict(ename=type(exc).__name__, evalue=str(exc),
-                traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
+            error = dict(ename=type(exc).__name__, evalue=str(exc), traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
             if not sent_error: iopub.error(msg, content=error)
             if not sent_reply:
-                reply_content = dict(status="error", execution_count=exec_count or self.bridge.shell.execution_count,
-                    user_expressions={}, payload=[])
-                reply_content.update(error)
-                self.send_reply(sock, "execute_reply", reply_content, msg, idents)
+                reply = dict(status="error", execution_count=exec_count or self.bridge.shell.execution_count, user_expressions={}, payload=[])
+                reply.update(error)
+                self.send_reply(sock, "execute_reply", reply, msg, idents)
                 if stop_on_error:
-                    append_abort_clear = self.kernel.stop_on_error_timeout <= 0
-                    self._abort_pending_executes(append_abort_clear=append_abort_clear)
+                    self._abort_pending_executes(append_abort_clear=self.kernel.stop_on_error_timeout <= 0)
                     self._start_aborting()
         finally:
             self.kernel.send_status("idle", msg)
             self._set_last_exec_state(terminal_state)
-            self._executing.clear()
+            self.executing.clear()
             self._set_exec_state(ExecState.IDLE)
 
     def _bridge_handler(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Handle simple bridge-request messages."
         msg_type = msg.get("header", {}).get("msg_type")
-        spec = self._bridge_specs.get(msg_type)
+        spec = bridge_specs.get(msg_type)
         if spec is None: return
         reply_type, fields, method = spec
         self._bridge_reply(msg, idents, sock, reply_type, method, **fields)
@@ -761,40 +891,40 @@ class SubshellManager:
     def __init__(self, kernel: "MiniKernel"):
         "Manage parent and child subshells sharing a user namespace."
         self.kernel = kernel
-        self._user_ns = {}
-        self.parent = Subshell(kernel, None, self._user_ns, use_singleton=True, run_in_thread=False)
-        self._subs = {}
-        self._lock = threading.Lock()
+        self.user_ns = {}
+        self.parent = Subshell(kernel, None, self.user_ns, use_singleton=True, run_in_thread=False)
+        self.subs = {}
+        self.lock = threading.Lock()
 
     def start(self): return
 
     def get(self, subshell_id:str|None)->Subshell|None:
         "Return subshell by id, or the parent when None."
         if subshell_id is None: return self.parent
-        with self._lock: return self._subs.get(subshell_id)
+        with self.lock: return self.subs.get(subshell_id)
 
     def create(self)->str:
         "Create and start a new subshell; return its id."
         subshell_id = str(uuid.uuid4())
-        subshell = Subshell(self.kernel, subshell_id, self._user_ns)
-        with self._lock: self._subs[subshell_id] = subshell
+        subshell = Subshell(self.kernel, subshell_id, self.user_ns)
+        with self.lock: self.subs[subshell_id] = subshell
         subshell.start()
         return subshell_id
 
     def list(self)->list[str]:
-        with self._lock: return list(self._subs.keys())
+        with self.lock: return list(self.subs.keys())
 
     def delete(self, subshell_id:str):
         "Stop and remove a subshell by id."
-        with self._lock: subshell = self._subs.pop(subshell_id)
+        with self.lock: subshell = self.subs.pop(subshell_id)
         subshell.stop()
         subshell.join(timeout=1)
 
     def stop_all(self):
         "Stop all subshells and the parent."
-        with self._lock:
-            subshells = list(self._subs.values())
-            self._subs.clear()
+        with self.lock:
+            subshells = list(self.subs.values())
+            self.subs.clear()
         for subshell in subshells:
             subshell.stop()
             subshell.join(timeout=1)
@@ -804,7 +934,7 @@ class SubshellManager:
     def interrupt_all(self):
         "Send interrupts to all subshells."
         self.parent.interrupt()
-        with self._lock: subshells = list(self._subs.values())
+        with self.lock: subshells = list(self.subs.values())
         for subshell in subshells: subshell.interrupt()
 
 
@@ -846,40 +976,47 @@ class MiniKernel:
         self.hb = HeartbeatThread(self.context, self.connection.addr(self.connection.hb_port))
         self.subshells = SubshellManager(self)
         self.bridge = self.subshells.parent.bridge
-        self._parent_header = None
-        self._parent_idents = None
-        self._shell_router = None
-        self._control_router = None
-        self._shutdown_event = threading.Event()
+        self.parent_header = None
+        self.parent_idents = None
+        self.shell_router = None
+        self.control_router = None
+        self.watchdog = None
+        self.shutdown_event = threading.Event()
         self.stop_on_error_timeout = _env_float("IPYMINI_STOP_ON_ERROR_TIMEOUT", 0.0)
-        self._iopub_cmd = None
-        self._control_handlers = dict(shutdown_request=self.handle_shutdown, debug_request=self.handle_debug,
+        self.iopub_cmd = None
+        self.control_handlers = dict(shutdown_request=self.handle_shutdown, debug_request=self.handle_debug,
             interrupt_request=self.handle_interrupt)
-        self._control_handlers |= dict(create_subshell_request=self.handle_create_subshell, list_subshell_request=self.handle_list_subshell)
-        self._control_handlers |= dict(delete_subshell_request=self.handle_delete_subshell, kernel_info_request=self.handle_control_kernel_info)
+        self.control_handlers |= dict(create_subshell_request=self.handle_create_subshell, list_subshell_request=self.handle_list_subshell)
+        self.control_handlers |= dict(delete_subshell_request=self.handle_delete_subshell, kernel_info_request=self.handle_control_kernel_info)
 
     def start(self):
         "Start kernel threads and serve shell/control messages."
+        _dbg_mod.setup()
+        dbg("kernel starting...")
         self.iopub_thread.start()
         self.stdin_router.start()
         self.subshells.start()
         self.hb.start()
         prev_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self.handle_sigint)
-        self._shutdown_event.clear()
-        self._shell_router = AsyncRouterThread(self, self.connection.shell_port, "shell_socket", self.handle_shell_msg, "shell")
-        self._control_router = AsyncRouterThread(self, self.connection.control_port, "control_socket", self.handle_control_msg, "control")
-        self._shell_router.start()
-        self._control_router.start()
-        self._shell_router._ready.wait()
-        self._control_router._ready.wait()
+        self.shutdown_event.clear()
+        self.shell_router = AsyncRouterThread(self, self.connection.shell_port, "shell_socket", self.handle_shell_msg, "shell")
+        self.control_router = AsyncRouterThread(self, self.connection.control_port, "control_socket", self.handle_control_msg, "control")
+        self.shell_router.start()
+        self.control_router.start()
+        dbg("waiting for routers to be ready...")
+        self.shell_router.ready.wait()
+        self.control_router.ready.wait()
+        self.watchdog = KernelWatchdog(self)
+        self.watchdog.start()
+        dbg("kernel ready")
         try: self.subshells.parent.run_main()
         finally:
-            self._shutdown_event.set()
-            if self._shell_router is not None: self._shell_router.stop()
-            if self._control_router is not None: self._control_router.stop()
-            if self._shell_router is not None: self._shell_router.join(timeout=1)
-            if self._control_router is not None: self._control_router.join(timeout=1)
+            self.shutdown_event.set()
+            if self.shell_router is not None: self.shell_router.stop()
+            if self.control_router is not None: self.control_router.stop()
+            if self.shell_router is not None: self.shell_router.join(timeout=1)
+            if self.control_router is not None: self.control_router.join(timeout=1)
             self.hb.stop()
             self.hb.join(timeout=1)
             self.subshells.stop_all()
@@ -887,6 +1024,7 @@ class MiniKernel:
             self.stdin_router.join(timeout=1)
             self.iopub_thread.stop()
             self.iopub_thread.join(timeout=1)
+            if self.watchdog is not None: self.watchdog.join(timeout=1)
             signal.signal(signal.SIGINT, prev_sigint)
 
     def bind_router(self, port:int)->zmq.Socket:
@@ -909,37 +1047,36 @@ class MiniKernel:
         "Receive message from `sock`."
         try: return self.session.recv(sock, mode=0)
         except ValueError as err:
-            if "Duplicate Signature" not in str(err): _LOG.warning("Bad message signature", exc_info=True)
+            if "Duplicate Signature" not in str(err): log.warning("Bad message signature", exc_info=True)
         except zmq.ZMQError: pass
         return None, None
 
     async def recv_msg_async(self, sock: zmq.asyncio.Socket):
         "Receive message from async `sock`."
         try: msg_list = await sock.recv_multipart(copy=False)
-        except zmq.ZMQError: return None, None
+        except zmq.ZMQError as e:
+            dbg(f"recv_msg_async ZMQError: {e}")
+            return None, None
         idents, msg_list = self.session.feed_identities(msg_list, copy=False)
         try: msg = self.session.deserialize(msg_list, content=True, copy=False)
         except ValueError as err:
-            if "Duplicate Signature" not in str(err): _LOG.warning("Bad message signature", exc_info=True)
+            dbg(f"recv_msg_async deserialize error: {err}")
+            if "Duplicate Signature" not in str(err): log.warning("Bad message signature", exc_info=True)
             return None, None
         return idents, msg
-
-    def _send_router_item(self, sock: zmq.asyncio.Socket, item):
-        msg_type, content, parent, idents = item
-        self.session.send(sock, msg_type, content, parent=parent, ident=idents)
 
     def handle_sigint(self, signum, frame):
         "Handle SIGINT by interrupting subshells and input waits."
         self.subshells.interrupt_all()
         self.stdin_router.interrupt_pending()
-        if self.subshells.parent._executing.is_set():
+        if self.subshells.parent.executing.is_set():
             self.subshells.parent._set_exec_state(ExecState.CANCELLING)
             raise KeyboardInterrupt
 
     def handle_control_msg(self, msg: dict, idents: list[bytes]|None):
         "Handle control channel request message."
         msg_type = msg["header"]["msg_type"]
-        handler = self._control_handlers.get(msg_type)
+        handler = self.control_handlers.get(msg_type)
         if handler is None:
             self.send_reply(self.control_socket, msg_type.replace("_request", "_reply"), {}, msg, idents)
             return
@@ -947,11 +1084,15 @@ class MiniKernel:
 
     def handle_shell_msg(self, msg: dict, idents: list[bytes]|None):
         "Handle shell request message and dispatch to subshells."
-        subshell_id = msg.get("header", {}).get("subshell_id")
+        msg_type = msg.get("header", {}).get("msg_type", "?")
+        msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
+        subshell_id = msg.get("header", {}).get("subshell_id") or None  # treat "" as None
         subshell = self.subshells.get(subshell_id)
         if subshell is None:
+            dbg(f"DISPATCH {msg_type} id={msg_id} -> NO SUBSHELL")
             self.send_subshell_error(msg, idents)
             return
+        dbg(f"DISPATCH {msg_type} id={msg_id}")
         subshell.submit(msg, idents, self.shell_socket)
 
     def send_reply(self, socket: zmq.Socket, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
@@ -959,15 +1100,20 @@ class MiniKernel:
 
     def queue_shell_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
         "Enqueue a shell reply for async send."
-        if self._shell_router is None: return
-        self._shell_router.enqueue((msg_type, content, parent, idents))
+        if self.shell_router is None:
+            dbg("QUEUE shell reply - NO ROUTER!")
+            return
+        _dbg_mod.tlog(log, "shell reply", parent)
+        self.shell_router.enqueue((msg_type, content, parent, idents))
 
     def queue_control_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
         "Enqueue a control reply for async send."
-        if self._control_router is None: return
-        self._control_router.enqueue((msg_type, content, parent, idents))
+        if self.control_router is None: return
+        self.control_router.enqueue((msg_type, content, parent, idents))
 
-    def send_status(self, state:str, parent: dict|None): self.iopub.status(parent, execution_state=state)
+    def send_status(self, state:str, parent: dict|None):
+        if _dbg_mod.trace_msgs and parent: _dbg_mod.tlog(log, f"iopub status={state}", parent)
+        self.iopub.status(parent, execution_state=state)
 
     @contextmanager
     def busy_idle(self, parent: dict|None):
@@ -978,13 +1124,13 @@ class MiniKernel:
 
     def send_debug_event(self, event: dict):
         "Send a debug_event on IOPub using current parent header."
-        parent = self._parent_header or {}
+        parent = self.parent_header or {}
         self.iopub.debug_event(parent, content=event)
 
     @property
     def iopub(self)->IOPubCommand:
         "Return cached IOPubCommand wrapper."
-        if (proxy := self._iopub_cmd) is None: self._iopub_cmd = proxy = IOPubCommand(self)
+        if (proxy := self.iopub_cmd) is None: self.iopub_cmd = proxy = IOPubCommand(self)
         return proxy
 
     def iopub_send(self, msg_type:str, parent: dict|None, content: dict|None=None, metadata: dict|None=None,
@@ -995,13 +1141,17 @@ class MiniKernel:
         self.iopub_thread.send(msg_type, content, parent, metadata, ident, buffers)
 
     def send_subshell_error(self, msg: dict, idents: list[bytes]|None):
-        "Send SubshellNotFound error reply for unknown subshell."
+        "Send SubshellNotFound error reply for unknown subshell. Always sends busy/idle for execute_request."
         msg_type = msg.get("header", {}).get("msg_type", "")
         subshell_id = msg.get("header", {}).get("subshell_id")
         if not msg_type.endswith("_request"): return
         content = dict(status="error", ename="SubshellNotFound", evalue=f"Unknown subshell_id {subshell_id!r}", traceback=[])
-        if msg_type == "execute_request": content.update(dict(execution_count=0, user_expressions={}, payload=[]))
+        if msg_type == "execute_request":
+            content.update(dict(execution_count=0, user_expressions={}, payload=[]))
+            self.send_status("busy", msg)
+            self.iopub.error(msg, ename="SubshellNotFound", evalue=content["evalue"], traceback=[])
         self.send_reply(self.shell_socket, msg_type.replace("_request", "_reply"), content, msg, idents)
+        if msg_type == "execute_request": self.send_status("idle", msg)
 
     def control_ok(self, sock: zmq.Socket, msg: dict, idents: list[bytes]|None, reply_type:str, fn):
         "Send ok/error reply for control handlers."
@@ -1050,7 +1200,7 @@ class MiniKernel:
     def handle_debug(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Handle debug_request via KernelBridge and emit events."
         self.send_status("busy", msg)
-        self._parent_header = msg
+        self.parent_header = msg
         try:
             content = msg.get("content", {})
             reply = self.bridge.debug_request(json.dumps(content))
@@ -1059,12 +1209,12 @@ class MiniKernel:
             self.send_reply(sock, "debug_reply", response, msg, idents)
             for event in events: self.send_debug_event(event)
             self.send_status("idle", msg)
-        finally: self._parent_header = None
+        finally: self.parent_header = None
 
     def send_interrupt_signal(self):
         "Send SIGINT to the current process or process group."
         if os.name == "nt":
-            _LOG.warning("Interrupt request not supported on Windows")
+            log.warning("Interrupt request not supported on Windows")
             return
         pid = os.getpid()
         try: pgid = os.getpgid(pid)
@@ -1073,7 +1223,7 @@ class MiniKernel:
             # Only signal the process group if we're the leader; otherwise avoid killing unrelated processes.
             if pgid and pgid == pid and hasattr(os, "killpg"): os.killpg(pgid, signal.SIGINT)
             else: os.kill(pid, signal.SIGINT)
-        except OSError as err: _LOG.warning("Interrupt signal failed: %s", err)
+        except OSError as err: log.warning("Interrupt signal failed: %s", err)
 
     def handle_interrupt(self, msg: dict, idents: list[bytes]|None, sock: zmq.Socket):
         "Handle interrupt_request by signaling subshells."
@@ -1087,7 +1237,7 @@ class MiniKernel:
         content = msg.get("content", {})
         reply = {"status": "ok", "restart": bool(content.get("restart", False))}
         self.send_reply(sock, "shutdown_reply", reply, msg, idents)
-        self._shutdown_event.set()
+        self.shutdown_event.set()
         self.subshells.parent.stop()
 
 

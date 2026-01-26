@@ -90,17 +90,38 @@ def _send_reply(self, socket, msg_type, content, parent, idents):
 _k.Subshell.send_reply = _send_reply
 """
         msg_id = kc.execute(patch)
-        reply = get_shell_reply(kc, msg_id, timeout=10)
+        reply = kc.shell_reply(msg_id, timeout=10)
         assert reply["content"]["status"] == "ok", f"patch reply: {reply.get('content')}"
 
         msg_id = kc.execute("1+1")
-        reply = get_shell_reply(kc, msg_id, timeout=10)
+        reply = kc.shell_reply(msg_id, timeout=10)
         assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
         assert reply["content"].get("ename") == "KeyboardInterrupt", f"interrupt ename: {reply.get('content')}"
         outputs = kc.iopub_drain(msg_id)
         errors = iopub_msgs(outputs, "error")
         assert errors, f"missing iopub error: {[m.get('msg_type') for m in outputs]}"
         assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"iopub error: {errors[-1].get('content')}"
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=True)
+
+
+def test_uncollected_execute_requests_do_not_wedge_iopub():
+    env = build_env()
+    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
+    km = KernelManager(kernel_name="ipymini")
+    km.start_kernel(env=env)
+    ensure_separate_process(km)
+    kc = km.client()
+    kc.start_channels()
+    kc.wait_for_ready(timeout=10)
+    try:
+        for _ in range(3):
+            for i in range(30): kc.execute(f"__u{i}={i}")
+            msg_id = kc.execute("1+1")
+            reply = kc.shell_reply(msg_id, timeout=5)
+            assert reply["content"]["status"] == "ok", f"reply: {reply.get('content')}"
+            kc.iopub_drain(msg_id, timeout=5)
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=True)

@@ -19,6 +19,12 @@ This guide is for contributors working on ipymini. It consolidates architecture,
 
 ## Tests
 
+Run non-slow tests:
+
+```
+pytest -q
+```
+
 Run everything (including slow tests):
 
 ```
@@ -46,7 +52,7 @@ We follow the fastai style guide (`style.md`):
 - Dicts with 3+ identifier keys use `dict(...)`.
 - Avoid type annotations on LHS variables (dataclasses excepted).
 
-Run `chkstyle` before committing.
+Run `chkstyle` before committing - it will look for clear style violations.
 
 ## PR process
 
@@ -127,4 +133,10 @@ Key files:
 - The test `tests/test_ipython_startup_integration.py` exercises:
   - `ipython_kernel_config.py`
   - `profile_default/startup/*.py`
+
+## Code reference
+
+`links/` (not commited to git) contains source for reference projects such as ipykernel. These should be reviewed carefully since they are mature, well-tested solutions.
+
+NB: `meta/` is not commited to git -- it is used for code reviews, timing details, etc.
 

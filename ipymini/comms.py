@@ -1,5 +1,6 @@
-import threading
+import contextvars
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Callable
 
 import comm
@@ -7,63 +8,33 @@ from comm import base_comm
 
 IopubSender = Callable[..., None]
 
-
-class _CommContext:
-    def __init__(self):
-        "Store per-thread comm sender and parent."
-        self._local = threading.local()
-
-    def get(self)->tuple[IopubSender|None, dict|None]:
-        "Return the active comm sender and parent header."
-        return getattr(self._local, "sender", None), getattr(self._local, "parent", None)
-
-    def set(self, sender: IopubSender|None, parent: dict|None):
-        "Set the comm sender and parent header for this thread."
-        self._local.sender = sender
-        self._local.parent = parent
-
-
-_COMM_CONTEXT = _CommContext()
-
+_SENDER = contextvars.ContextVar("ipymini_comm_sender", default=None)
+_PARENT = contextvars.ContextVar("ipymini_comm_parent", default=None)
 
 @contextmanager
 def comm_context(sender: IopubSender|None, parent: dict|None):
-    "Temporarily bind a comm sender and parent header for this thread."
-    prev_sender, prev_parent = _COMM_CONTEXT.get()
-    _COMM_CONTEXT.set(sender, parent)
+    t1 = _SENDER.set(sender)
+    t2 = _PARENT.set(parent)
     try: yield
-    finally: _COMM_CONTEXT.set(prev_sender, prev_parent)
+    finally:
+        _PARENT.reset(t2)
+        _SENDER.reset(t1)
 
 
 class IpyminiComm(base_comm.BaseComm):
-    def publish_msg(self, msg_type:str, data: base_comm.MaybeDict = None, metadata: base_comm.MaybeDict = None,
-        buffers: base_comm.BuffersType = None, **keys):
-        "Send comm messages on IOPub using the current comm context."
-        sender, parent = _COMM_CONTEXT.get()
+    def publish_msg(self, msg_type:str, data: base_comm.MaybeDict=None, metadata: base_comm.MaybeDict=None,
+        buffers: base_comm.BuffersType=None, **keys):
+        sender = _SENDER.get()
         if sender is None: return
-        if data is None: data = {}
-        if metadata is None: metadata = {}
-        content = dict(data=data, comm_id=self.comm_id, **keys)
-        sender(msg_type, parent or {}, content=content, metadata=metadata, ident=self.topic, buffers=buffers)
-
-
-_COMM_LOCK = threading.Lock()
-_COMM_MANAGER = None
+        content = dict(data=data or {}, comm_id=self.comm_id, **keys)
+        sender(msg_type, _PARENT.get() or {}, content=content, metadata=metadata or {}, ident=self.topic, buffers=buffers)
 
 def _create_comm(*args, **kwargs): return IpyminiComm(*args, **kwargs)
 
-def _get_comm_manager():
-    "Return the process-wide comm manager."
-    global _COMM_MANAGER
-    if _COMM_MANAGER is None:
-        with _COMM_LOCK:
-            if _COMM_MANAGER is None: _COMM_MANAGER = base_comm.CommManager()
-    return _COMM_MANAGER
-
+@lru_cache
+def get_comm_manager()->base_comm.CommManager: return base_comm.CommManager()
 
 comm.create_comm = _create_comm
-comm.get_comm_manager = _get_comm_manager
-
-def get_comm_manager()->base_comm.CommManager: return _get_comm_manager()
+comm.get_comm_manager = get_comm_manager
 
 __all__ = ["IpyminiComm", "comm_context", "get_comm_manager"]

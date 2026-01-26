@@ -4,7 +4,7 @@ from .kernel_utils import *
 def test_inspect_open():
     with start_kernel() as (_, kc):
         msg_id = kc.inspect("open")
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         content = reply["content"]
         assert content["status"] == "ok"
         assert content["found"]
@@ -20,12 +20,12 @@ def test_history_tail_search():
         assert reply["content"]["status"] == "ok"
 
         msg_id = kc.history(hist_access_type="tail", n=2, output=False, raw=True)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         assert reply["content"]["history"]
 
         msg_id = kc.history(hist_access_type="search", pattern="1?2*", output=False, raw=True)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
 
 
@@ -36,11 +36,11 @@ def test_history_search_unique_and_n():
             assert reply["content"]["status"] == "ok"
 
         msg_id = kc.history(hist_access_type="search", pattern="1+*", output=False, raw=True, unique=True)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         assert len(reply["content"]["history"]) >= 1
 
         msg_id = kc.history(hist_access_type="search", pattern="1+*", output=False, raw=True, n=3)
-        reply = get_shell_reply(kc, msg_id)
+        reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
         assert len(reply["content"]["history"]) == 3
