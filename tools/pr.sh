@@ -28,18 +28,21 @@ git switch -c "$branch"
 
 # Commit tracked changes only (and whatever is already staged).
 # NOTE: New/untracked files must be staged manually beforehand.
+skip_commit=0
 if git diff --quiet && git diff --cached --quiet; then
-  echo "Nothing to commit (no tracked changes and nothing staged)."
-  exit 1
+  echo "Nothing to commit (no tracked changes and nothing staged); proceeding with existing commits."
+  skip_commit=1
 fi
 
 # This will:
 # - include all tracked modifications/deletions (via -a)
 # - also include anything already staged (e.g. new files you chose to git add)
-git commit -am "$msg" || {
-  echo "Commit failed. If you added only new files, stage them first (git add <files>) and re-run."
-  exit 1
-}
+if [[ "$skip_commit" -eq 0 ]]; then
+  git commit -am "$msg" || {
+    echo "Commit failed. If you added only new files, stage them first (git add <files>) and re-run."
+    exit 1
+  }
+fi
 
 git push -u "$remote" "$branch"
 
