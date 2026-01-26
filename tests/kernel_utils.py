@@ -11,9 +11,9 @@ debug_init_args = dict( clientID="test-client", clientName="testClient", adapter
     columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 root = Path(__file__).resolve().parents[1]
 
-__all__ = ("default_timeout debug_init_args root KernelHarness build_env load_connection ensure_separate_process start_kernel temp_env "
-    "wait_for_msg iter_timeout parent_id wait_for_debug_event wait_for_stop collect_shell_replies collect_iopub_outputs "
-    "wait_for_status iopub_msgs iopub_streams start_gateway_kernel gw_send_wait gw_wait_for_status").split()
+__all__ = ("default_timeout debug_init_args root KernelHarness build_env load_connection ensure_separate_process start_kernel "
+    "start_kernel_async temp_env wait_for_msg iter_timeout parent_id wait_for_debug_event wait_for_stop collect_shell_replies "
+    "collect_iopub_outputs wait_for_status iopub_msgs iopub_streams start_gateway_kernel gw_send_wait gw_wait_for_status").split()
 
 
 def _ensure_jupyter_path()->str:
@@ -81,7 +81,7 @@ def temp_env(update: dict):
 
 @delegates(KernelManager.start_kernel, but="env")
 @contextmanager
-def start_kernel(extra_env: dict|None=None, **kwargs):
+def start_kernel(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
     "Start kernel."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
@@ -90,7 +90,25 @@ def start_kernel(extra_env: dict|None=None, **kwargs):
     ensure_separate_process(km)
     kc = km.client()
     kc.start_channels()
-    kc.wait_for_ready(timeout=default_timeout)
+    kc.wait_for_ready(timeout=ready_timeout or default_timeout)
+    try: yield km, kc
+    finally:
+        kc.stop_channels()
+        km.shutdown_kernel(now=True)
+
+
+@asynccontextmanager
+async def start_kernel_async(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
+    "Async context manager for AsyncKernelClient tests."
+    env = build_env(extra_env)
+    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
+    km = KernelManager(kernel_name="ipymini")
+    km.start_kernel(env=env, **kwargs)
+    ensure_separate_process(km)
+    kc = AsyncKernelClient(**km.get_connection_info(session=True))
+    kc.parent = km
+    kc.start_channels()
+    await kc.wait_for_ready(timeout=ready_timeout or default_timeout)
     try: yield km, kc
     finally:
         kc.stop_channels()

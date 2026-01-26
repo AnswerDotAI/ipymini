@@ -1,5 +1,4 @@
-import os, time, zmq
-from jupyter_client import KernelManager
+import time, zmq
 from jupyter_client.session import Session
 
 from .kernel_utils import *
@@ -25,58 +24,42 @@ def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout:float)->dict|N
 
 
 def test_router_handover_same_identity():
-    env = build_env()
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
-    ensure_separate_process(km)
-    kc = km.client()
-    kc.start_channels()
-    kc.wait_for_ready(timeout=2)
-    kc.stop_channels()
-    ctx = zmq.Context()
-    sock1 = ctx.socket(zmq.DEALER)
-    sock2 = ctx.socket(zmq.DEALER)
-    sock1.linger = 0
-    sock2.linger = 0
-    identity = b"ipymini-handover"
-    sock1.setsockopt(zmq.IDENTITY, identity)
-    sock2.setsockopt(zmq.IDENTITY, identity)
-    try:
-        conn = km.get_connection_info(session=False)
-        key = conn["key"]
-        if isinstance(key, str): key = key.encode()
-        session = Session(key=key, signature_scheme=conn["signature_scheme"])
-        addr = _shell_addr(conn)
-        sock1.connect(addr)
-        time.sleep(0.05)
+    with start_kernel(ready_timeout=2) as (km, kc):
+        kc.stop_channels()
+        ctx = zmq.Context()
+        sock1 = ctx.socket(zmq.DEALER)
+        sock2 = ctx.socket(zmq.DEALER)
+        sock1.linger = 0
+        sock2.linger = 0
+        identity = b"ipymini-handover"
+        sock1.setsockopt(zmq.IDENTITY, identity)
+        sock2.setsockopt(zmq.IDENTITY, identity)
+        try:
+            conn = km.get_connection_info(session=False)
+            key = conn["key"]
+            if isinstance(key, str): key = key.encode()
+            session = Session(key=key, signature_scheme=conn["signature_scheme"])
+            addr = _shell_addr(conn)
+            sock1.connect(addr)
+            time.sleep(0.05)
 
-        _send_kernel_info(session, sock1)
-        msg1 = _recv_kernel_info(session, sock1, timeout=0.5)
-        assert msg1 is not None, "no kernel_info_reply on initial socket"
+            _send_kernel_info(session, sock1)
+            msg1 = _recv_kernel_info(session, sock1, timeout=0.5)
+            assert msg1 is not None, "no kernel_info_reply on initial socket"
 
-        sock2.connect(addr)
-        time.sleep(0.05)
-        _send_kernel_info(session, sock2)
-        msg2 = _recv_kernel_info(session, sock2, timeout=0.5)
-        assert msg2 is not None, "no kernel_info_reply on new socket"
-    finally:
-        sock1.close(0)
-        sock2.close(0)
-        ctx.term()
-        km.shutdown_kernel(now=True)
+            sock2.connect(addr)
+            time.sleep(0.05)
+            _send_kernel_info(session, sock2)
+            msg2 = _recv_kernel_info(session, sock2, timeout=0.5)
+            assert msg2 is not None, "no kernel_info_reply on new socket"
+        finally:
+            sock1.close(0)
+            sock2.close(0)
+            ctx.term()
 
 
 def test_execute_reply_after_keyboardinterrupt_during_send():
-    env = build_env()
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
-    ensure_separate_process(km)
-    kc = km.client()
-    kc.start_channels()
-    kc.wait_for_ready(timeout=10)
-    try:
+    with start_kernel() as (_, kc):
         patch = """import ipymini.kernel as _k
 if not hasattr(_k, "_orig_send_reply"):
     _k._orig_send_reply = _k.Subshell.send_reply
@@ -101,27 +84,13 @@ _k.Subshell.send_reply = _send_reply
         errors = iopub_msgs(outputs, "error")
         assert errors, f"missing iopub error: {[m.get('msg_type') for m in outputs]}"
         assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"iopub error: {errors[-1].get('content')}"
-    finally:
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)
 
 
 def test_uncollected_execute_requests_do_not_wedge_iopub():
-    env = build_env()
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
-    ensure_separate_process(km)
-    kc = km.client()
-    kc.start_channels()
-    kc.wait_for_ready(timeout=10)
-    try:
+    with start_kernel() as (_, kc):
         for _ in range(3):
             for i in range(30): kc.execute(f"__u{i}={i}")
             msg_id = kc.execute("1+1")
             reply = kc.shell_reply(msg_id, timeout=5)
             assert reply["content"]["status"] == "ok", f"reply: {reply.get('content')}"
             kc.iopub_drain(msg_id, timeout=5)
-    finally:
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)
