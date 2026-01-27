@@ -80,7 +80,7 @@ After the initial manual release, bump the version before running `tools/release
 ## Where to start reading
 
 - `ipymini/kernel.py` – protocol, ZMQ routing, subshells.
-- `ipymini/bridge.py` – IPython integration and output capture.
+- `ipymini_shell/shell.py` – IPython integration and output capture.
 - `tests/` – protocol expectations and integration behavior.
 
 ## Architecture overview
@@ -88,11 +88,11 @@ After the initial manual release, bump the version before running `tools/release
 Core flow:
 - `MiniKernel` owns sockets, threads, and dispatch.
 - `SubshellManager` manages the parent subshell (main thread) and optional child subshells (worker threads) sharing a user namespace.
-- `KernelBridge` wraps IPython: execute, display, history, comms, debugger.
+- `MiniShell` wraps IPython: execute, display, history, comms, debugger.
 
 Key files:
 - `ipymini/kernel.py` – Jupyter protocol, ZMQ router loops, subshells.
-- `ipymini/bridge.py` – IPython integration, execution, output capture, debug.
+- `ipymini_shell/shell.py` – IPython integration, execution, output capture, debug.
 - `ipymini/__main__.py` – CLI entry, install helper.
 - `tests/` – protocol and behavioral tests.
 

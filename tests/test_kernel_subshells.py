@@ -314,8 +314,7 @@ def test_subshell_fuzzes():
         assert all(reply["content"]["status"] in {"ok", "error"} for reply in replies.values())
 
         exec_ids = {msg_id for msg_id, action in requests if action == "execute"}
-        if exec_ids:
-            outputs = collect_iopub_outputs(kc, exec_ids)
+        outputs = collect_iopub_outputs(kc, exec_ids) if exec_ids else {}
         for msg_id in exec_ids:
             streams = iopub_streams(outputs[msg_id])
             assert streams, f"missing stream output for {msg_id}"

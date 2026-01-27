@@ -7,8 +7,8 @@ from typing import Any
 from fastcore.basics import store_attr
 import zmq
 from jupyter_client.session import Session
-from .bridge import KernelBridge
-from .comms import comm_context, get_comm_manager
+from ipymini_shell import MiniShell
+from .comms import get_comm_manager
 from ipymini_debug import DebugFlags, setup_debug, trace_msg
 from ipymini_zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread, ThreadBoundAsyncQueue
 
@@ -69,7 +69,7 @@ class ExecState(str, Enum):
 
 shell_required = dict(execute_request=("code",), complete_request=("code", "cursor_pos"),
     inspect_request=("code", "cursor_pos"), history_request=("hist_access_type",), is_complete_request=("code",))
-bridge_specs = dict(complete_request=("complete_reply", dict(code=("code", ""), cursor_pos="cursor_pos"), "complete"),
+shell_specs = dict(complete_request=("complete_reply", dict(code=("code", ""), cursor_pos="cursor_pos"), "complete"),
     inspect_request=("inspect_reply", dict(code=("code", ""), cursor_pos="cursor_pos", detail_level=("detail_level", 0)), "inspect"),
     is_complete_request=("is_complete_reply", dict(code=("code", "")), "is_complete"))
 missing_defaults = dict(complete_request=dict(matches=[], cursor_start=0, cursor_end=0, metadata={}),
@@ -98,7 +98,7 @@ def _env_float(name:str, default:float)->float:
 class Subshell:
     def __init__(self, kernel: "MiniKernel", subshell_id:str|None, user_ns: dict,
         use_singleton: bool = False, run_in_thread: bool = True):
-        "Create subshell worker thread and bridge for execution."
+        "Create subshell worker thread and shell layer for execution."
         store_attr("kernel,subshell_id")
         self.stop_event = threading.Event()  # not `_stop` since that shadows Thread._stop
         name = "subshell-parent" if subshell_id is None else f"subshell-{subshell_id}"
@@ -109,10 +109,10 @@ class Subshell:
         self.aborting = False
         self.abort_handle = None
         self.async_lock = None
-        self.bridge = KernelBridge(request_input=self.request_input, debug_event_callback=self.send_debug_event,
+        self.shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
             zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton)
-        self.bridge.set_stream_sender(self._send_stream)
-        self.bridge.set_display_sender(self._send_display_event)
+        self.shell.set_stream_sender(self._send_stream)
+        self.shell.set_display_sender(self._send_display_event)
         self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
         self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self.executing = threading.Event()
@@ -120,8 +120,8 @@ class Subshell:
         self.last_exec_state = None
         self.state_lock = threading.Lock()
         self.shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
-            complete_request=self._bridge_handler, inspect_request=self._bridge_handler, history_request=self._handle_history,
-            is_complete_request=self._bridge_handler, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
+            complete_request=self._shell_handler, inspect_request=self._shell_handler, history_request=self._handle_history,
+            is_complete_request=self._shell_handler, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
             comm_msg=self._handle_comm, comm_close=self._handle_comm, shutdown_request=self.handle_shutdown)
 
     def start(self):
@@ -155,7 +155,7 @@ class Subshell:
         if self.thread is None: return False
         if self._get_exec_state() != ExecState.RUNNING: return False
         self._set_exec_state(ExecState.CANCELLING)
-        if self.bridge.cancel_exec_task(self.loop): return True
+        if self.shell.cancel_exec_task(self.loop): return True
         thread_id = self.thread.ident
         if thread_id is None: return False
         return _raise_async_exception(thread_id, KeyboardInterrupt)
@@ -263,7 +263,7 @@ class Subshell:
         tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
         reply = dict(status="error", ename=type(exc).__name__, evalue=str(exc), traceback=tb)
         if msg_type == "execute_request":
-            reply |= dict(execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
+            reply |= dict(execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
             self.kernel.send_status("busy", msg)
             self.kernel.iopub.error(msg, ename=type(exc).__name__, evalue=str(exc), traceback=tb)
         else: reply |= missing_defaults.get(msg_type, {})
@@ -303,7 +303,7 @@ class Subshell:
         evalue = f"missing required fields: {', '.join(missing)}"
         reply = dict(status="error", ename="MissingField", evalue=evalue, traceback=[])
         if msg_type == "execute_request":
-            reply |= dict(execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
+            reply |= dict(execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
             self.kernel.send_status("busy", msg)
             self.kernel.iopub.error(msg, ename="MissingField", evalue=evalue, traceback=[])
         else: reply |= missing_defaults.get(msg_type, {})
@@ -313,7 +313,7 @@ class Subshell:
     def _send_abort_reply(self, msg: dict, idents: list[bytes]|None):
         self.kernel.send_status("busy", msg)
         self._set_last_exec_state(ExecState.ABORTED)
-        reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count, user_expressions={}, payload=[])
+        reply_content = dict(status="aborted", execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
         self.send_reply("execute_reply", reply_content, msg, idents)
         self.kernel.send_status("idle", msg)
 
@@ -353,8 +353,7 @@ class Subshell:
             if msg_type == "execute_request":
                 self.kernel.send_status("busy", msg)
                 self._set_last_exec_state(ExecState.ABORTED)
-                reply_content = dict(status="aborted", execution_count=self.bridge.shell.execution_count,
-                    user_expressions={}, payload=[])
+                reply_content = dict(status="aborted", execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
                 self.send_reply("execute_reply", reply_content, msg, idents)
                 self.kernel.send_status("idle", msg)
             elif msg_type: self._dispatch_shell_non_execute(msg, idents)
@@ -389,7 +388,7 @@ class Subshell:
 
         self.kernel.send_status("busy", msg)
         try:
-            exec_count_pre = self.bridge.shell.execution_count
+            exec_count_pre = self.shell.ipy.execution_count
             if not silent: iopub.execute_input(msg, code=code, execution_count=exec_count_pre)
 
             dbg(f"BRIDGE_EXEC id={msg_id}")
@@ -398,8 +397,8 @@ class Subshell:
                 loop = asyncio.get_running_loop()
                 timeout_handle = loop.call_later(2.0, lambda: log.warning("execute still running msg_id=%s", msg_id))
             try:
-                with comm_context(iopub.send, msg):
-                    result = await self.bridge.execute(code, silent=silent, store_history=store_history,
+                with self.shell.execution_context(allow_stdin=allow_stdin, silent=silent, comm_sender=iopub.send, parent=msg):
+                    result = await self.shell.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             finally:
                 if timeout_handle: timeout_handle.cancel()
@@ -431,7 +430,7 @@ class Subshell:
             error = dict(ename=type(exc).__name__, evalue=str(exc), traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
             if not sent_error: iopub.error(msg, content=error)
             if not sent_reply:
-                reply = dict(status="error", execution_count=exec_count or self.bridge.shell.execution_count, user_expressions={}, payload=[])
+                reply = dict(status="error", execution_count=exec_count or self.shell.ipy.execution_count, user_expressions={}, payload=[])
                 reply.update(error)
                 self.send_reply("execute_reply", reply, msg, idents)
                 if stop_on_error:
@@ -443,28 +442,28 @@ class Subshell:
             self.executing.clear()
             self._set_exec_state(ExecState.IDLE)
 
-    def _bridge_handler(self, msg: dict, idents: list[bytes]|None):
+    def _shell_handler(self, msg: dict, idents: list[bytes]|None):
         msg_type = msg.get("header", {}).get("msg_type")
-        spec = bridge_specs.get(msg_type)
+        spec = shell_specs.get(msg_type)
         if spec is None: return
         reply_type, fields, method = spec
-        self._bridge_reply(msg, idents, reply_type, method, **fields)
+        self._shell_reply(msg, idents, reply_type, method, **fields)
 
     def _handle_history(self, msg: dict, idents: list[bytes]|None):
         content = msg.get("content", {})
-        reply = self.bridge.history(content.get("hist_access_type", ""), bool(content.get("output", False)),
+        reply = self.shell.history(content.get("hist_access_type", ""), bool(content.get("output", False)),
             bool(content.get("raw", False)), session=int(content.get("session", 0)), start=int(content.get("start", 0)),
             stop=content.get("stop"), n=content.get("n"), pattern=content.get("pattern"), unique=bool(content.get("unique", False)))
         self.send_reply("history_reply", reply, msg, idents)
 
-    def _bridge_reply(self, msg: dict, idents: list[bytes]|None, reply_type:str, method:str, **fields):
+    def _shell_reply(self, msg: dict, idents: list[bytes]|None, reply_type:str, method:str, **fields):
         content = msg.get("content", {})
         args = {}
         for name, spec in fields.items():
             if isinstance(spec, tuple): key, default = spec
             else: key, default = spec, None
             args[name] = content.get(key, default)
-        reply = getattr(self.bridge, method)(**args)
+        reply = getattr(self.shell, method)(**args)
         self.send_reply(reply_type, reply, msg, idents)
 
     def _handle_comm_info(self, msg: dict, idents: list[bytes]|None):
@@ -575,7 +574,7 @@ class MiniKernel:
 
         self.hb = HeartbeatThread(self.context, self.connection.addr(self.connection.hb_port))
         self.subshells = SubshellManager(self)
-        self.bridge = self.subshells.parent.bridge
+        self.shell = self.subshells.parent.shell
         self.parent_header = None
         self.parent_idents = None
         self.shell_router = None
@@ -744,12 +743,12 @@ class MiniKernel:
     def python_version(self)->str: return ".".join(str(x) for x in os.sys.version_info[:3])
 
     def handle_debug(self, msg: dict, idents: list[bytes]|None):
-        "Handle debug_request via KernelBridge and emit events."
+        "Handle debug_request via MiniShell and emit events."
         self.send_status("busy", msg)
         self.parent_header = msg
         try:
             content = msg.get("content", {})
-            reply = self.bridge.debug_request(json.dumps(content))
+            reply = self.shell.debug_request(json.dumps(content))
             response = reply.get("response", {})
             events = reply.get("events", [])
             self.queue_control_reply("debug_reply", response, msg, idents)

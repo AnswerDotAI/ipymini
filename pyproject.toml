@@ -13,6 +13,7 @@ dependencies = [
   "fastcore>=1.5",
   "ipython>=8.18",
   "ipymini-debug>=0.0.0",
+  "ipymini-shell>=0.0.0",
   "ipymini-term>=0.0.0",
   "ipymini-zmqthread>=0.0.0",
   "jupyter_client>=8.6",
