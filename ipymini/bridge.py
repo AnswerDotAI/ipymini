@@ -1,4 +1,4 @@
-from ipymini_shell import MiniShell
+from .shell import MiniShell
 
 KernelBridge = MiniShell
 

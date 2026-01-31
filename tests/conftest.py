@@ -1,10 +1,25 @@
-import sys, pytest
-from pathlib import Path
+import os
+
+import pytest
+
+import ipymini.shell.shell as _shell_mod
+from ipymini.shell import MiniShell
+from IPython.core.interactiveshell import InteractiveShell
 from .kernel_utils import KernelHarness
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture
+def minishell(tmp_path, monkeypatch):  # Isolate IPython config/history per test.
+    ipdir = tmp_path/"ipython"
+    monkeypatch.setenv("IPYTHONDIR", str(ipdir))
+    _shell_mod.startup_done = False
+    InteractiveShell.clear_instance()
+    sh = MiniShell(request_input=lambda prompt, password: "x")
+    yield sh
+    InteractiveShell.clear_instance()
 
 
 @pytest.fixture
 def kernel_harness():
-    with KernelHarness() as h: yield h
+    with KernelHarness() as harness:
+        yield harness

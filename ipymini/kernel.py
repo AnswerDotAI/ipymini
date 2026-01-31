@@ -7,10 +7,10 @@ from typing import Any
 from fastcore.basics import store_attr
 import zmq
 from jupyter_client.session import Session
-from ipymini_shell import MiniShell
+from .shell import MiniShell
 from .comms import get_comm_manager
-from ipymini_debug import DebugFlags, setup_debug, trace_msg
-from ipymini_zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread, ThreadBoundAsyncQueue
+from .debug import DebugFlags, setup_debug, trace_msg
+from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread, ThreadBoundAsyncQueue
 
 log = logging.getLogger("ipymini.kernel")
 _debug_flags = DebugFlags.from_env("IPYMINI")

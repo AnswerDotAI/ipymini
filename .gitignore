@@ -1,11 +1,6 @@
-EVENTLOOP.md
 tests/test_gateway_e2e.py
 meta/
-REVIEW.md
 _docs
-DAP.md
-DEBUG.md
-SUBSHELL.md
 links/
 gateway.py
 style.md

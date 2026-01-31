@@ -30,6 +30,16 @@ Run everything (including slow tests):
 tools/run_tests.sh
 ```
 
+Run tests for a specific module:
+
+```
+pytest tests/debug/      # debug module tests
+pytest tests/shell/      # shell module tests
+pytest tests/term/       # term module tests
+pytest tests/zmqthread/  # zmqthread module tests
+pytest tests/kernel/     # kernel integration tests
+```
+
 Notes:
 - Tests start the kernel in a separate process (via `KernelManager`).
 - Ensure `JUPYTER_PATH` includes `share/jupyter` from this repo for tests.
@@ -80,8 +90,8 @@ After the initial manual release, bump the version before running `tools/release
 ## Where to start reading
 
 - `ipymini/kernel.py` – protocol, ZMQ routing, subshells.
-- `ipymini_shell/shell.py` – IPython integration and output capture.
-- `tests/` – protocol expectations and integration behavior.
+- `ipymini/shell/shell.py` – IPython integration and output capture.
+- `tests/` – protocol expectations and integration behavior (organized by module).
 
 ## Architecture overview
 
@@ -92,9 +102,12 @@ Core flow:
 
 Key files:
 - `ipymini/kernel.py` – Jupyter protocol, ZMQ router loops, subshells.
-- `ipymini_shell/shell.py` – IPython integration, execution, output capture, debug.
+- `ipymini/shell/shell.py` – IPython integration, execution, output capture, debug.
+- `ipymini/debug/` – debugger integration (DAP + debugpy).
+- `ipymini/term/` – stream capture and IPython display hooks.
+- `ipymini/zmqthread/` – ZMQ thread helpers (router, iopub, heartbeat).
 - `ipymini/__main__.py` – CLI entry, install helper.
-- `tests/` – protocol and behavioral tests.
+- `tests/` – protocol and behavioral tests (organized by module).
 
 ### Execution model
 
