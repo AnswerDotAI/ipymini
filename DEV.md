@@ -30,6 +30,12 @@ Run everything (including slow tests):
 tools/run_tests.sh
 ```
 
+Note: `tools/run_tests.sh` already runs `pytest -q`, so skip running it beforehand or you'll run tests twice. To run only slow tests, use:
+
+```
+pytest -q -m slow
+```
+
 Run tests for a specific module:
 
 ```
@@ -145,6 +151,7 @@ Key files:
 - The test `tests/test_ipython_startup_integration.py` exercises:
   - `ipython_kernel_config.py`
   - `profile_default/startup/*.py`
+- `InteractiveShell.display_page` controls whether pager output is emitted as `display_data` (True) or reply payloads (False).
 
 ## Code reference
 

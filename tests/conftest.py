@@ -21,5 +21,4 @@ def minishell(tmp_path, monkeypatch):  # Isolate IPython config/history per test
 
 @pytest.fixture
 def kernel_harness():
-    with KernelHarness() as harness:
-        yield harness
+    with KernelHarness() as harness: yield harness

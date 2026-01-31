@@ -66,6 +66,7 @@ def _init_ipython_app(shell):
     app.init_profile_dir()
     app.init_config_files()
     app.load_config_file()
+    if shell is not None: shell.update_config(app.config)
     app.init_path()
     app.init_shell()
     app.init_extensions()
@@ -92,8 +93,7 @@ class MiniShell:
         self.capture = IPythonCapture(self.ipy, request_input=request_input)
         self.current_exec_task = None
 
-        hook = page.as_hook(page.display_page) if self.ipy.display_page else page.as_hook(self._payloadpage_page)
-        self.ipy.set_hook("show_in_pager", hook, 99)
+        self.ipy.set_hook("show_in_pager", page.as_hook(self._show_in_pager), 99)
         self.ipy._last_traceback = None
 
         def _showtraceback(etype, evalue, stb): self.ipy._last_traceback = stb
@@ -122,6 +122,12 @@ class MiniShell:
         data = strg if isinstance(strg, dict) else {"text/plain": strg}
         payload = dict(source="page", data=data, start=start)
         self.ipy.payload_manager.write_payload(payload)
+
+    def _show_in_pager(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None):
+        from IPython.core import page
+
+        if self.ipy.display_page: return page.display_page(strg, start=start, screen_lines=screen_lines)
+        return self._payloadpage_page(strg, start=start, screen_lines=screen_lines, pager_cmd=pager_cmd)
 
     async def _run_cell(self, code: str, silent: bool, store_history: bool):
         shell = self.ipy
