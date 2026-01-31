@@ -182,6 +182,7 @@ class Debugger:
         context = zmq_context or zmq.Context.instance()
         self.client = MiniDebugpyClient(context, self._handle_event)
         self.started = False
+        self.adapter_started = False
         self.host = "127.0.0.1"
         self.port = None
         self.breakpoint_list = {}
@@ -195,6 +196,7 @@ class Debugger:
         self.simple_handlers = dict(configurationDone=lambda r: self._ok(r), debugInfo=self._debug_info, inspectVariables=self._inspect_variables)
         self.simple_handlers.update(richInspectVariables=self._rich_inspect_variables, copyToGlobals=self._copy_to_globals)
         self.simple_handlers.update(modules=self._modules, source=self._source, dumpCell=self._dump_cell)
+        self.no_start_commands = {"configurationDone", "debugInfo", "dumpCell", "inspectVariables", "modules", "source"}
 
     def _get_free_port(self) -> int:
         "Select a free localhost TCP port."
@@ -205,18 +207,18 @@ class Debugger:
         return port
 
     def _ensure_started(self):
-        if self.started: return
+        if self.adapter_started: return
         if self.port is not None:
             self.client.connect(self.host, self.port)
             self._remove_cleanup_transforms()
-            self.started = True
+            self.adapter_started = True
             return
         port = self._get_free_port()
         debugpy.listen((self.host, port))
         self.client.connect(self.host, port)
         self.port = port
         self._remove_cleanup_transforms()
-        self.started = True
+        self.adapter_started = True
 
     def _handle_event(self, msg: dict):
         if msg.get("event") == "stopped":
@@ -233,11 +235,13 @@ class Debugger:
         self.events = []
         command = request.get("command")
         if command == "terminate":
-            if self.started: self._reset_session()
+            if self.adapter_started or self.started: self._reset_session()
             return self._ok(request), self.events
+        handler = self.simple_handlers.get(command)
+        if handler is not None and command in self.no_start_commands: return handler(request), self.events
         self._ensure_started()
         if "seq" in request: self.client.next_seq = max(self.client.next_seq, int(request["seq"]) + 1)
-        if (handler := self.simple_handlers.get(command)) is not None: return handler(request), self.events
+        if handler is not None: return handler(request), self.events
 
         if command == "attach":
             arguments = request.get("arguments") or {}
@@ -253,6 +257,7 @@ class Debugger:
                 try: self.client.send_request(config, timeout=10.0)
                 except TimeoutError: pass
             response = self.client.wait_for_response(req_seq, waiter, timeout=10.0)
+            if response.get("success"): self.started = True
             return response or {}, self.events
 
         if command == "setBreakpoints":
@@ -265,7 +270,7 @@ class Debugger:
             return response or {}, self.events
 
         response = self.client.send_request(request)
-        if command == "disconnect" and self.started: self._reset_session()
+        if command == "disconnect" and (self.adapter_started or self.started): self._reset_session()
         return response or {}, self.events
 
     def process_request_json(self, request_json: str) -> dict:
@@ -277,6 +282,7 @@ class Debugger:
     def _reset_session(self):
         self.client.close()
         self.started = False
+        self.adapter_started = False
         self.breakpoint_list = {}
         self.stopped_threads = set()
         self.traced_threads.clear()

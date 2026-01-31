@@ -2,5 +2,8 @@
   "argv": ["python", "-Xfrozen_modules=off", "-m", "ipymini", "-f", "{connection_file}"],
   "display_name": "IPyMini",
   "language": "python",
-  "interrupt_mode": "signal"
+  "interrupt_mode": "signal",
+  "metadata": {
+    "debugger": true
+  }
 }

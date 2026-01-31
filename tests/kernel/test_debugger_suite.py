@@ -58,6 +58,7 @@ def test_debugger_basic_features(debug_kernel):
     reply = debug_kernel.shell_reply(msg_id)
     features = reply["content"].get("supported_features", [])
     assert "debugger" in features, f"supported_features: {features}"
+    assert reply["content"].get("debugger") is True, f"debugger flag missing: {reply['content']}"
 
     reply = dap.evaluate(expression="'a' + 'b'", context="repl")
     assert reply.get("success"), f"evaluate failed: {reply}"

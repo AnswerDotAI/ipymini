@@ -738,7 +738,7 @@ class MiniKernel:
         return dict(status="ok", protocol_version="5.3", implementation="ipymini", implementation_version=impl_version,
             language_info=dict(name="python", version=self.python_version(), mimetype="text/x-python",
                 file_extension=".py", pygments_lexer="python", codemirror_mode={"name": "ipython", "version": 3},
-                nbconvert_exporter="python"), banner="ipymini", help_links=[], supported_features=supported_features)
+                nbconvert_exporter="python"), banner="ipymini", help_links=[], supported_features=supported_features, debugger=True)
 
     def python_version(self)->str: return ".".join(str(x) for x in os.sys.version_info[:3])
 
