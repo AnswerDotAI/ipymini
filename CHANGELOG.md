@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.5
+
+### Bugs Squashed
+
+- Fix debugger start state for gutter breakpoints ([#20](https://github.com/AnswerDotAI/ipymini/pull/20)), thanks to [@jph00](https://github.com/jph00)
+
+
 ## 0.1.4
 
 ### New Features
