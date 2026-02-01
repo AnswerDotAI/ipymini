@@ -6,7 +6,7 @@
 
 The design goal is: **a small, readable, testable kernel** with **first‑class IPython behavior**.
 
-This was almost entirely implemented by AI, closely referencing the `ipykernel`, `xeus`, `xeus-python`, and `jupyter_kernel_test` projects during development. So all credit for this project belongs to the authors of those packages, and to authors of the excellent documentation and specifications referred to (e.g DAP spec; JEPs; etc).
+This was almost entirely implemented by AI, and no human currently fully understands all the generated code, so please be very careful, because we don't actually know what this code does. The AI closely referenced the `ipykernel`, `xeus`, `xeus-python`, and `jupyter_kernel_test` projects during development. So all credit for this project belongs to the authors of those packages, and to authors of the excellent documentation and specifications referred to (e.g DAP spec; JEPs; etc) - but of course all blame for mistakes is entirely our/AI's fault.
 
 ---
 
