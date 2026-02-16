@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.6
+
+### New Features
+
+- Set kernel attr ([#21](https://github.com/AnswerDotAI/ipymini/issues/21))
+
+
 ## 0.1.5
 
 ### Bugs Squashed
