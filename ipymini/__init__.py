@@ -1,4 +1,5 @@
-__version__ = "0.1.6"
+__version__ = "0.1.7"
+
 
 
 from importlib.metadata import PackageNotFoundError, version
