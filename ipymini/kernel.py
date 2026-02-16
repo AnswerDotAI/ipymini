@@ -111,6 +111,7 @@ class Subshell:
         self.async_lock = None
         self.shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
             zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton)
+        self.shell.ipy.kernel = kernel
         self.shell.set_stream_sender(self._send_stream)
         self.shell.set_display_sender(self._send_display_event)
         self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
