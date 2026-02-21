@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.7
+
+### New Features
+
+- Propagate contextvars to user-launched threads for correct output routing ([#22](https://github.com/AnswerDotAI/ipymini/issues/22))
+
+
 ## 0.1.6
 
 ### New Features
