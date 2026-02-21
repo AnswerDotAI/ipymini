@@ -1,4 +1,4 @@
-import builtins, contextvars, getpass, sys
+import builtins, contextvars, getpass, sys, threading
 from contextlib import contextmanager
 from typing import Callable
 
@@ -33,6 +33,7 @@ class _ThreadLocalStream:
 
 
 _chans = ("shell", "stdout", "stderr", "request_input", "allow_stdin")
+_ctx_attr = "_ipymini_context"
 
 
 class _ThreadLocalIO:
@@ -45,6 +46,7 @@ class _ThreadLocalIO:
         self.orig_input = builtins.input
         self.orig_getpass = getpass.getpass
         self.orig_get_ipython = _getipython_mod.get_ipython if _getipython_mod is not None else None
+        self.orig_thread_start = None
 
     def install(self):
         "Install thread-local stdout/stderr/input/getpass/get_ipython hooks."
@@ -57,10 +59,38 @@ class _ThreadLocalIO:
             current_get = _getipython_mod.get_ipython
             self.orig_get_ipython = current_get if current_get is not _thread_local_get_ipython else self.orig_get_ipython
             _getipython_mod.get_ipython = _thread_local_get_ipython
+        self._install_thread_context()
         sys.stdout = _ThreadLocalStream("stdout", self.orig_stdout)
         sys.stderr = _ThreadLocalStream("stderr", self.orig_stderr)
         builtins.input = _thread_local_input
         getpass.getpass = _thread_local_getpass
+
+    def _install_thread_context(self):
+        "Capture active ContextVars at thread start and run the thread body inside that context."
+        if self.orig_thread_start is not None: return
+        self.orig_thread_start = threading.Thread.start
+        orig_start = self.orig_thread_start
+
+        def _start(thread):
+            setattr(thread, _ctx_attr, contextvars.copy_context())
+            orig_run = thread.run
+
+            def _run(*a, **k):
+                ctx = getattr(thread, _ctx_attr, None)
+                if ctx is None: return orig_run(*a, **k)
+                try: return ctx.run(orig_run, *a, **k)
+                finally:
+                    setattr(thread, _ctx_attr, None)
+                    if getattr(thread, "run", None) is _run: del thread.run
+
+            thread.run = _run
+            try: return orig_start(thread)
+            except Exception:
+                setattr(thread, _ctx_attr, None)
+                if getattr(thread, "run", None) is _run: del thread.run
+                raise
+
+        threading.Thread.start = _start
 
     def get(self, name: str): return self.vars[name].get()
 

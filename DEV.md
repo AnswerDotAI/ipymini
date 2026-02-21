@@ -128,7 +128,7 @@ Key files:
 
 - The parent subshell runs in the main thread, so SIGINT can interrupt running code without killing the kernel when idle.
 - Each subshell has a persistent asyncio loop; code runs while the loop is running, so `asyncio.create_task(...)` works in sync cells.
-- Output routing uses contextvars to associate streams/displays with the current parent message (works across tasks).
+- Output routing uses contextvars to associate streams/displays with the current parent message (works across tasks and user-launched threads).
 
 ### Router threads (shell/control)
 
