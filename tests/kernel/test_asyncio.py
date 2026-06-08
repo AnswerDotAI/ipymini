@@ -1,26 +1,21 @@
-import time
 from ..kernel_utils import *
 
 default_timeout = 3
 
 
-def test_asyncio_scenario():
+def test_asyncio_features() -> None:
     with start_kernel() as (_, kc):
         msg_id = kc.execute("1+1", store_history=False)
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
 
-
-def test_asyncio_create_task() -> None:
-    with start_kernel() as (_, kc):
         code = (
             "import asyncio, time\n"
             "async def f():\n"
             "    await asyncio.sleep(0.01)\n"
             "    print('ok')\n"
             "asyncio.create_task(f())\n"
-            "time.sleep(0.05)\n"
-        )
+            "time.sleep(0.05)\n")
         msg_id = kc.execute(code, store_history=False)
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"

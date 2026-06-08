@@ -1,11 +1,9 @@
-import queue
-
 import zmq
 
 from ipymini.debug.dap import MiniDebugpyClient
 
 
-def test_minidebugpy_client_wait_for_response():
+def test_minidebugpy_client():
     ctx = zmq.Context.instance()
     client = MiniDebugpyClient(ctx, event_callback=None)
     seq, waiter = client.send_request_async({"command": "noop"})
@@ -14,9 +12,6 @@ def test_minidebugpy_client_wait_for_response():
     assert reply.get("request_seq") == seq
     assert seq not in client.pending
 
-
-def test_minidebugpy_client_timeout():
-    ctx = zmq.Context.instance()
     client = MiniDebugpyClient(ctx, event_callback=None)
     seq, waiter = client.send_request_async({"command": "noop"})
     ok = False
@@ -29,3 +24,14 @@ def test_minidebugpy_client_timeout():
         tag = "timeout"
     assert ok
     assert tag == "timeout"
+
+    client = MiniDebugpyClient(ctx, event_callback=None)
+    seq, waiter = client.send_request_async({"command": "noop"})
+    client.close()
+    ok = False
+    try:
+        client.wait_for_response(seq, waiter, timeout=0.1)
+    except RuntimeError:
+        ok = True
+    assert ok
+    assert seq not in client.pending

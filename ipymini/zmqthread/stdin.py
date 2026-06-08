@@ -1,4 +1,5 @@
 import logging, queue, threading, time
+from microio import ServiceThread
 import zmq
 
 log = logging.getLogger("ipymini.zmqthread")
@@ -6,15 +7,14 @@ log = logging.getLogger("ipymini.zmqthread")
 input_interrupted = object()
 
 
-class StdinRouterThread(threading.Thread):
+class StdinRouterThread(ServiceThread):
     def __init__(self, context: zmq.Context, addr: str, session, poll_ms: int = 50):
         "Initialize stdin router for input_request/reply."
-        super().__init__(daemon=True, name="stdin-router")
+        super().__init__(name="stdin-router", reraise=True)
         self.context = context
         self.addr = addr
         self.session = session
         self.poll_ms = poll_ms
-        self.stop_event = threading.Event()
         self.interrupt_event = threading.Event()
         self.pending_lock = threading.Lock()
         self.requests = queue.Queue()
@@ -31,7 +31,7 @@ class StdinRouterThread(threading.Thread):
             if self.interrupt_event.is_set():
                 self.interrupt_event.clear()
                 raise KeyboardInterrupt
-            if self.stop_event.is_set(): raise RuntimeError("stdin router stopped")
+            if self.scope.closed: raise RuntimeError("stdin router stopped")
             try:
                 if deadline is None: value = response_queue.get(timeout=0.1)
                 else:
@@ -44,7 +44,7 @@ class StdinRouterThread(threading.Thread):
                 return value
             except queue.Empty: continue
 
-    def run(self):
+    def run_service(self):
         "Route input_reply messages to waiting queues."
         sock = None
         try:
@@ -53,9 +53,10 @@ class StdinRouterThread(threading.Thread):
             if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
             sock.bind(self.addr)
             self.socket = sock
+            self.started()
             poller = zmq.Poller()
             poller.register(sock, zmq.POLLIN)
-            while not self.stop_event.is_set():
+            while not self.scope.closed:
                 self._drain_requests(sock)
                 events = dict(poller.poll(self.poll_ms))
                 if sock in events and events[sock] & zmq.POLLIN:
@@ -96,8 +97,6 @@ class StdinRouterThread(threading.Thread):
             with self.pending_lock:
                 if msg_id: self.pending[msg_id] = (key, waiter)
                 self.pending_by_ident[key] = waiter
-
-    def stop(self): self.stop_event.set()
 
     def interrupt_pending(self):
         "Cancel pending input requests and wake any waiters."

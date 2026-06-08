@@ -177,7 +177,11 @@ class MiniShell:
             _dbg("execute: calling _run_cell")
             result = await self._run_cell(code, silent=silent, store_history=store_history)
             _dbg("execute: _run_cell done")
-        except BaseException as exc:
+        # Only execution-level errors become execute_reply errors; process/task lifecycle BaseExceptions should propagate.
+        except KeyboardInterrupt as exc:
+            _dbg(f"execute: exception {type(exc).__name__}: {exc}")
+            raised = exc
+        except Exception as exc:
             _dbg(f"execute: exception {type(exc).__name__}: {exc}")
             raised = exc
 
@@ -216,8 +220,7 @@ class MiniShell:
     def complete(self, code: str, cursor_pos: int | None = None) -> dict:
         "Return completion matches for `code` at `cursor_pos`."
         if cursor_pos is None: cursor_pos = len(code)
-        with _provisionalcompleter():
-            completions = list(_rectify_completions(code, self.ipy.Completer.completions(code, cursor_pos)))
+        with _provisionalcompleter(): completions = list(_rectify_completions(code, self.ipy.Completer.completions(code, cursor_pos)))
         if completions:
             cursor_start = completions[0].start
             cursor_end = completions[0].end

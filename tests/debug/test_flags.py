@@ -1,7 +1,7 @@
 from ipymini.debug.flags import DebugFlags, envbool
 
 
-def test_envbool_truthy_falsy(monkeypatch):
+def test_debug_flags(monkeypatch):
     for value in ["", "0", "false", "no"]:
         monkeypatch.setenv("IPYMINI_FLAG", value)
         assert envbool("IPYMINI_FLAG") is False
@@ -9,8 +9,6 @@ def test_envbool_truthy_falsy(monkeypatch):
         monkeypatch.setenv("IPYMINI_FLAG", value)
         assert envbool("IPYMINI_FLAG") is True
 
-
-def test_debugflags_from_env(monkeypatch):
     monkeypatch.setenv("TEST_DEBUG", "1")
     monkeypatch.setenv("TEST_DEBUG_MSGS", "true")
     flags = DebugFlags.from_env("TEST")

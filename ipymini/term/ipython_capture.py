@@ -1,10 +1,12 @@
-import contextvars
+import contextvars, logging
 from contextlib import contextmanager
 from typing import Callable
 
 from .display import MiniDisplayHook, MiniDisplayPublisher
 from .io import thread_local_io
 from .streams import MiniStream
+
+log = logging.getLogger("ipymini.term")
 
 
 class IPythonCapture:
@@ -50,7 +52,7 @@ class IPythonCapture:
             try:
                 self.stdout.flush()
                 self.stderr.flush()
-            except Exception: pass
+            except Exception: log.warning("failed flushing captured streams", exc_info=True)
             self.stream_live.reset(stream_token)
             self.display_live.reset(display_token)
 

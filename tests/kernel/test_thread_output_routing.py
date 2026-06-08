@@ -17,8 +17,7 @@ def test_thread_stdout_stays_with_launch_cell():
             "bg = threading.Thread(target=_bg_worker)\n"
             "bg.start()\n"
             "thread_ready.wait(5)\n"
-            "print('CELL1-LINE', flush=True)\n"
-        )
+            "print('CELL1-LINE', flush=True)\n")
         code_next = "thread_go.set(); bg.join(timeout=5); print('CELL2-LINE', flush=True)"
 
         msg_launch = kc.execute(code_launch, store_history=False)
@@ -36,9 +35,6 @@ def test_thread_stdout_stays_with_launch_cell():
         assert "THREAD-LINE\n" in launch_text
         assert "THREAD-LINE\n" not in next_text
 
-
-def test_thread_subclass_run_stdout_stays_with_launch_cell():
-    with start_kernel() as (_, kc):
         code_launch = (
             "import threading\n"
             "thread_ready = threading.Event()\n"
@@ -51,8 +47,7 @@ def test_thread_subclass_run_stdout_stays_with_launch_cell():
             "bg = MyThread()\n"
             "bg.start()\n"
             "thread_ready.wait(5)\n"
-            "print('CELL1-SUB-LINE', flush=True)\n"
-        )
+            "print('CELL1-SUB-LINE', flush=True)\n")
         code_next = "thread_go.set(); bg.join(timeout=5); print('CELL2-SUB-LINE', flush=True)"
 
         msg_launch = kc.execute(code_launch, store_history=False)

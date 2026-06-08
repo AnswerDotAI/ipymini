@@ -1,33 +1,44 @@
-import logging, queue, threading
+import logging, queue
+from microio import ServiceThread
 import zmq
 
 log = logging.getLogger("ipymini.zmqthread")
 
 
-class IOPubThread(threading.Thread):
+class IOPubThread(ServiceThread):
     "IOPub sender thread using a sync PUB socket with a bounded queue."
 
     def __init__(self, context: zmq.Context, addr: str, session, qmax: int = 10000, sndhwm: int | None = None):
-        super().__init__(daemon=True, name="iopub-thread")
+        super().__init__(name="iopub-thread", reraise=True)
         self.context = context
         self.addr = addr
         self.session = session
         self.sndhwm = sndhwm
-        self.stop_event = threading.Event()
+        self.priority_q = queue.Queue()
         self.q = queue.Queue(maxsize=int(qmax))
         self.enqueued = 0
         self.sent = 0
         self.send_errors = 0
 
     def send(self, msg_type, content, parent, metadata=None, ident=None, buffers=None):
-        "Queue an IOPub message for send; drop on full queue."
+        "Queue an IOPub message for send; never drop status messages."
         self.enqueued += 1
-        try: self.q.put_nowait((msg_type, content, parent, metadata, ident, buffers))
+        item = (msg_type, content, parent, metadata, ident, buffers)
+        try: self.q.put_nowait(item)
         except queue.Full:
+            if msg_type == "status":
+                self.priority_q.put(item)
+                return
             backlog = self.enqueued - self.sent
-            if backlog in (100, 500, 1000): log.warning("IOPub queue full; dropping. enq=%d sent=%d", self.enqueued, self.sent)
+            if backlog in (100, 500, 1000): log.warning("IOPub queue full; dropping non-critical output. enq=%d sent=%d", self.enqueued, self.sent)
 
-    def run(self):
+    def _get_next(self):
+        try: return self.q.get(timeout=0.05)
+        except queue.Empty: pass
+        try: return self.priority_q.get_nowait()
+        except queue.Empty: return None
+
+    def run_service(self):
         sock = None
         try:
             sock = self.context.socket(zmq.PUB)
@@ -36,9 +47,10 @@ class IOPubThread(threading.Thread):
                 try: sock.sndhwm = int(self.sndhwm)
                 except ValueError: pass
             sock.bind(self.addr)
-            while True:
-                item = self.q.get()
-                if item is None or self.stop_event.is_set(): break
+            self.started()
+            while not self.scope.closed:
+                item = self._get_next()
+                if item is None: continue
                 msg_type, content, parent, metadata, ident, buffers = item
                 msg = self.session.msg(msg_type, content, parent=parent)
                 try:
@@ -50,13 +62,5 @@ class IOPubThread(threading.Thread):
         finally:
             try:
                 if sock is not None: sock.close(0)
-            except Exception: pass
-
-    def stop(self):
-        self.stop_event.set()
-        try: self.q.put_nowait(None)
-        except queue.Full:
-            while True:
-                try: self.q.get_nowait()
-                except queue.Empty: break
-            self.q.put_nowait(None)
+            except Exception:
+                if not self.scope.closed: log.exception("IOPub socket close failed")

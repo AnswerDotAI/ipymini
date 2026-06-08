@@ -103,6 +103,7 @@ After the initial manual release, bump the version before running `tools/release
 
 Core flow:
 - `MiniKernel` owns sockets, threads, and dispatch.
+- `microio` provides the small concurrency primitives used for service lifecycle state, thread readiness, thread-bound channels, and request waiters.
 - `SubshellManager` manages the parent subshell (main thread) and optional child subshells (worker threads) sharing a user namespace.
 - `MiniShell` wraps IPython: execute, display, history, comms, debugger.
 
@@ -129,10 +130,12 @@ Key files:
 - The parent subshell runs in the main thread, so SIGINT can interrupt running code without killing the kernel when idle.
 - Each subshell has a persistent asyncio loop; code runs while the loop is running, so `asyncio.create_task(...)` works in sync cells.
 - Output routing uses contextvars to associate streams/displays with the current parent message (works across tasks and user-launched threads).
+- On POSIX, kernel startup isolates the kernel into its own process group; shutdown terminates that group as the final step. ipymini does not try to gracefully cancel arbitrary user-created threads/processes individually; the guarantee is that kernel shutdown reaps the kernel process and its process group. Windows currently skips this process-group teardown.
 
 ### Router threads (shell/control)
 
 - Shell/control ROUTER sockets run in background threads via `AsyncRouterThread`.
+- Kernel-owned service threads use `microio.ServiceThread` / `LoopServiceThread`, so startup failures are visible and join timeouts are checked.
 - The router thread is the only thread that touches its socket (thread‑safety).
 - Outbound replies are enqueued; the router loop drains the queue after inbound messages to avoid starvation.
 - Async sockets use `zmq.asyncio.Context.shadow(self.context)` to avoid multiple ZMQ contexts.
@@ -142,6 +145,7 @@ Key files:
 - `interrupt_request` sends SIGINT and also attempts task cancellation for async cells.
 - Cancelled async tasks are translated into `KeyboardInterrupt` for parity.
 - Interrupts cancel pending stdin waits and emit IOPub error messages.
+- `shutdown_request` is idempotent once stopping begins; other control requests during stopping return `KernelStopping`.
 
 ### IOPub / Comm
 
@@ -163,7 +167,5 @@ Key files:
 - `InteractiveShell.display_page` controls whether pager output is emitted as `display_data` (True) or reply payloads (False).
 
 ## Code reference
-
-`links/` (not commited to git) contains source for reference projects such as ipykernel. These should be reviewed carefully since they are mature, well-tested solutions.
 
 NB: `meta/` is not commited to git -- it is used for code reviews, timing details, etc.

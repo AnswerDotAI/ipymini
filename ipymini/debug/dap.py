@@ -1,11 +1,13 @@
-import json, os, queue, socket, sys, threading
+import json, logging, os, queue, socket, sys, threading
 from typing import Callable
 
-import debugpy
-import zmq
+import debugpy, zmq
 from IPython.core.getipython import get_ipython
+from microio import RequestRegistry
 
 from .cells import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
+
+log = logging.getLogger("ipymini.debug")
 
 
 class DebugpyMessageQueue:
@@ -68,8 +70,7 @@ class MiniDebugpyClient:
         self.context = context
         self.next_seq = 1
         self.event_callback = event_callback
-        self.pending = {}
-        self.pending_lock = threading.Lock()
+        self.pending = RequestRegistry()
         self.stop = threading.Event()
         self.reader_thread = None
         self.initialized = threading.Event()
@@ -86,15 +87,24 @@ class MiniDebugpyClient:
     def _start_reader(self):
         if self.reader_thread and self.reader_thread.is_alive(): return
         self.stop.clear()
-        self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self.reader_thread = threading.Thread(target=self._reader_loop_logged, daemon=True, name="debugpy-reader")
         self.reader_thread.start()
+
+    def _reader_loop_logged(self):
+        try: self._reader_loop()
+        except Exception as exc:
+            log.exception("debugpy reader thread failed")
+            self._fail_pending(exc)
 
     def close(self):
         "Stop reader thread and close debugpy socket."
         self.stop.set()
         self.initialized.clear()
-        if self.reader_thread: self.reader_thread.join(timeout=1)
-        self.reader_thread = None
+        if self.reader_thread:
+            self.reader_thread.join(timeout=1)
+            if self.reader_thread.is_alive(): log.error("debugpy reader did not stop")
+            else: self.reader_thread = None
+        self._fail_pending(RuntimeError("debugpy client closed"))
 
     def _handle_event(self, msg: dict):
         if msg.get("event") == "initialized": self.initialized.set()
@@ -102,9 +112,9 @@ class MiniDebugpyClient:
 
     def _handle_response(self, msg: dict):
         req_seq = msg.get("request_seq")
-        if isinstance(req_seq, int):
-            with self.pending_lock: waiter = self.pending.get(req_seq)
-            if waiter is not None: waiter.put(msg)
+        if isinstance(req_seq, int): self.pending.resolve(req_seq, msg)
+
+    def _fail_pending(self, exc: Exception): self.pending.fail_all(exc)
 
     def _reader_loop(self):
         if self.endpoint is None: return
@@ -139,31 +149,27 @@ class MiniDebugpyClient:
 
     def send_request(self, msg: dict, timeout: float = 10.0) -> dict:
         "Send a debugpy request and wait for a response."
+        req_seq = self._request_seq(msg)
+        return self.pending.request(req_seq, lambda _reply: self.outgoing.put(msg), timeout=timeout)
+
+    def _request_seq(self, msg: dict)->int:
+        "Ensure `msg` has a positive integer sequence number."
         req_seq = msg.get("seq")
         if not isinstance(req_seq, int) or req_seq <= 0:
             req_seq = self.next_internal_seq()
             msg["seq"] = req_seq
-        req_seq, waiter = self.send_request_async(msg)
-        return self.wait_for_response(req_seq, waiter, timeout=timeout)
+        return req_seq
 
     def send_request_async(self, msg: dict) -> tuple[int, queue.Queue]:
         "Send a request and return `(seq, waiter)` without waiting."
-        req_seq = msg.get("seq")
-        if not isinstance(req_seq, int) or req_seq <= 0:
-            req_seq = self.next_internal_seq()
-            msg["seq"] = req_seq
-        waiter = queue.Queue()
-        with self.pending_lock: self.pending[req_seq] = waiter
+        req_seq = self._request_seq(msg)
+        waiter = self.pending.register(req_seq)
         self.outgoing.put(msg)
         return req_seq, waiter
 
     def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0) -> dict:
         "Wait for a response on `waiter` until `timeout`."
-        try: reply = waiter.get(timeout=timeout)
-        except queue.Empty as exc: raise TimeoutError("timed out waiting for debugpy response") from exc
-        finally:
-            with self.pending_lock: self.pending.pop(req_seq, None)
-        return reply
+        return self.pending.wait(req_seq, waiter, timeout=timeout)
 
     def wait_initialized(self, timeout: float = 5.0) -> bool: return self.initialized.wait(timeout=timeout)
 
@@ -234,6 +240,7 @@ class Debugger:
         "Handle a DAP request and return response plus queued events."
         self.events = []
         command = request.get("command")
+        if not isinstance(command, str) or not command: return self._fail(request, "missing command"), self.events
         if command == "terminate":
             if self.adapter_started or self.started: self._reset_session()
             return self._ok(request), self.events
@@ -248,14 +255,13 @@ class Debugger:
             arguments["connect"] = {"host": self.host, "port": self.port}
             arguments["logToFile"] = True
             if not self.just_my_code: arguments["debugOptions"] = ["DebugStdLib"]
-            if self.filter_internal_frames and self.kernel_modules:
-                arguments["rules"] = [{"path": path, "include": False} for path in self.kernel_modules]
+            if self.filter_internal_frames and self.kernel_modules: arguments["rules"] = [{"path": path, "include": False} for path in self.kernel_modules]
             request["arguments"] = arguments
             req_seq, waiter = self.client.send_request_async(request)
             if self.client.wait_initialized(timeout=10.0):
                 config = self._request_payload("configurationDone")
                 try: self.client.send_request(config, timeout=10.0)
-                except TimeoutError: pass
+                except TimeoutError: log.warning("debugpy configurationDone timed out")
             response = self.client.wait_for_response(req_seq, waiter, timeout=10.0)
             if response.get("success"): self.started = True
             return response or {}, self.events
@@ -275,7 +281,12 @@ class Debugger:
 
     def process_request_json(self, request_json: str) -> dict:
         try: request = json.loads(request_json)
-        except json.JSONDecodeError: request = {}
+        except json.JSONDecodeError:
+            request = dict(type="request", command="<invalid>")
+            return {"response": self._fail(request, "invalid debug request JSON"), "events": []}
+        if not isinstance(request, dict):
+            request = dict(type="request", command="<invalid>")
+            return {"response": self._fail(request, "invalid debug request"), "events": []}
         response, events = self.process_request(request)
         return {"response": response, "events": events}
 
@@ -330,8 +341,7 @@ class Debugger:
 
     def _ok(self, request: dict, **body) -> dict: return self._response(request, True, body=body or {})
 
-    def _fail(self, request: dict, message: str, body: dict | None = None) -> dict:
-        return self._response(request, False, body=body or {}, message=message)
+    def _fail(self, request: dict, message: str, body: dict | None = None) -> dict: return self._response(request, False, body=body or {}, message=message)
 
     def _dump_cell(self, request: dict) -> dict:
         "Write debug cell to disk and return its path."

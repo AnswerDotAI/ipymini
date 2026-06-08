@@ -14,7 +14,6 @@ class _DummyKernel:
 def test_loop_cleanup_clears_event_loop():
     kernel = _DummyKernel()
     subshell = Subshell(kernel, None, {}, use_singleton=True, run_in_thread=False)
-    subshell._setup_loop()
-    assert asyncio.get_event_loop() is subshell.loop
-    subshell._shutdown_loop()
+    subshell.stop()
+    subshell.run_main()
     with pytest.raises(RuntimeError): asyncio.get_event_loop()

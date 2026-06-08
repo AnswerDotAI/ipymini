@@ -4,7 +4,7 @@ from ..kernel_utils import *
 timeout = 3
 
 
-def test_input_request_and_stream_ordering():
+def test_input_features():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("print('before'); print(input('prompt> '))", allow_stdin=True)
         stdin_msg = kc.get_stdin_msg(timeout=timeout)
@@ -26,9 +26,6 @@ def test_input_request_and_stream_ordering():
         streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
         assert ("stdout", text + "\n") in streams
 
-
-def test_input_request_disallowed():
-    with start_kernel() as (_, kc):
         msg_id = kc.execute("input('prompt> ')", allow_stdin=False)
 
         try:
@@ -41,28 +38,6 @@ def test_input_request_disallowed():
         assert reply["content"]["ename"] == "StdinNotImplementedError"
         kc.iopub_drain(msg_id)
 
-
-def test_interrupt_while_waiting_for_input():
-    with start_kernel() as (_, kc):
-        msg_id = kc.execute("input('prompt> ')", allow_stdin=True)
-        stdin_msg = kc.get_stdin_msg(timeout=timeout)
-        assert stdin_msg["msg_type"] == "input_request"
-
-        kc.interrupt_request(timeout=timeout)
-
-        reply = kc.shell_reply(msg_id)
-        assert reply["content"]["status"] == "error"
-        assert reply["content"]["ename"] == "KeyboardInterrupt"
-        kc.iopub_drain(msg_id)
-
-        ok_id = kc.execute("1+1", store_history=False)
-        ok_reply = kc.shell_reply(ok_id)
-        assert ok_reply["content"]["status"] == "ok"
-        kc.iopub_drain(ok_id)
-
-
-def test_duplicate_input_reply_does_not_break_stdin():
-    with start_kernel() as (_, kc):
         msg_id = kc.execute("user_input = input('Enter something: ')", allow_stdin=True, store_history=False)
         stdin_msg = kc.get_stdin_msg(timeout=timeout)
         reply = kc.session.msg("input_reply", {"value": "bbb"}, parent=stdin_msg)
@@ -78,3 +53,19 @@ def test_duplicate_input_reply_does_not_break_stdin():
         reply_msg2 = kc.shell_reply(msg_id2)
         assert reply_msg2["content"]["status"] == "ok"
         kc.iopub_drain(msg_id2)
+
+        msg_id = kc.execute("input('prompt> ')", allow_stdin=True)
+        stdin_msg = kc.get_stdin_msg(timeout=timeout)
+        assert stdin_msg["msg_type"] == "input_request"
+
+        kc.interrupt_request(timeout=timeout)
+
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "error"
+        assert reply["content"]["ename"] == "KeyboardInterrupt"
+        kc.iopub_drain(msg_id)
+
+        ok_id = kc.execute("1+1", store_history=False)
+        ok_reply = kc.shell_reply(ok_id)
+        assert ok_reply["content"]["status"] == "ok"
+        kc.iopub_drain(ok_id)

@@ -1,7 +1,5 @@
 import queue
 
-import pytest
-
 from ipymini.debug.dap import Debugger
 
 
@@ -32,8 +30,7 @@ class _FakeClient:
         waiter.put(dict(type="response", request_seq=seq, success=True, body={}))
         return seq, waiter
 
-    def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0) -> dict:
-        return waiter.get(timeout=timeout)
+    def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0) -> dict: return waiter.get(timeout=timeout)
 
     def wait_initialized(self, timeout: float = 5.0) -> bool: return True
 
@@ -42,7 +39,26 @@ class _FakeClient:
         return dict(type="response", request_seq=request.get("seq"), success=True, body={})
 
 
-def test_debugger_attach_rewrites_arguments_without_listen(monkeypatch):
+def test_debugger_request_features(monkeypatch):
+    dbg = Debugger()
+    called = {"start": False}
+    def _ensure_started(): called["start"] = True
+    dbg._ensure_started = _ensure_started
+    reply, events = dbg.process_request(dict(command="terminate"))
+    assert called["start"] is False
+    assert events == []
+    assert reply.get("success") is True
+
+    dbg = Debugger()
+    dbg._ensure_started = lambda: None
+    dbg.started = True
+    dbg.breakpoint_list = {"x.py": [{"line": 10}]}
+    reply, _events = dbg.process_request(dict(command="debugInfo"))
+    body = reply.get("body", {})
+    assert body.get("isStarted") is True
+    assert body.get("hashMethod") == "Murmur2"
+    assert body.get("breakpoints")[0].get("source") == "x.py"
+
     dbg = Debugger()
     dbg.client = _FakeClient()
     dbg.port = 5678  # avoid debugpy.listen in _ensure_started
@@ -68,8 +84,14 @@ def test_debugger_attach_rewrites_arguments_without_listen(monkeypatch):
     rules = args.get("rules") or []
     assert rules and all(r.get("include") is False for r in rules)
 
+    dbg = Debugger()
+    def _ensure_started(): raise AssertionError("debugger should not start")
+    dbg._ensure_started = _ensure_started
+    reply = dbg.process_request_json("{")
+    assert reply["response"]["success"] is False
+    reply = dbg.process_request(dict(type="request", seq=1))
+    assert reply[0]["success"] is False
 
-def test_debugger_setbreakpoints_updates_breakpoint_list():
     dbg = Debugger()
     fake = _FakeClient()
     dbg.client = fake
@@ -86,8 +108,6 @@ def test_debugger_setbreakpoints_updates_breakpoint_list():
     assert reply.get("success") is True
     assert dbg.breakpoint_list.get("x.py") == [{"line": 10}, {"line": 20}]
 
-
-def test_debugger_disconnect_resets_session():
     dbg = Debugger()
     fake = _FakeClient()
     dbg.client = fake
@@ -101,8 +121,6 @@ def test_debugger_disconnect_resets_session():
     assert fake.closed is True
     assert dbg.started is False
 
-
-def test_debugger_trace_current_thread_calls_debugpy_once(monkeypatch):
     import ipymini.debug.dap as dap_mod
 
     calls = []

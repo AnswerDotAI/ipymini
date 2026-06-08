@@ -15,16 +15,13 @@ def _assert_header(msg: dict, msg_type:str|None=None):
     assert _version_tuple(header["version"]) >= (5, 0)
 
 
-def test_kernel_info_header():
+def test_message_headers():
     with start_kernel() as (_, kc):
         msg_id = kc.kernel_info()
         reply = kc.shell_reply(msg_id)
         _assert_header(reply, "kernel_info_reply")
         assert reply["parent_header"]["msg_id"] == msg_id
 
-
-def test_execute_headers():
-    with start_kernel() as (_, kc):
         msg_id = kc.execute("1+1", store_history=False)
         reply = kc.shell_reply(msg_id)
         _assert_header(reply, "execute_reply")

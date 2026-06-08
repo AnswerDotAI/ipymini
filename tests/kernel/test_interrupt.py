@@ -17,52 +17,40 @@ def _assert_interrupt(kc, msg_id:str, timeout:float = 2):
     outputs = kc.iopub_drain(msg_id)
     errors = iopub_msgs(outputs, "error")
     assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
-    assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
-        f"interrupt iopub: {errors[-1].get('content')}"
-    )
+    assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"interrupt iopub: {errors[-1].get('content')}"
     return reply
 
 
-def test_interrupt_request():
+def test_interrupt_request_features():
     with start_kernel() as (km, kc):
         for use_control_channel in [False, True]:
             msg_id = kc.execute("import time; time.sleep(1)")
             wait_for_status(kc, "busy")
 
-            if use_control_channel: kc.interrupt_request()
+            if use_control_channel:
+                assert kc.interrupt_request()["content"]["status"] == "ok"
+                assert kc.interrupt_request()["content"]["status"] == "ok"
             else: km.interrupt_kernel()
 
             reply = _assert_interrupt(kc, msg_id, timeout=10)
-            assert reply["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}, (
-                f"interrupt ename: {reply.get('content')}"
-            )
+            assert reply["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}, f"interrupt ename: {reply.get('content')}"
 
-
-def test_interrupt_request_breaks_sleep():
     with start_kernel() as (_, kc):
         msg_id = kc.execute("import time; time.sleep(5); print('finished')")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
         _assert_interrupt(kc, msg_id, timeout=2)
 
-
-def test_interrupt_request_breaks_asyncio_sleep():
-    with start_kernel() as (_, kc):
         msg_id = kc.execute("import asyncio; await asyncio.sleep(5)")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
         _assert_interrupt(kc, msg_id, timeout=2)
 
-
-def test_interrupt_request_breaks_busy_loop():
-    with start_kernel() as (_, kc):
         msg_id = kc.execute("while True: pass")
         wait_for_status(kc, "busy")
         kc.interrupt_request()
         _assert_interrupt(kc, msg_id, timeout=2)
 
-
-def test_interrupt_request_gateway_pattern():
     async def _run():
         async with start_kernel_async(ready_timeout=2) as (_km, kc):
             cmd = kc.cmd

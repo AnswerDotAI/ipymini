@@ -1,4 +1,4 @@
-import time, pytest
+import pytest
 from contextlib import contextmanager
 from ..kernel_utils import *
 
@@ -52,8 +52,10 @@ def debug_kernel(kernel):
     finally: kernel.dap.disconnect(restart=False, terminateDebuggee=True)
 
 
-def test_debugger_basic_features(debug_kernel):
+def test_debugger_features(debug_kernel):
     dap = debug_kernel.dap
+    wait_for_debug_event(debug_kernel, "initialized")
+
     msg_id = debug_kernel.kernel_info()
     reply = debug_kernel.shell_reply(msg_id)
     features = reply["content"].get("supported_features", [])
@@ -62,7 +64,7 @@ def test_debugger_basic_features(debug_kernel):
 
     reply = dap.evaluate(expression="'a' + 'b'", context="repl")
     assert reply.get("success"), f"evaluate failed: {reply}"
-    assert reply["body"]["result"] == "", f"evaluate result: {reply['body']['result']}"
+    assert reply["body"]["result"] == "ab", f"evaluate result: {reply['body']['result']}"
 
     var_name = "text"
     value = "Hello the world"
@@ -72,9 +74,6 @@ def test_debugger_basic_features(debug_kernel):
     dap.inspectVariables()
     dap.richInspectVariables(variableName=var_name)
 
-
-def test_debugger_breakpoints_and_steps(debug_kernel):
-    dap = debug_kernel.dap
     code = """
 def f(a, b):
     c = a + b
@@ -135,9 +134,6 @@ g()
 
     continue_debugger(debug_kernel, stopped)
 
-
-def test_debugger_exceptions_and_terminate(debug_kernel):
-    dap = debug_kernel.dap
     reply = dap.setExceptionBreakpoints(filters=["raised"])
     assert reply["success"], f"setExceptionBreakpoints failed: {reply}"
     ensure_configuration_done(debug_kernel)

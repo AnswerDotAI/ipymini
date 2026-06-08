@@ -103,8 +103,7 @@ def test_subshell_asyncio_create_task():
             "    await asyncio.sleep(0.01)\n"
             "    print('ok')\n"
             "asyncio.create_task(f())\n"
-            "time.sleep(0.05)\n"
-        )
+            "time.sleep(0.05)\n")
         msg_id = kc.cmd.execute_request(code=code, subshell_id=subshell_id)
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
@@ -118,19 +117,29 @@ def test_subshell_concurrency_and_control():
         subshell_a = _create_subshell(kc)
         subshell_b = _create_subshell(kc)
 
-        msg_id = cmd.execute_request(code="import time; time.sleep(0.05)")
+        _execute(kc, "import threading; control_gate = threading.Event()")
+        msg_id = cmd.execute_request(code="ok = control_gate.wait(5); print(ok)")
+        wait_for_status(kc, "busy")
 
-        control_reply = kc.ctl.create_subshell()
+        control_msg = kc.session.msg("create_subshell_request", {})
+        kc.control_channel.send(control_msg)
+        control_msg_id = control_msg["header"]["msg_id"]
+        control_reply = kc.control_reply(control_msg_id, timeout=1)
         subshell_id = control_reply["content"]["subshell_id"]
-        control_date = control_reply["header"]["date"]
+        release_id = cmd.execute_request(code="control_gate.set(); print('released')", subshell_id=subshell_a)
+        release_reply = kc.shell_reply(release_id)
+        assert release_reply["content"]["status"] == "ok"
 
         shell_reply = kc.shell_reply(msg_id)
-        shell_date = shell_reply["header"]["date"]
-        kc.iopub_drain(msg_id)
+        outputs = collect_iopub_outputs(kc, {msg_id, release_id})
+        release_streams = iopub_streams(outputs[release_id])
+        assert any("released" in m["content"].get("text", "") for m in release_streams)
+        shell_streams = iopub_streams(outputs[msg_id])
+        assert any("True" in m["content"].get("text", "") for m in shell_streams)
 
         _delete_subshell(kc, subshell_id)
 
-        assert control_date < shell_date
+        assert shell_reply["content"]["status"] == "ok"
 
         _execute(kc, "import threading; evt = threading.Event()")
 
@@ -147,7 +156,7 @@ def test_subshell_concurrency_and_control():
         assert reply_wait["content"]["status"] == "ok"
         assert reply_set["content"]["status"] == "ok"
         streams_wait = iopub_streams(outputs_wait)
-        assert any("True" in m["content"].get("text", "") for m in streams_wait)
+        assert any("True" in m["content"].get("text", "") for m in streams_wait), f"wait outputs: {outputs_wait}; set outputs: {outputs_set}"
         streams_set = iopub_streams(outputs_set)
         assert any("set" in m["content"].get("text", "") for m in streams_set)
 
@@ -190,9 +199,7 @@ def test_subshell_reads_shared_ns_during_parent_sleep():
 
         outputs = kc.iopub_drain(subshell_msg_id)
         streams = iopub_streams(outputs)
-        assert any("123" in m["content"].get("text", "") for m in streams), (
-            f"expected subshell to read shared ns, got: {streams}"
-        )
+        assert any("123" in m["content"].get("text", "") for m in streams), f"expected subshell to read shared ns, got: {streams}"
 
         reply_parent = kc.shell_reply(parent_msg_id, timeout=3)
         assert reply_parent["content"]["status"] == "ok"
@@ -213,9 +220,7 @@ def test_subshell_interrupt_request_breaks_sleep():
         outputs = kc.iopub_drain(msg_id)
         errors = iopub_msgs(outputs, "error")
         assert errors, f"expected iopub error after interrupt, got: {[m.get('msg_type') for m in outputs]}"
-        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", (
-            f"interrupt iopub: {errors[-1].get('content')}"
-        )
+        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"interrupt iopub: {errors[-1].get('content')}"
         _delete_subshell(kc, subshell_id)
 
 
@@ -260,6 +265,19 @@ def test_subshell_stop_on_error_isolated():
 
             for subshell_id in subshell_ids:
                 if subshell_id: _delete_subshell(kc, subshell_id)
+
+
+def test_delete_busy_subshell_interrupts_before_removing():
+    with start_kernel() as (_, kc):
+        subshell_id = _create_subshell(kc)
+        msg_id = kc.cmd.execute_request(code="while True: pass", subshell_id=subshell_id)
+        wait_for_status(kc, "busy")
+        reply = kc.ctl.delete_subshell(subshell_id=subshell_id, timeout=default_timeout)
+        assert reply["content"]["status"] == "ok"
+        exec_reply = kc.shell_reply(msg_id, timeout=default_timeout)
+        assert exec_reply["content"]["status"] == "error"
+        list_reply = kc.ctl.list_subshell()
+        assert subshell_id not in list_reply["content"]["subshell_id"]
 
 
 def test_subshell_fuzzes():

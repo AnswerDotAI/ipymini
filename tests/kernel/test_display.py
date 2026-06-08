@@ -3,7 +3,7 @@ from pathlib import Path
 from ..kernel_utils import *
 
 
-def test_display_data_samples():
+def test_display_data_and_payloads(tmp_path):
     samples = [("from IPython.display import HTML, display; display(HTML('<b>test</b>'))", "text/html"),
         ("from IPython.display import Math, display; display(Math('\\\\frac{1}{2}'))", "text/latex")]
     with start_kernel() as (_, kc):
@@ -16,8 +16,15 @@ def test_display_data_samples():
             assert displays, "display_data message not found"
             assert any(mime in msg["content"]["data"] for msg in displays)
 
+        code = "ip = get_ipython()\nfor i in range(3):\n   ip.set_next_input('Hello There')\n"
+        msg_id = kc.execute(code)
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "ok"
+        payloads = reply["content"]["payload"]
+        next_inputs = [pl for pl in payloads if pl["source"] == "set_next_input"]
+        assert len(next_inputs) == 1
+        kc.iopub_drain(msg_id)
 
-def test_pager_payload(tmp_path):
     root = Path(__file__).resolve().parents[1]
     ipdir = tmp_path / "ipdir"
     profile = ipdir / "profile_default"
@@ -41,10 +48,8 @@ def test_pager_payload(tmp_path):
         assert "text/plain" in mimebundle
         h.kc.iopub_drain(msg_id)
 
-
-def test_display_page_true_uses_display_data(tmp_path):
     root = Path(__file__).resolve().parents[1]
-    ipdir = tmp_path / "ipdir"
+    ipdir = tmp_path / "ipdir_display"
     profile = ipdir / "profile_default"
     profile.mkdir(parents=True)
     config_path = profile / "ipython_kernel_config.py"
@@ -65,15 +70,3 @@ def test_display_page_true_uses_display_data(tmp_path):
         displays = iopub_msgs(outputs, "display_data")
         assert displays, "display_data message not found"
         assert any("text/plain" in msg["content"]["data"] for msg in displays)
-
-
-def test_set_next_input_single_payload():
-    code = "ip = get_ipython()\nfor i in range(3):\n   ip.set_next_input('Hello There')\n"
-    with start_kernel() as (_, kc):
-        msg_id = kc.execute(code)
-        reply = kc.shell_reply(msg_id)
-        assert reply["content"]["status"] == "ok"
-        payloads = reply["content"]["payload"]
-        next_inputs = [pl for pl in payloads if pl["source"] == "set_next_input"]
-        assert len(next_inputs) == 1
-        kc.iopub_drain(msg_id)

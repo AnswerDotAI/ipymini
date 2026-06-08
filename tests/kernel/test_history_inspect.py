@@ -1,8 +1,30 @@
 from ..kernel_utils import *
 
 
-def test_inspect_open():
+def test_history_and_inspect_features():
     with start_kernel() as (_, kc):
+        msg_id = kc.complete("pri")
+        reply = kc.shell_reply(msg_id)
+        matches = set(reply["content"].get("matches", []))
+        assert "print" in matches
+
+        msg_id = kc.complete("from sys imp")
+        reply = kc.shell_reply(msg_id)
+        matches = set(reply["content"].get("matches", []))
+        assert "import " in matches
+
+        msg_id = kc.is_complete("print('hello, world')")
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "complete"
+
+        msg_id = kc.is_complete("print('''hello")
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "incomplete"
+
+        msg_id = kc.is_complete("import = 7q")
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "invalid"
+
         msg_id = kc.inspect("open")
         reply = kc.shell_reply(msg_id)
         content = reply["content"]
@@ -10,9 +32,6 @@ def test_inspect_open():
         assert content["found"]
         assert "text/plain" in content.get("data", {})
 
-
-def test_history_tail_search():
-    with start_kernel() as (_, kc):
         _, reply, _ = kc.exec_drain("1+1")
         assert reply["content"]["status"] == "ok"
 
@@ -28,9 +47,6 @@ def test_history_tail_search():
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "ok"
 
-
-def test_history_search_unique_and_n():
-    with start_kernel() as (_, kc):
         for code in ("1+1", "1+2", "1+3", "1+1"):
             _, reply, _ = kc.exec_drain(code)
             assert reply["content"]["status"] == "ok"

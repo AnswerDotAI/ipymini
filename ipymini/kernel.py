@@ -3,8 +3,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
 from fastcore.basics import store_attr
+from microio import CloseScope
 import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
@@ -24,13 +24,12 @@ def _install_thread_excepthook(kernel: "MiniKernel"):
     prev = threading.excepthook
     def hook(args):
         try: prev(args)
-        except Exception: pass
+        except Exception: log.exception("previous threading.excepthook failed")
         name = getattr(args.thread, "name", "")
         critical = name in {"iopub-thread", "stdin-router", "heartbeat-thread"} or name.endswith("-router")
         if not critical: return
         log.error("Critical thread crashed: %s", name, exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
-        kernel.shutdown_event.set()
-        kernel.subshells.parent.stop()
+        kernel.request_stop(f"critical thread crashed: {name}", failed=True)
     threading.excepthook = hook
     return prev
 subshell_stop = object()
@@ -67,6 +66,22 @@ class ExecState(str, Enum):
     COMPLETED = "completed"
     ABORTED = "aborted"
 
+
+class KernelState(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+def _join_or_log(thread: threading.Thread|None, timeout:float = 1.0)->bool:
+    if thread is None: return True
+    thread.join(timeout=timeout)
+    if not thread.is_alive(): return True
+    log.error("Thread did not stop: %s", thread.name)
+    return False
+
 shell_required = dict(execute_request=("code",), complete_request=("code", "cursor_pos"),
     inspect_request=("code", "cursor_pos"), history_request=("hist_access_type",), is_complete_request=("code",))
 shell_specs = dict(complete_request=("complete_reply", dict(code=("code", ""), cursor_pos="cursor_pos"), "complete"),
@@ -100,7 +115,9 @@ class Subshell:
         use_singleton: bool = False, run_in_thread: bool = True):
         "Create subshell worker thread and shell layer for execution."
         store_attr("kernel,subshell_id")
-        self.stop_event = threading.Event()  # not `_stop` since that shadows Thread._stop
+        self.user_ns = user_ns
+        self.use_singleton = use_singleton
+        self.scope = CloseScope()
         name = "subshell-parent" if subshell_id is None else f"subshell-{subshell_id}"
         self.thread = None if not run_in_thread else threading.Thread(target=self._run_loop, daemon=True, name=name)
         self.loop = None
@@ -109,11 +126,8 @@ class Subshell:
         self.aborting = False
         self.abort_handle = None
         self.async_lock = None
-        self.shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
-            zmq_context=self.kernel.context, user_ns=user_ns, use_singleton=use_singleton)
-        self.shell.ipy.kernel = kernel
-        self.shell.set_stream_sender(self._send_stream)
-        self.shell.set_display_sender(self._send_display_event)
+        self._shell = None
+        self.shell_ready = threading.Event()
         self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
         self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self.executing = threading.Event()
@@ -124,21 +138,37 @@ class Subshell:
             complete_request=self._shell_handler, inspect_request=self._shell_handler, history_request=self._handle_history,
             is_complete_request=self._shell_handler, comm_info_request=self._handle_comm_info, comm_open=self._handle_comm,
             comm_msg=self._handle_comm, comm_close=self._handle_comm, shutdown_request=self.handle_shutdown)
+        if not run_in_thread: self._init_shell()
 
-    def start(self):
+    @property
+    def shell(self)->MiniShell:
+        if self._shell is None and self.thread is not None and threading.current_thread() is not self.thread: self.shell_ready.wait(timeout=5)
+        if self._shell is None: raise RuntimeError("subshell shell is not initialized")
+        return self._shell
+
+    def _init_shell(self):
+        if self._shell is not None: return
+        self._shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
+            zmq_context=self.kernel.context, user_ns=self.user_ns, use_singleton=self.use_singleton)
+        self._shell.ipy.kernel = self.kernel
+        self._shell.set_stream_sender(self._send_stream)
+        self._shell.set_display_sender(self._send_display_event)
+        self.shell_ready.set()
+
+    def start(self, wait: bool = True):
         if self.thread is not None:
             self.thread.start()
-            self.loop_ready.wait()
+            if wait and not self.loop_ready.wait(timeout=5): raise TimeoutError(f"{self.thread.name} did not become ready")
 
-    def stop(self):
+    def stop(self, interrupt: bool = False):
         "Signal subshell loop to stop and wake it."
-        self.stop_event.set()
+        if interrupt: self.interrupt()
+        if not self.scope.close("subshell stop"): return False
         self.inbox.suppress_late_puts()
         self.inbox.put((subshell_stop, None))
-        if self.loop is not None and self.loop.is_running(): self.loop.call_soon_threadsafe(self.loop.stop)
+        return True
 
-    def join(self, timeout:float|None=None):
-        if self.thread is not None: self.thread.join(timeout=timeout)
+    def join(self, timeout:float|None=None)->bool: return _join_or_log(self.thread, timeout=timeout)
 
     def submit(self, msg: dict, idents: list[bytes]|None): self.inbox.put((msg, idents))
 
@@ -202,38 +232,31 @@ class Subshell:
         dbg(f"REPLY {msg_type} id={parent_id}")
         self.kernel.queue_shell_reply(msg_type, content, parent, idents)
 
-    def _run_loop(self):
-        self._setup_loop()
-        try: self.loop.run_forever()
-        finally: self._shutdown_loop()
+    def _run_loop(self): self._run_loop_body()
 
     def run_main(self):
         "Run parent subshell loop in the main thread."
-        self._setup_loop()
-        try: self.loop.run_forever()
-        finally: self._shutdown_loop()
+        self._run_loop_body()
 
-    def _setup_loop(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    def _run_loop_body(self):
+        try:
+            with asyncio.Runner() as runner:
+                self.loop = runner.get_loop()
+                runner.run(self._main())
+        finally:
+            self.loop = None
+            self.async_lock = None
+            self.loop_ready.clear()
+            asyncio.set_event_loop(None)
+
+    async def _main(self):
+        loop = asyncio.get_running_loop()
         self.loop = loop
         self.inbox.bind(loop)
         self.async_lock = asyncio.Lock()
         self.loop_ready.set()
-        loop.create_task(self._consume_queue())
-
-    def _shutdown_loop(self):
-        if self.loop is None: return
-        loop = self.loop
-        asyncio.set_event_loop(loop)
-        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
-        for task in pending: task.cancel()
-        if pending: loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        if hasattr(loop, "shutdown_asyncgens"): loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
-        asyncio.set_event_loop(None)
-        self.loop = None
-        self.async_lock = None
+        self._init_shell()
+        await self._consume_queue()
 
     async def _consume_queue(self):
         dbg(f"SUBSHELL started id={self.subshell_id}")
@@ -506,7 +529,7 @@ class SubshellManager:
         subshell_id = str(uuid.uuid4())
         subshell = Subshell(self.kernel, subshell_id, self.user_ns)
         with self.lock: self.subs[subshell_id] = subshell
-        subshell.start()
+        subshell.start(wait=False)
         return subshell_id
 
     def list(self)->list[str]:
@@ -514,18 +537,22 @@ class SubshellManager:
 
     def delete(self, subshell_id:str):
         "Stop and remove a subshell by id."
-        with self.lock: subshell = self.subs.pop(subshell_id)
-        subshell.stop()
-        subshell.join(timeout=1)
+        with self.lock: subshell = self.subs[subshell_id]
+        subshell.stop(interrupt=True)
+        if not subshell.join(timeout=2):
+            raise RuntimeError(f"subshell {subshell_id} did not stop")
+        with self.lock:
+            if self.subs.get(subshell_id) is subshell: self.subs.pop(subshell_id, None)
 
     def stop_all(self):
         "Stop all subshells and the parent."
-        with self.lock:
-            subshells = list(self.subs.values())
-            self.subs.clear()
-        for subshell in subshells:
-            subshell.stop()
-            subshell.join(timeout=1)
+        with self.lock: subshells = list(self.subs.items())
+        for subshell_id, subshell in subshells:
+            subshell.stop(interrupt=True)
+            if not _join_or_log(subshell.thread, timeout=1): log.error("Subshell %s still alive during shutdown", subshell_id)
+            else:
+                with self.lock:
+                    if self.subs.get(subshell_id) is subshell: self.subs.pop(subshell_id, None)
         self.parent.stop()
         self.parent.join(timeout=1)
 
@@ -558,9 +585,19 @@ class IOPubCommand:
         return _send
 
 
+def _isolate_process_group()->bool:
+    "Make this POSIX kernel process its own process-group leader."
+    if os.name == "nt": return False
+    try:
+        if os.getpgrp() != os.getpid(): os.setpgrp()
+        return os.getpgrp() == os.getpid()
+    except OSError: return log.warning("could not isolate kernel process group", exc_info=True) or False
+
+
 class MiniKernel:
-    def __init__(self, connection_file:str):
+    def __init__(self, connection_file:str, *, terminate_process_group: bool = False):
         "Initialize kernel sockets, threads, and subshell manager."
+        self.terminate_process_group = terminate_process_group
         self.connection = ConnectionInfo.from_file(connection_file)
         key = self.connection.key.encode()
         self.session = Session(key=key, signature_scheme=self.connection.signature_scheme)
@@ -580,7 +617,10 @@ class MiniKernel:
         self.parent_idents = None
         self.shell_router = None
         self.control_router = None
-        self.shutdown_event = threading.Event()
+        self.state = KernelState.STARTING
+        self.state_lock = threading.Lock()
+        self.stop_scope = CloseScope()
+        self.shutdown_restart = None
         self.stop_on_error_timeout = _env_float("IPYMINI_STOP_ON_ERROR_TIMEOUT", 0.0)
         self.iopub_cmd = None
         self.control_handlers = dict(shutdown_request=self.handle_shutdown, debug_request=self.handle_debug,
@@ -590,44 +630,86 @@ class MiniKernel:
             list_subshell_request=("list_subshell_reply", lambda msg: dict(subshell_id=self.subshells.list())),
             delete_subshell_request=("delete_subshell_reply", self._delete_subshell))
 
+    def _set_state(self, state: KernelState):
+        with self.state_lock: self.state = state
+
+    def request_stop(self, reason: str, *, interrupt: bool = True, failed: bool = False)->bool:
+        "Transition toward shutdown once and wake blocked work."
+        with self.state_lock:
+            if self.stop_scope.closed or self.state in {KernelState.STOPPED, KernelState.FAILED}: return False
+            if failed: self.stop_scope.fail(RuntimeError(reason), reason=reason)
+            else: self.stop_scope.close(reason)
+            self.state = KernelState.FAILED if failed else KernelState.STOPPING
+        log.info("kernel stopping: %s", reason)
+        self.stdin_router.interrupt_pending()
+        if interrupt:
+            self.subshells.interrupt_all()
+            self.send_interrupt_signal()
+        self.subshells.parent.stop()
+        return True
+
     def start(self):
         "Start kernel threads and serve shell/control messages."
         setup_debug(_debug_flags)
         dbg("kernel starting...")
+        self._set_state(KernelState.STARTING)
         prev_hook = _install_thread_excepthook(self)
-        self.iopub_thread.start()
-        self.stdin_router.start()
-        self.subshells.start()
-        self.hb.start()
         prev_sigint = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, self.handle_sigint)
-        self.shutdown_event.clear()
-        self.shell_router = AsyncRouterThread(context=self.context, session=self.session,
-            bind_addr=self.connection.addr(self.connection.shell_port), handler=self.handle_shell_msg, log_label="shell")
-        self.control_router = AsyncRouterThread(context=self.context, session=self.session,
-            bind_addr=self.connection.addr(self.connection.control_port), handler=self.handle_control_msg, log_label="control")
-        self.shell_router.start()
-        self.control_router.start()
-        dbg("waiting for routers to be ready...")
-        self.shell_router.ready.wait()
-        self.control_router.ready.wait()
-        dbg("kernel ready")
-        try: self.subshells.parent.run_main()
+        try:
+            self.iopub_thread.start()
+            self.stdin_router.start()
+            self.subshells.start()
+            self.hb.start()
+            self.iopub_thread.wait_started()
+            self.stdin_router.wait_started()
+            self.hb.wait_started()
+            signal.signal(signal.SIGINT, self.handle_sigint)
+            self.shell_router = AsyncRouterThread(context=self.context, session=self.session,
+                bind_addr=self.connection.addr(self.connection.shell_port), handler=self.handle_shell_msg, log_label="shell")
+            self.control_router = AsyncRouterThread(context=self.context, session=self.session,
+                bind_addr=self.connection.addr(self.connection.control_port), handler=self.handle_control_msg, log_label="control")
+            self.shell_router.start()
+            self.control_router.start()
+            dbg("waiting for routers to be ready...")
+            self.shell_router.wait_started()
+            self.control_router.wait_started()
+            dbg("kernel ready")
+            self._set_state(KernelState.RUNNING)
+            self.subshells.parent.run_main()
         finally:
+            self.request_stop("kernel finalizer", interrupt=False, failed=sys.exc_info()[0] is not None)
             threading.excepthook = prev_hook
-            self.shutdown_event.set()
             if self.shell_router is not None: self.shell_router.stop()
             if self.control_router is not None: self.control_router.stop()
-            if self.shell_router is not None: self.shell_router.join(timeout=1)
-            if self.control_router is not None: self.control_router.join(timeout=1)
+            _join_or_log(self.shell_router, timeout=1)
+            _join_or_log(self.control_router, timeout=1)
             self.hb.stop()
-            self.hb.join(timeout=1)
+            _join_or_log(self.hb, timeout=1)
             self.subshells.stop_all()
             self.stdin_router.stop()
-            self.stdin_router.join(timeout=1)
+            _join_or_log(self.stdin_router, timeout=1)
             self.iopub_thread.stop()
-            self.iopub_thread.join(timeout=1)
+            _join_or_log(self.iopub_thread, timeout=1)
             signal.signal(signal.SIGINT, prev_sigint)
+            with self.state_lock:
+                if self.state != KernelState.FAILED: self.state = KernelState.STOPPED
+            self._terminate_process_group_last()
+
+    def _terminate_process_group_last(self):
+        "Terminate the kernel-owned process group as the last shutdown action."
+        if not self.terminate_process_group or os.name == "nt": return
+        try:
+            pid, pgid = os.getpid(), os.getpgrp()
+            if pgid != pid: return log.warning("kernel is not process-group leader; skipping process-group termination")
+        except OSError: return log.warning("could not inspect process group during shutdown", exc_info=True)
+        prev_term = signal.getsignal(signal.SIGTERM)
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(0.2)
+        except OSError: log.warning("process-group SIGTERM failed", exc_info=True)
+        finally: signal.signal(signal.SIGTERM, prev_term)
+        os.killpg(pgid, signal.SIGKILL)
 
     def handle_sigint(self, signum, frame):
         "Handle SIGINT by interrupting subshells and input waits."
@@ -641,13 +723,19 @@ class MiniKernel:
         "Handle control channel request message."
         msg_type = msg["header"]["msg_type"]
         trace_msg(log, "control recv", msg, enabled=_debug_flags.trace_msgs)
+        if msg_type != "shutdown_request" and (content := self._stopping_control_error(msg_type)):
+            self.queue_control_reply(msg_type.replace("_request", "_reply"), content, msg, idents)
+            return
         spec = self.control_specs.get(msg_type)
         if spec is not None:
             reply_type, fn = spec
             try:
                 extra = fn(msg) or {}
                 content = dict(status="ok") | extra
-            except Exception as exc: content = dict(status="error", evalue=str(exc))
+            except Exception as exc:
+                log.warning("control handler failed: %s", msg_type, exc_info=True)
+                content = dict(status="error", ename=type(exc).__name__, evalue=str(exc),
+                    traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
             self.queue_control_reply(reply_type, content, msg, idents)
             return
         handler = self.control_handlers.get(msg_type)
@@ -759,9 +847,7 @@ class MiniKernel:
 
     def send_interrupt_signal(self):
         "Send SIGINT to the current process or process group."
-        if os.name == "nt":
-            log.warning("Interrupt request not supported on Windows")
-            return
+        if os.name == "nt": return log.warning("Interrupt request not supported on Windows")
         pid = os.getpid()
         try: pgid = os.getpgid(pid)
         except OSError: pgid = None
@@ -773,27 +859,49 @@ class MiniKernel:
 
     def handle_interrupt(self, msg: dict, idents: list[bytes]|None):
         "Handle interrupt_request by signaling subshells."
+        if content := self._stopping_control_error("interrupt_request"):
+            self.queue_control_reply("interrupt_reply", content, msg, idents)
+            return
         self.send_interrupt_signal()
         self.subshells.interrupt_all()
         self.stdin_router.interrupt_pending()
         self.queue_control_reply("interrupt_reply", {"status": "ok"}, msg, idents)
 
+    def _stopping_control_error(self, msg_type:str)->dict|None:
+        with self.state_lock: state = self.state
+        if state not in {KernelState.STOPPING, KernelState.STOPPED, KernelState.FAILED}: return None
+        return dict(status="error", ename="KernelStopping", evalue=f"kernel is {state.value}; cannot handle {msg_type}", traceback=[])
+
+    def _commit_shutdown(self, requested_restart: bool)->tuple[dict, bool]:
+        "Record one shutdown/restart decision and say whether this request should start stopping."
+        with self.state_lock:
+            first = self.shutdown_restart is None
+            if first: self.shutdown_restart = requested_restart
+            reply = {"status": "ok", "restart": self.shutdown_restart}
+            start_stop = first and not self.stop_scope.closed and self.state not in {KernelState.STOPPED, KernelState.FAILED}
+            if start_stop: self.state = KernelState.STOPPING
+        return reply, start_stop
+
     def handle_shutdown(self, msg: dict, idents: list[bytes]|None, channel: str = "control"):
         "Handle shutdown_request and stop main loop."
         content = msg.get("content", {})
-        reply = {"status": "ok", "restart": bool(content.get("restart", False))}
+        reply, start_stop = self._commit_shutdown(bool(content.get("restart", False)))
         if channel == "shell":
             target = self.queue_shell_reply("shutdown_reply", reply, msg, idents)
-            if target is not None and self.shell_router is not None: self.shell_router.wait_for_sent(target, timeout=1.0)
+            router = self.shell_router
         else:
             target = self.queue_control_reply("shutdown_reply", reply, msg, idents)
-            if target is not None and self.control_router is not None: self.control_router.wait_for_sent(target, timeout=1.0)
-        self.shutdown_event.set()
-        self.subshells.parent.stop()
+            router = self.control_router
+
+        def _stop_after_reply():
+            if target is not None and router is not None: router.wait_for_sent(target, timeout=1.0)
+            self.request_stop("shutdown_request", interrupt=True)
+
+        if start_stop: threading.Thread(target=_stop_after_reply, daemon=True, name="shutdown-waiter").start()
 
 
 def run_kernel(connection_file:str):
     "Run kernel given a connection file path."
     signal.signal(signal.SIGINT, signal.default_int_handler)
-    kernel = MiniKernel(connection_file)
+    kernel = MiniKernel(connection_file, terminate_process_group=_isolate_process_group())
     kernel.start()

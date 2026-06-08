@@ -11,7 +11,7 @@ debug_init_args = dict( clientID="test-client", clientName="testClient", adapter
     columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 root = Path(__file__).resolve().parents[1]
 
-__all__ = ("default_timeout debug_init_args root KernelHarness build_env load_connection ensure_separate_process start_kernel "
+__all__ = ("default_timeout debug_init_args root KernelHarness build_env load_connection kernel_pid assert_pid_gone ensure_separate_process start_kernel "
     "start_kernel_async temp_env wait_for_msg iter_timeout parent_id wait_for_debug_event wait_for_stop collect_shell_replies "
     "collect_iopub_outputs wait_for_status iopub_msgs iopub_streams start_gateway_kernel gw_send_wait gw_wait_for_status").split()
 
@@ -56,14 +56,28 @@ def load_connection(km)->dict:
     with open(km.connection_file, encoding="utf-8") as f: return json.load(f)
 
 
+def kernel_pid(km)->int|None:
+    "Return the kernel process id when the provisioner exposes it."
+    provisioner = getattr(km, "provisioner", None)
+    pid = getattr(provisioner, "pid", None)
+    if pid is not None: return pid
+    proc = getattr(provisioner, "process", None)
+    return getattr(proc, "pid", None) if proc is not None else None
+
+
+def assert_pid_gone(pid:int, timeout:float = 5):
+    "Assert process `pid` no longer exists."
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try: os.kill(pid, 0)
+        except ProcessLookupError: return
+        time.sleep(0.05)
+    raise AssertionError(f"kernel pid still alive: {pid}")
+
+
 def ensure_separate_process(km: KernelManager):
     "Ensure separate process."
-    pid = None
-    provisioner = getattr(km, "provisioner", None)
-    if provisioner is not None: pid = getattr(provisioner, "pid", None)
-    if pid is None:
-        proc = getattr(provisioner, "process", None)
-        pid = getattr(proc, "pid", None) if proc is not None else None
+    pid = kernel_pid(km)
     if pid is None or pid == os.getpid(): raise RuntimeError("kernel must run in a separate process")
 
 

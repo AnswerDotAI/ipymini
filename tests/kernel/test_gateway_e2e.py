@@ -1,5 +1,5 @@
 "Comprehensive e2e test based on gateway notebook - tests all Solveit gateway functionality."
-import asyncio, functools, os, random, re, time, threading, traceback, textwrap
+import asyncio, functools, random, time, threading, traceback, textwrap
 import pytest
 from ast import literal_eval
 from asyncio import CancelledError, create_task
@@ -10,7 +10,6 @@ from queue import Empty
 import zmq.asyncio
 from fastcore.basics import patch, patch_to, listify, nested_idx
 from fastcore.meta import delegates
-from fastcore.test import test_eq as _test_eq
 from jupyter_client import KernelClient, AsyncKernelClient, AsyncKernelManager
 from jupyter_client.channels import AsyncZMQSocketChannel
 from jupyter_client.kernelspec import KernelSpec
@@ -89,18 +88,17 @@ class SolveitKernelManager(AsyncKernelManager):
 
 def _ses_getattr(self, nm):
     if nm.startswith('_'): raise AttributeError(nm)
-    def f(parent=None, header=None, metadata=None, **kwargs):
-        return self.msg(nm, kwargs, parent=parent, header=header, metadata=metadata)
+    def f(parent=None, header=None, metadata=None, **kwargs): return self.msg(nm, kwargs, parent=parent, header=header, metadata=metadata)
     return f
 
 @patch
 def jmsg(self: Session, cts, cts_typ, msg_id, msg_type="execute_request", user_expressions=None,
-         store_history=False, silent=False, allow_stdin=True, stop_on_error=True, subsh_id=None):
+    store_history=False, silent=False, allow_stdin=True, stop_on_error=True, subsh_id=None):
     hdr = self.msg_header(msg_type)
     hdr['msg_id'] = msg_id
     if subsh_id is not None: hdr["subshell_id"] = subsh_id
     content = {cts_typ: cts, 'silent': silent, 'store_history': store_history,
-               'allow_stdin': allow_stdin, 'stop_on_error': stop_on_error}
+        'allow_stdin': allow_stdin, 'stop_on_error': stop_on_error}
     if user_expressions is not None: content['user_expressions'] = user_expressions
     return self.msg(msg_type, content, header=hdr)
 
@@ -163,15 +161,14 @@ async def send_wait(self: KernelClient, cts, msg_id=None, cts_typ='code', timeou
 
 @patch
 async def exec(self: KernelClient, func: str, *args,
-               _user_expressions=None, _call=True, _timeout=10, _priority=False, **kw):
+    _user_expressions=None, _call=True, _timeout=10, _priority=False, **kw):
     "Execute `func(*args, **kw)` using `send_wait()`"
     args_str = ", ".join(repr(arg) for arg in args)
     kwargs_str = ", ".join(f"{k}={v!r}" for k, v in kw.items())
     if _call: params = '(' + args_str + (', ' if args and kw else '') + kwargs_str + ')'
     else: params = ''
     code = f'{func}{params}'
-    return await self.send_wait(code, user_expressions=_user_expressions, store_history=False,
-                                timeout=_timeout, priority=_priority)
+    return await self.send_wait(code, user_expressions=_user_expressions, store_history=False, timeout=_timeout, priority=_priority)
 
 class EvalException(Exception): pass
 
@@ -246,12 +243,10 @@ async def get_outs(self: KernelClient, code, timeout=5):
     return [output_from_msg(o) for o in retr_outs(jmsgs)]
 
 @patch
-def xpush(self: KernelClient, priority=False, **kwargs):
-    self.send(f'get_ipython().push({kwargs!r})', subsh_id=self.priority if priority else None)
+def xpush(self: KernelClient, priority=False, **kwargs): self.send(f'get_ipython().push({kwargs!r})', subsh_id=self.priority if priority else None)
 
 @patch
-async def ipy(self: KernelClient, meth, *args, **kwargs):
-    return await self.eval('get_ipython().' + meth, _priority=False, _timeout=5, *args, **kwargs)
+async def ipy(self: KernelClient, meth, *args, **kwargs): return await self.eval('get_ipython().' + meth, _priority=False, _timeout=5, *args, **kwargs)
 
 def _mk_ipy(meth):
     async def f(self, *args, **kwargs): return await self.ipy(meth, *args, **kwargs)
@@ -343,8 +338,7 @@ def test_gateway_run_all():
             for mid in msg_ids: kc._waiters.pop(mid, None)
 
             assert len(replies) == len(cells), f"Only got {len(replies)}/{len(cells)} replies"
-            for i, mid in enumerate(msg_ids):
-                assert replies[mid]['content']['status'] == 'ok', f"Cell {i} failed: {replies[mid]['content']}"
+            for i, mid in enumerate(msg_ids): assert replies[mid]['content']['status'] == 'ok', f"Cell {i} failed: {replies[mid]['content']}"
 
             # Collect iopub and verify all idles received
             await asyncio.sleep(0.5)  # let iopub messages arrive

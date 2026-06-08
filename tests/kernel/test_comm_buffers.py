@@ -1,13 +1,12 @@
 from ..kernel_utils import *
 
 
-def test_comm_buffers_from_kernel():
+def test_comm_buffer_roundtrips():
     with start_kernel() as (_, kc):
         code = (
             "from comm import create_comm\n"
             "c = create_comm(target_name='buf-test', buffers=[b'openbuf'])\n"
-            "c.send(data={'x': 1}, buffers=[b'msgbuf'])\n"
-        )
+            "c.send(data={'x': 1}, buffers=[b'msgbuf'])\n")
         _, reply, output_msgs = kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
         comm_msgs = iopub_msgs(output_msgs, "comm_msg")
@@ -19,9 +18,6 @@ def test_comm_buffers_from_kernel():
         open_buffers = comm_opens[-1].get("buffers") or []
         assert open_buffers and bytes(open_buffers[0]) == b"openbuf"
 
-
-def test_comm_buffers_to_kernel():
-    with start_kernel() as (_, kc):
         setup = (
             "from comm import get_comm_manager\n"
             "received = {}\n"
@@ -30,8 +26,7 @@ def test_comm_buffers_to_kernel():
             "    def _on_msg(m):\n"
             "        received['msg'] = [bytes(b) for b in (m.get('buffers') or [])]\n"
             "    comm.on_msg(_on_msg)\n"
-            "get_comm_manager().register_target('buf_target', _handler)\n"
-        )
+            "get_comm_manager().register_target('buf_target', _handler)\n")
         _, reply, _ = kc.exec_drain(setup, store_history=False)
         assert reply["content"]["status"] == "ok"
 
@@ -44,8 +39,7 @@ def test_comm_buffers_to_kernel():
             "deadline = time.monotonic() + 5\n"
             "while 'msg' not in received and time.monotonic() < deadline:\n"
             "    time.sleep(0.05)\n"
-            "print(received.get('open'), received.get('msg'))\n"
-        )
+            "print(received.get('open'), received.get('msg'))\n")
         _, reply, output_msgs = kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
         streams = "".join(m["content"]["text"] for m in iopub_streams(output_msgs))

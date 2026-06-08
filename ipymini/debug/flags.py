@@ -13,5 +13,4 @@ class DebugFlags:
     trace_msgs: bool = False
 
     @classmethod
-    def from_env(cls, prefix: str = "IPYMINI") -> "DebugFlags":
-        return cls(enabled=envbool(f"{prefix}_DEBUG"), trace_msgs=envbool(f"{prefix}_DEBUG_MSGS"))
+    def from_env(cls, prefix: str = "IPYMINI") -> "DebugFlags": return cls(enabled=envbool(f"{prefix}_DEBUG"), trace_msgs=envbool(f"{prefix}_DEBUG_MSGS"))

@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 import ipymini.shell.shell as _shell_mod

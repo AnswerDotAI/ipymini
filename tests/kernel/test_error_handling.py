@@ -1,10 +1,10 @@
 "Tests for error handling: never drop requests, always send busy/idle for execute."
-import asyncio, time
+import time
 from queue import Empty
 from ..kernel_utils import *
 
 
-def test_empty_subshell_id_routes_to_parent():
+def test_error_reply_status_features():
     "Empty string subshell_id should route to parent subshell (treat as None)."
     with start_kernel() as (_, kc):
         # Send execute with empty subshell_id - should work, not error
@@ -17,10 +17,6 @@ def test_empty_subshell_id_routes_to_parent():
         assert "busy" in states, "should have busy status"
         assert "idle" in states, "should have idle status"
 
-
-def test_unknown_subshell_id_sends_busy_idle():
-    "Unknown subshell_id should send error reply with busy/idle (not just reply)."
-    with start_kernel() as (_, kc):
         msg_id = kc.shell_send("execute_request", code="1+1", subshell_id="nonexistent-subshell-123")
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "error"
@@ -32,19 +28,11 @@ def test_unknown_subshell_id_sends_busy_idle():
         assert "busy" in states, f"missing busy status, got {statuses}"
         assert "idle" in states, f"missing idle status, got {statuses}"
 
-
-def test_unknown_subshell_non_execute_no_idle():
-    "Unknown subshell for non-execute request sends error reply (no busy/idle needed)."
-    with start_kernel() as (_, kc):
         msg_id = kc.shell_send("complete_request", code="pri", cursor_pos=3, subshell_id="bad-subshell")
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "error"
         assert reply["content"]["ename"] == "SubshellNotFound"
 
-
-def test_missing_code_field_sends_busy_idle():
-    "execute_request missing 'code' field should send error with busy/idle."
-    with start_kernel() as (_, kc):
         # Send execute_request without 'code' field
         msg_id = kc.shell_send("execute_request", content={})  # no code field
         reply = kc.shell_reply(msg_id)
@@ -58,20 +46,17 @@ def test_missing_code_field_sends_busy_idle():
         assert "busy" in states, f"missing busy, got {statuses}"
         assert "idle" in states, f"missing idle, got {statuses}"
 
-
-def test_missing_fields_non_execute():
-    "Non-execute request with missing fields sends error reply (no busy/idle needed)."
-    with start_kernel() as (_, kc):
         # complete_request requires 'code' and 'cursor_pos'
         msg_id = kc.shell_send("complete_request", content={})
         reply = kc.shell_reply(msg_id)
         assert reply["content"]["status"] == "error"
         assert reply["content"]["ename"] == "MissingField"
 
+        msg_id = kc.cmd.history_request()
+        reply = kc.shell_reply(msg_id)
+        assert reply["content"]["status"] == "error"
+        assert reply["content"].get("ename") == "MissingField"
 
-def test_execute_reply_always_has_idle():
-    "Normal execute_request must have busy and idle on iopub."
-    with start_kernel() as (_, kc):
         msg_id, reply, outputs = kc.exec_drain("x = 42")
         assert reply["content"]["status"] == "ok"
         statuses = [m for m in outputs if m["msg_type"] == "status"]
@@ -79,10 +64,6 @@ def test_execute_reply_always_has_idle():
         assert states[0] == "busy", "first status should be busy"
         assert states[-1] == "idle", "last status should be idle"
 
-
-def test_error_execute_has_busy_idle():
-    "execute_request that raises should still have busy/idle."
-    with start_kernel() as (_, kc):
         msg_id, reply, outputs = kc.exec_drain("1/0")
         assert reply["content"]["status"] == "error"
         statuses = [m for m in outputs if m["msg_type"] == "status"]
@@ -90,10 +71,6 @@ def test_error_execute_has_busy_idle():
         assert "busy" in states
         assert "idle" in states
 
-
-def test_abort_reply_has_busy_idle():
-    "Aborted execute_request should have busy/idle on IOPub."
-    with start_kernel() as (_, kc):
         # First execute raises, setting abort state
         fail_code = "import time; time.sleep(0.2); raise ValueError('boom')"
         msg_id_fail = kc.execute(fail_code)

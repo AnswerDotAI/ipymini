@@ -7,8 +7,8 @@ def setup_debug(flags: DebugFlags):
     "Initialize debug infrastructure: logging, faulthandler, SIGUSR1 handler."
     if not flags.enabled: return
     root = logging.getLogger()
-    if not root.handlers:
-        logging.basicConfig(level=logging.DEBUG, stream=sys.__stderr__, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    if not root.handlers: logging.basicConfig(level=logging.DEBUG, stream=sys.__stderr__, format=fmt)
     faulthandler.enable(file=sys.__stderr__)
     if hasattr(signal, "SIGUSR1"): faulthandler.register(signal.SIGUSR1, file=sys.__stderr__)
 
