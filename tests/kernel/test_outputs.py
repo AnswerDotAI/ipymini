@@ -8,6 +8,11 @@ def test_output_display_features():
         assert stream, "expected stream output"
         assert stream[-1]["content"]["text"].strip() == "hello"
 
+        _, reply, output_msgs = kc.exec_drain("import sys\nprint('line1\\nline2')\nsys.stderr.write('err1\\nerr2\\n')", store_history=False)
+        assert reply["content"]["status"] == "ok"
+        streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]
+        assert streams == [("stdout", "line1\nline2\n"), ("stderr", "err1\nerr2\n")]
+
         _, reply, output_msgs = kc.exec_drain("import sys; print('out1'); print('err1', file=sys.stderr); print('out2')", store_history=False)
         assert reply["content"]["status"] == "ok"
         streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(output_msgs)]

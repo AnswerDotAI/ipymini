@@ -40,7 +40,6 @@ class MiniStream:
 
     def _emit_live(self, text: str):
         self.buffer += text
-        if "\n" not in self.buffer: return
-        parts = self.buffer.split("\n")
-        for line in parts[:-1]: self.sink(self.name, line + "\n")
-        self.buffer = parts[-1]
+        if self.buffer.endswith("\n"):
+            self.sink(self.name, self.buffer)
+            self.buffer = ""

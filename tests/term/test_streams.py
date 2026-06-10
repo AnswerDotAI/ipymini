@@ -12,10 +12,11 @@ def test_ministream_behaviors():
     seen = []
     def sink(name: str, text: str): seen.append((name, text))
     stream = MiniStream("stdout", None, sink=sink)
-    stream.write("alpha\nbeta")
-    assert seen == [("stdout", "alpha\n")]
+    stream.write("alpha\nbeta\n")
+    assert seen == [("stdout", "alpha\nbeta\n")]
+    stream.write("gamma\ndelta")
     stream.flush()
-    assert seen == [("stdout", "alpha\n"), ("stdout", "beta")]
+    assert seen == [("stdout", "alpha\nbeta\n"), ("stdout", "gamma\ndelta")]
 
     events = []
     out = MiniStream("stdout", events)
