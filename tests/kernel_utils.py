@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from queue import Empty
 from jupyter_client import AsyncKernelClient, KernelClient, KernelManager
-from fastcore.basics import patch
+from fastcore.basics import nested_idx, patch
 from fastcore.meta import delegates
 
 default_timeout = 10
@@ -34,7 +34,7 @@ def build_env(extra_env: dict|None=None)->dict:
     return env
 
 
-def parent_id(msg: dict)->str|None: return msg.get("parent_header", {}).get("msg_id")
+def parent_id(msg: dict)->str|None: return nested_idx(msg, "parent_header", "msg_id") or None
 
 
 def iter_timeout(timeout:float|None=None, default:float = default_timeout):
@@ -190,7 +190,7 @@ def iopub_drain(self: KernelClient, msg_id:str, timeout:float = default_timeout)
         except Empty: continue
         if parent_id(msg) != msg_id: continue
         outputs.append(msg)
-        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle": break
+        if msg.get("msg_type") == "status" and nested_idx(msg, "content", "execution_state") == "idle": break
     return outputs
 
 
@@ -321,7 +321,7 @@ def exec_ok(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
 
 
 def wait_for_debug_event(kc, event_name:str, timeout:float|None=None)->dict:
-    pred = lambda m: m.get("msg_type") == "debug_event" and m.get("content", {}).get("event") == event_name
+    pred = lambda m: m.get("msg_type") == "debug_event" and nested_idx(m, "content", "event") == event_name
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, poll=0.5, err=f"debug_event {event_name} not received")
 
 
@@ -362,7 +362,7 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout:float|None=None)->dict:
         except Empty: continue
         if (mid := parent_id(msg)) not in outputs: continue
         outputs[mid].append(msg)
-        if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == "idle": idle.add(mid)
+        if msg.get("msg_type") == "status" and nested_idx(msg, "content", "execution_state") == "idle": idle.add(mid)
     if len(idle) != len(msg_ids):
         missing = msg_ids - idle
         raise AssertionError(f"timeout waiting for iopub idle: {sorted(missing)}")
@@ -370,7 +370,7 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout:float|None=None)->dict:
 
 
 def wait_for_status(kc, state:str, timeout:float|None=None)->dict:
-    pred = lambda m: m.get("msg_type") == "status" and m.get("content", {}).get("execution_state") == state
+    pred = lambda m: m.get("msg_type") == "status" and nested_idx(m, "content", "execution_state") == state
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
 
 
@@ -410,7 +410,7 @@ async def gw_wait_for_status(kc, state:str, timeout:float)->dict:
     async with asyncio.timeout(timeout):
         while True:
             msg = await kc.get_iopub_msg(timeout=0.2)
-            if msg.get("msg_type") == "status" and msg.get("content", {}).get("execution_state") == state: return msg
+            if msg.get("msg_type") == "status" and nested_idx(msg, "content", "execution_state") == state: return msg
 
 
 @asynccontextmanager

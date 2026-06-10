@@ -73,6 +73,20 @@ def test_subshell_basics():
         assert results[0]["content"]["data"].get("text/plain") == "10"
         assert results[0]["parent_header"].get("subshell_id") == subshell_id
 
+        _, reply, _ = _execute(kc, "from IPython import get_ipython as imported_get_ipython", store_history=False)
+        assert reply["content"]["status"] == "ok"
+
+        identity_code = (
+            "import builtins, IPython\n"
+            "from IPython.core import getipython as core_getipython\n"
+            "shell = get_ipython()\n"
+            "checks = dict(top=IPython.get_ipython() is shell, core=core_getipython.get_ipython() is shell,\n"
+            "    builtins=builtins.get_ipython() is shell, imported=imported_get_ipython() is shell)\n"
+            "assert all(checks.values()), checks\n")
+        for sid in (None, subshell_id):
+            _, reply, _ = _execute(kc, identity_code, subshell_id=sid, store_history=False)
+            assert reply["content"]["status"] == "ok", reply["content"]
+
         _, reply3, _ = _execute(kc, "a + 1")
         assert reply3["content"]["execution_count"] == 2
 

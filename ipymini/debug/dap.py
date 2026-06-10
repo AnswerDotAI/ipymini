@@ -2,12 +2,27 @@ import json, logging, os, queue, socket, sys, threading
 from typing import Callable
 
 import debugpy, zmq
-from IPython.core.getipython import get_ipython
-from microio import RequestRegistry
+from fastcore.basics import nested_idx
+from IPython.core import getipython as _getipython_mod
+from microio import RequestRegistry, ServiceThread
 
 from .cells import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
+from ipymini.zmqthread.polling import poll_in
 
 log = logging.getLogger("ipymini.debug")
+
+
+class DebugpyReaderThread(ServiceThread):
+    def __init__(self, client: "MiniDebugpyClient"):
+        super().__init__(name="debugpy-reader")
+        self.client = client
+
+    def run_service(self):
+        try: self.client._reader_loop(self)
+        except Exception as exc:
+            log.exception("debugpy reader thread failed")
+            self.client._fail_pending(exc)
+            raise
 
 
 class DebugpyMessageQueue:
@@ -71,7 +86,6 @@ class MiniDebugpyClient:
         self.next_seq = 1
         self.event_callback = event_callback
         self.pending = RequestRegistry()
-        self.stop = threading.Event()
         self.reader_thread = None
         self.initialized = threading.Event()
         self.outgoing = queue.Queue()
@@ -86,24 +100,17 @@ class MiniDebugpyClient:
 
     def _start_reader(self):
         if self.reader_thread and self.reader_thread.is_alive(): return
-        self.stop.clear()
-        self.reader_thread = threading.Thread(target=self._reader_loop_logged, daemon=True, name="debugpy-reader")
+        self.reader_thread = DebugpyReaderThread(self)
         self.reader_thread.start()
-
-    def _reader_loop_logged(self):
-        try: self._reader_loop()
-        except Exception as exc:
-            log.exception("debugpy reader thread failed")
-            self._fail_pending(exc)
+        self.reader_thread.wait_started(timeout=1)
 
     def close(self):
         "Stop reader thread and close debugpy socket."
-        self.stop.set()
         self.initialized.clear()
         if self.reader_thread:
-            self.reader_thread.join(timeout=1)
-            if self.reader_thread.is_alive(): log.error("debugpy reader did not stop")
-            else: self.reader_thread = None
+            self.reader_thread.stop("debugpy client closed")
+            self.reader_thread.join_or_log(timeout=1)
+            if not self.reader_thread.is_alive(): self.reader_thread = None
         self._fail_pending(RuntimeError("debugpy client closed"))
 
     def _handle_event(self, msg: dict):
@@ -116,27 +123,29 @@ class MiniDebugpyClient:
 
     def _fail_pending(self, exc: Exception): self.pending.fail_all(exc)
 
-    def _reader_loop(self):
+    def _reader_loop(self, service: DebugpyReaderThread):
         if self.endpoint is None: return
         debugpy.trace_this_thread(False)
         sock = self.context.socket(zmq.STREAM)
         sock.linger = 0
         sock.connect(self.endpoint)
         self.routing_id = sock.getsockopt(zmq.ROUTING_ID)
+        service.started()
         poller = zmq.Poller()
         poller.register(sock, zmq.POLLIN)
         try:
-            while not self.stop.is_set():
+            while not service.scope.closed:
                 self._drain_outgoing(sock)
-                events = dict(poller.poll(50))
-                if sock in events and events[sock] & zmq.POLLIN:
+                if poll_in(poller, sock, 50):
                     frames = sock.recv_multipart()
                     if len(frames) < 2: continue
                     data = frames[1]
                     if not data: continue
                     text = data.decode("utf-8", errors="replace")
                     self.message_queue.put_tcp_frame(text)
-        finally: sock.close(0)
+        finally:
+            self.routing_id = None
+            sock.close(0)
 
     def _drain_outgoing(self, sock: zmq.Socket):
         if self.routing_id is None: return
@@ -228,10 +237,10 @@ class Debugger:
 
     def _handle_event(self, msg: dict):
         if msg.get("event") == "stopped":
-            thread_id = msg.get("body", {}).get("threadId")
+            thread_id = nested_idx(msg, "body", "threadId")
             if isinstance(thread_id, int): self.stopped_threads.add(thread_id)
         elif msg.get("event") == "continued":
-            thread_id = msg.get("body", {}).get("threadId")
+            thread_id = nested_idx(msg, "body", "threadId")
             if isinstance(thread_id, int): self.stopped_threads.discard(thread_id)
         if self.event_callback: self.event_callback(msg)
         else: self.events.append(msg)
@@ -269,9 +278,9 @@ class Debugger:
         if command == "setBreakpoints":
             response = self.client.send_request(request)
             if response.get("success"):
-                src = request.get("arguments", {}).get("source", {}).get("path")
+                src = nested_idx(request, "arguments", "source", "path")
                 if src:
-                    bps = response.get("body", {}).get("breakpoints", [])
+                    bps = nested_idx(response, "body", "breakpoints") or []
                     self.breakpoint_list[src] = [{"line": bp["line"]} for bp in bps if isinstance(bp, dict) and "line" in bp]
             return response or {}, self.events
 
@@ -308,7 +317,7 @@ class Debugger:
         self.traced_threads.add(thread_id)
 
     def _remove_cleanup_transforms(self):
-        ip = get_ipython()
+        ip = _getipython_mod.get_ipython()
         if ip is None: return
         from IPython.core.inputtransformer2 import leading_empty_lines
 
@@ -319,7 +328,7 @@ class Debugger:
 
     def _restore_cleanup_transforms(self):
         if not self.removed_cleanup: return
-        ip = get_ipython()
+        ip = _getipython_mod.get_ipython()
         if ip is None: return
         cleanup_transforms = ip.input_transformer_manager.cleanup_transforms
         for index in sorted(self.removed_cleanup):
@@ -345,7 +354,7 @@ class Debugger:
 
     def _dump_cell(self, request: dict) -> dict:
         "Write debug cell to disk and return its path."
-        code = request.get("arguments", {}).get("code", "")
+        code = nested_idx(request, "arguments", "code") or ""
         file_name = debug_cell_filename(code)
         os.makedirs(os.path.dirname(file_name), exist_ok=True)
         with open(file_name, "w", encoding="utf-8") as f: f.write(code)
@@ -361,7 +370,7 @@ class Debugger:
 
     def _source(self, request: dict) -> dict:
         "Return source response."
-        source_path = request.get("arguments", {}).get("source", {}).get("path", "")
+        source_path = nested_idx(request, "arguments", "source", "path") or ""
         if source_path and os.path.isfile(source_path):
             with open(source_path, encoding="utf-8") as f: content = f.read()
             return self._ok(request, content=content)
@@ -369,7 +378,7 @@ class Debugger:
 
     def _inspect_variables(self, request: dict) -> dict:
         "Return a variables response from the user namespace."
-        ip = get_ipython()
+        ip = _getipython_mod.get_ipython()
         if ip is None: return self._fail(request, "no ipython", body={"variables": []})
         variables = []
         for name, value in ip.user_ns.items():
@@ -386,7 +395,7 @@ class Debugger:
             if var_name in {"special variables", "function variables"}: return self._ok(request, **self.empty_rich)
             return self._fail(request, "invalid variable name", body=self.empty_rich)
 
-        ip = get_ipython()
+        ip = _getipython_mod.get_ipython()
         if ip is None: return self._fail(request, "no ipython", body=self.empty_rich)
 
         if self.stopped_threads and args.get("frameId") is not None:
@@ -398,7 +407,7 @@ class Debugger:
                 reply = self.client.send_request(payload)
             except TimeoutError: return self._fail(request, "timeout", body=self.empty_rich)
             if reply.get("success"):
-                try: repr_data, repr_metadata = eval(reply.get("body", {}).get("result", ""), {}, {})
+                try: repr_data, repr_metadata = eval(nested_idx(reply, "body", "result") or "", {}, {})
                 except (SyntaxError, NameError, TypeError, ValueError): repr_data, repr_metadata = {}, {}
                 body = dict(data=repr_data or {}, metadata={k: v for k, v in (repr_metadata or {}).items() if k in (repr_data or {})})
                 return self._ok(request, **body)

@@ -1,4 +1,5 @@
 import asyncio, logging, sys, time, traceback
+from fastcore.basics import nested_idx
 from microio import LoopServiceThread
 import zmq, zmq.asyncio
 
@@ -42,8 +43,7 @@ class AsyncRouterThread(LoopServiceThread):
 
     def stop(self):
         first = super().stop("router stop")
-        self.outbox.suppress_late_puts()
-        self.outbox.put(None)
+        self.outbox.close()
         if self.loop is not None and self.sock is not None:
             try: self.loop.call_soon_threadsafe(self.sock.close, 0)
             except RuntimeError: pass
@@ -82,7 +82,6 @@ class AsyncRouterThread(LoopServiceThread):
     async def _drain_outbox(self, sock: zmq.asyncio.Socket):
         sent = 0
         for item in self.outbox.drain_nowait():
-            if item is None: return
             msg_type, content, parent, idents = item
             msg = self.session.msg(msg_type, content, parent=parent)
             frames = self.session.serialize(msg, ident=idents)
@@ -115,7 +114,7 @@ class AsyncRouterThread(LoopServiceThread):
             await self._send_handler_error(sock, msg, idents, exc)
 
     async def _send_handler_error(self, sock: zmq.asyncio.Socket, parent: dict, idents, exc: Exception):
-        msg_type = parent.get("header", {}).get("msg_type", "")
+        msg_type = nested_idx(parent, "header", "msg_type") or ""
         if not msg_type.endswith("_request"): return
         content = dict(status="error", ename=type(exc).__name__, evalue=str(exc),
             traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))

@@ -1,5 +1,5 @@
 import asyncio, json, logging, os, sys, traceback
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Callable
 
 # Ensure debugpy avoids sys.monitoring mode, which can stall kernel threads.
@@ -76,7 +76,7 @@ def _init_ipython_app(shell):
 
 class MiniShell:
     def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True):
+        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, async_cancel_scope=None):
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
 
@@ -91,7 +91,7 @@ class MiniShell:
         self.ipy.compile.get_code_name = _code_name
         self.request_input = request_input
         self.capture = IPythonCapture(self.ipy, request_input=request_input)
-        self.current_exec_task = None
+        self.async_cancel_scope = async_cancel_scope or (lambda: None)
 
         self.ipy.set_hook("show_in_pager", page.as_hook(self._show_in_pager), 99)
         self.ipy._last_traceback = None
@@ -148,14 +148,13 @@ class MiniShell:
             res = None
             coro = shell.run_cell_async(code, store_history=store_history, silent=silent,
                 transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
-            task = asyncio.create_task(coro)
-            self.current_exec_task = task
             _dbg("_run_cell: awaiting async task")
+            scope = self.async_cancel_scope()
             try:
-                try: res = await task
+                try:
+                    with (scope if scope is not None else nullcontext()): res = await coro
                 except asyncio.CancelledError as exc: raise KeyboardInterrupt() from exc
             finally:
-                self.current_exec_task = None
                 shell.events.trigger("post_execute")
                 if not silent: shell.events.trigger("post_run_cell", res)
             _dbg("_run_cell: async task done")
@@ -209,13 +208,6 @@ class MiniShell:
     def set_display_sender(self, sender: Callable[[dict], None] | None):
         "Set live display sender; None to buffer display events."
         self.capture.set_display_sender(sender)
-
-    def cancel_exec_task(self, loop: asyncio.AbstractEventLoop | None) -> bool:
-        "Cancel the currently running async execution task, if any."
-        task = self.current_exec_task
-        if task is None or task.done() or loop is None: return False
-        loop.call_soon_threadsafe(task.cancel)
-        return True
 
     def complete(self, code: str, cursor_pos: int | None = None) -> dict:
         "Return completion matches for `code` at `cursor_pos`."

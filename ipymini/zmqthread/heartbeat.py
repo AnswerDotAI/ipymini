@@ -1,6 +1,8 @@
 from microio import ServiceThread
 import zmq
 
+from .polling import poll_in
+
 
 class HeartbeatThread(ServiceThread):
     def __init__(self, context: zmq.Context, addr: str, poll_ms: int = 100):
@@ -21,8 +23,7 @@ class HeartbeatThread(ServiceThread):
             poller = zmq.Poller()
             poller.register(sock, zmq.POLLIN)
             while not self.scope.closed:
-                events = dict(poller.poll(self.poll_ms))
-                if sock in events and events[sock] & zmq.POLLIN:
+                if poll_in(poller, sock, self.poll_ms):
                     msg = sock.recv()
                     sock.send(msg)
         finally:

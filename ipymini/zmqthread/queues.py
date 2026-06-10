@@ -22,4 +22,12 @@ class ThreadBoundAsyncQueue:
 
     def drain_nowait(self) -> list: return self.receive.drain_nowait()
 
+    def close(self):
+        self.suppress_late_puts()
+        return self.send.close()
+
+    def fail(self, exc: BaseException):
+        self.suppress_late_puts()
+        return self.send.fail(exc)
+
     def suppress_late_puts(self): self.suppress_late = True

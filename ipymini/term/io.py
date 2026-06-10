@@ -2,6 +2,7 @@ import builtins, contextvars, getpass, sys, threading
 from contextlib import contextmanager
 from typing import Callable
 
+import IPython
 from IPython.core import getipython as _getipython_mod
 
 
@@ -59,6 +60,8 @@ class _ThreadLocalIO:
             current_get = _getipython_mod.get_ipython
             self.orig_get_ipython = current_get if current_get is not _thread_local_get_ipython else self.orig_get_ipython
             _getipython_mod.get_ipython = _thread_local_get_ipython
+        IPython.get_ipython = _thread_local_get_ipython
+        builtins.get_ipython = _thread_local_get_ipython
         self._install_thread_context()
         sys.stdout = _ThreadLocalStream("stdout", self.orig_stdout)
         sys.stderr = _ThreadLocalStream("stderr", self.orig_stderr)
@@ -94,9 +97,15 @@ class _ThreadLocalIO:
 
     def get(self, name: str): return self.vars[name].get()
 
+    def _bind_shell(self, shell):
+        if shell is None: return
+        for ns in (getattr(shell, "user_ns", None), getattr(shell, "user_global_ns", None)):
+            if isinstance(ns, dict): ns["get_ipython"] = _thread_local_get_ipython
+
     def push(self, shell, stdout, stderr, request_input: Callable[[str, bool], str], allow_stdin: bool)->dict:
         "Set per-thread IO bindings; returns the previous bindings."
         self.install()
+        self._bind_shell(shell)
         args = locals()
         prev = {name: self.vars[name].set(args[name]) for name in _chans}
         return prev

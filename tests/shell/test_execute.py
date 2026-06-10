@@ -135,8 +135,7 @@ def test_shell_features(minishell):
                 with minishell.execution_context(allow_stdin=False, silent=True, comm_sender=sender, parent=parent):
                     task = asyncio.create_task(minishell.execute(code, silent=True, store_history=False))
                     await asyncio.sleep(0.05)
-                    cancelled = minishell.cancel_exec_task(asyncio.get_running_loop())
-                    assert cancelled is True
+                    task.cancel()
                     res = await task
                     err = res.get("error") or {}
                     assert err.get("ename") in ("KeyboardInterrupt", "CancelledError", "Exception")

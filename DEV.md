@@ -103,7 +103,7 @@ After the initial manual release, bump the version before running `tools/release
 
 Core flow:
 - `MiniKernel` owns sockets, threads, and dispatch.
-- `microio` provides the small concurrency primitives used for service lifecycle state, thread readiness, thread-bound channels, and request waiters.
+- `microio` provides the small concurrency primitives used for service lifecycle state, task ownership, thread readiness, thread-bound channels, and request waiters.
 - `SubshellManager` manages the parent subshell (main thread) and optional child subshells (worker threads) sharing a user namespace.
 - `MiniShell` wraps IPython: execute, display, history, comms, debugger.
 
@@ -119,6 +119,7 @@ Key files:
 ### Object graph
 
 - `MiniKernel` creates a `SubshellManager` which creates `Subshell` instances.
+- Each `Subshell` runs a `microio.ActorCore` mailbox loop; the parent and child subshells share the same serialized message handling path, but use different runners.
 - Each `Subshell` holds a `MiniShell` (`self.shell`), which wraps an IPython `InteractiveShell` (`self.shell.ipy`).
 - `Subshell.__init__` receives the `MiniKernel` as `kernel` and stores it via `store_attr`.
 - `MiniKernel.shell` is a shortcut to `self.subshells.parent.shell` (the parent subshell's `MiniShell`).
@@ -136,13 +137,18 @@ Key files:
 
 - Shell/control ROUTER sockets run in background threads via `AsyncRouterThread`.
 - Kernel-owned service threads use `microio.ServiceThread` / `LoopServiceThread`, so startup failures are visible and join timeouts are checked.
+- `LoopServiceThread` runs its async service body inside a `microio.TaskGroup`; stopping the thread cancels owned async children as normal shutdown.
+- `MiniKernel` uses `microio.ServiceGroup` for kernel-owned thread start/wait/stop/join boilerplate.
+- The debugpy reader is also a `ServiceThread`, so pending debug requests are failed on reader crash/close and joins are checked.
 - The router thread is the only thread that touches its socket (thread‑safety).
 - Outbound replies are enqueued; the router loop drains the queue after inbound messages to avoid starvation.
 - Async sockets use `zmq.asyncio.Context.shadow(self.context)` to avoid multiple ZMQ contexts.
+- Synchronous ZMQ service loops share `zmqthread.polling.poll_in()` for the common poll-for-readable pattern.
 
 ### Interrupts
 
 - `interrupt_request` sends SIGINT and also attempts task cancellation for async cells.
+- Subshell execution owns a `microio.CancelScope` that is active only while awaiting an async IPython cell; child-subshell async cells are cancelled through that scope, while sync cells still use thread/SIGINT interruption.
 - Cancelled async tasks are translated into `KeyboardInterrupt` for parity.
 - Interrupts cancel pending stdin waits and emit IOPub error messages.
 - `shutdown_request` is idempotent once stopping begins; other control requests during stopping return `KernelStopping`.

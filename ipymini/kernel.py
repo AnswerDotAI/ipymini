@@ -3,14 +3,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from fastcore.basics import store_attr
-from microio import CloseScope
+from fastcore.basics import nested_idx, store_attr
+from microio import ActorCore, CancelScope, CloseScope, ServiceGroup
 import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
 from .comms import get_comm_manager
 from .debug import DebugFlags, setup_debug, trace_msg
-from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread, ThreadBoundAsyncQueue
+from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread
 
 log = logging.getLogger("ipymini.kernel")
 _debug_flags = DebugFlags.from_env("IPYMINI")
@@ -32,7 +32,6 @@ def _install_thread_excepthook(kernel: "MiniKernel"):
         kernel.request_stop(f"critical thread crashed: {name}", failed=True)
     threading.excepthook = hook
     return prev
-subshell_stop = object()
 subshell_abort_clear = object()
 
 
@@ -91,6 +90,13 @@ missing_defaults = dict(complete_request=dict(matches=[], cursor_start=0, cursor
     inspect_request=dict(found=False, data={}, metadata={}), history_request={"history": []}, is_complete_request={"indent": ""})
 
 
+def _reply_type(msg_type:str)->str: return msg_type.replace("_request", "_reply")
+
+def _error_content(ename:str, evalue:str = "", tb: list|None = None)->dict: return dict(status="error", ename=ename, evalue=evalue, traceback=tb or [])
+
+def _exc_content(exc: BaseException)->dict: return _error_content(type(exc).__name__, str(exc), traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
 def _raise_async_exception(thread_id:int, exc_type: type[BaseException])->bool:
     "Inject `exc_type` into a thread by id; returns success."
     try: import ctypes
@@ -122,15 +128,15 @@ class Subshell:
         self.thread = None if not run_in_thread else threading.Thread(target=self._run_loop, daemon=True, name=name)
         self.loop = None
         self.loop_ready = threading.Event()
-        self.inbox = ThreadBoundAsyncQueue()
+        self.actor = ActorCore(self._handle_actor_item)
         self.aborting = False
         self.abort_handle = None
-        self.async_lock = None
         self._shell = None
         self.shell_ready = threading.Event()
         self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
         self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self.executing = threading.Event()
+        self.exec_scope = None
         self.exec_state = ExecState.IDLE
         self.last_exec_state = None
         self.state_lock = threading.Lock()
@@ -149,7 +155,7 @@ class Subshell:
     def _init_shell(self):
         if self._shell is not None: return
         self._shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
-            zmq_context=self.kernel.context, user_ns=self.user_ns, use_singleton=self.use_singleton)
+            zmq_context=self.kernel.context, user_ns=self.user_ns, use_singleton=self.use_singleton, async_cancel_scope=lambda: self.exec_scope)
         self._shell.ipy.kernel = self.kernel
         self._shell.set_stream_sender(self._send_stream)
         self._shell.set_display_sender(self._send_display_event)
@@ -164,13 +170,12 @@ class Subshell:
         "Signal subshell loop to stop and wake it."
         if interrupt: self.interrupt()
         if not self.scope.close("subshell stop"): return False
-        self.inbox.suppress_late_puts()
-        self.inbox.put((subshell_stop, None))
+        self.actor.close()
         return True
 
     def join(self, timeout:float|None=None)->bool: return _join_or_log(self.thread, timeout=timeout)
 
-    def submit(self, msg: dict, idents: list[bytes]|None): self.inbox.put((msg, idents))
+    def submit(self, msg: dict, idents: list[bytes]|None): self.actor.submit((msg, idents))
 
     def _set_exec_state(self, state: ExecState):
         with self.state_lock: self.exec_state = state
@@ -183,13 +188,19 @@ class Subshell:
 
     def interrupt(self)->bool:
         "Raise KeyboardInterrupt in subshell thread if executing."
-        if self.thread is None: return False
         if self._get_exec_state() != ExecState.RUNNING: return False
         self._set_exec_state(ExecState.CANCELLING)
-        if self.shell.cancel_exec_task(self.loop): return True
+        if self.cancel_async_execution(): return True
+        if self.thread is None: return False
         thread_id = self.thread.ident
         if thread_id is None: return False
         return _raise_async_exception(thread_id, KeyboardInterrupt)
+
+    def cancel_async_execution(self)->bool:
+        "Cancel the current async cell execution, if there is one."
+        scope = self.exec_scope
+        if scope is None or not scope.active: return False
+        return scope.cancelled or scope.cancel("interrupt")
 
     def request_input(self, prompt:str, password: bool)->str:
         "Forward input_request through stdin router for this subshell."
@@ -228,7 +239,7 @@ class Subshell:
     def send_status(self, state:str, parent: dict|None): self.kernel.iopub.status(parent, execution_state=state)
 
     def send_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None):
-        parent_id = parent.get("header", {}).get("msg_id", "?")[:8]
+        parent_id = (nested_idx(parent, "header", "msg_id") or "?")[:8]
         dbg(f"REPLY {msg_type} id={parent_id}")
         self.kernel.queue_shell_reply(msg_type, content, parent, idents)
 
@@ -245,53 +256,48 @@ class Subshell:
                 runner.run(self._main())
         finally:
             self.loop = None
-            self.async_lock = None
             self.loop_ready.clear()
             asyncio.set_event_loop(None)
 
     async def _main(self):
         loop = asyncio.get_running_loop()
         self.loop = loop
-        self.inbox.bind(loop)
-        self.async_lock = asyncio.Lock()
-        self.loop_ready.set()
+        self.actor.bind(loop)
         self._init_shell()
-        await self._consume_queue()
-
-    async def _consume_queue(self):
+        self.loop_ready.set()
         dbg(f"SUBSHELL started id={self.subshell_id}")
-        while True:
-            msg, idents = await self.inbox.get()
-            if msg is subshell_stop:
-                dbg("SUBSHELL stopping")
-                return
-            if msg is subshell_abort_clear:
-                self._stop_aborting()
-                continue
-            if not msg: continue
-            msg_type = msg.get("header", {}).get("msg_type", "?")
-            msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
-            dbg(f"EXEC {msg_type} id={msg_id}")
-            dbg(f"LOCK_WAIT id={msg_id}")
-            async with self.async_lock:
-                dbg(f"LOCK_ACQ id={msg_id}")
-                try: await self._handle_message(msg, idents)
-                except Exception as exc: self._handle_internal_error(msg, idents, exc)
-            dbg(f"DONE {msg_type} id={msg_id}")
+        await self.actor.run(bind=False)
+
+    async def _handle_actor_item(self, item):
+        msg, idents = item
+        if msg is subshell_abort_clear:
+            self._stop_aborting()
+            return
+        if not msg: return
+        msg_type = nested_idx(msg, "header", "msg_type") or "?"
+        msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
+        dbg(f"EXEC {msg_type} id={msg_id}")
+        try: await self._handle_message(msg, idents)
+        except Exception as exc: self._handle_internal_error(msg, idents, exc)
+        dbg(f"DONE {msg_type} id={msg_id}")
 
     def _handle_internal_error(self, msg: dict, idents: list[bytes]|None, exc: Exception):
-        msg_type = msg.get("header", {}).get("msg_type", "")
+        msg_type = nested_idx(msg, "header", "msg_type") or ""
         log.warning("Internal error in %s handler", msg_type, exc_info=exc)
+        self._send_error_reply(msg_type, _exc_content(exc), msg, idents)
+
+    def _execute_reply_defaults(self, execution_count: int | None = None)->dict:
+        return dict(execution_count=execution_count if execution_count is not None else self.shell.ipy.execution_count, user_expressions={}, payload=[])
+
+    def _send_error_reply(self, msg_type:str, error:dict, msg: dict, idents: list[bytes]|None):
         if not msg_type.endswith("_request"): return
-        reply_type = msg_type.replace("_request", "_reply")
-        tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
-        reply = dict(status="error", ename=type(exc).__name__, evalue=str(exc), traceback=tb)
+        reply = dict(error)
         if msg_type == "execute_request":
-            reply |= dict(execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
+            reply |= self._execute_reply_defaults()
             self.kernel.send_status("busy", msg)
-            self.kernel.iopub.error(msg, ename=type(exc).__name__, evalue=str(exc), traceback=tb)
+            self.kernel.iopub.error(msg, ename=error["ename"], evalue=error["evalue"], traceback=error.get("traceback", []))
         else: reply |= missing_defaults.get(msg_type, {})
-        self.send_reply(reply_type, reply, msg, idents)
+        self.send_reply(_reply_type(msg_type), reply, msg, idents)
         if msg_type == "execute_request": self.kernel.send_status("idle", msg)
 
     async def _handle_message(self, msg: dict, idents: list[bytes]|None):
@@ -323,21 +329,13 @@ class Subshell:
         return [key for key in required if key not in content] if required else []
 
     def _send_missing_fields_reply(self, msg_type:str, missing: list[str], msg: dict, idents: list[bytes]|None):
-        reply_type = msg_type.replace("_request", "_reply")
         evalue = f"missing required fields: {', '.join(missing)}"
-        reply = dict(status="error", ename="MissingField", evalue=evalue, traceback=[])
-        if msg_type == "execute_request":
-            reply |= dict(execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
-            self.kernel.send_status("busy", msg)
-            self.kernel.iopub.error(msg, ename="MissingField", evalue=evalue, traceback=[])
-        else: reply |= missing_defaults.get(msg_type, {})
-        self.send_reply(reply_type, reply, msg, idents)
-        if msg_type == "execute_request": self.kernel.send_status("idle", msg)
+        self._send_error_reply(msg_type, _error_content("MissingField", evalue), msg, idents)
 
     def _send_abort_reply(self, msg: dict, idents: list[bytes]|None):
         self.kernel.send_status("busy", msg)
         self._set_last_exec_state(ExecState.ABORTED)
-        reply_content = dict(status="aborted", execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
+        reply_content = dict(status="aborted") | self._execute_reply_defaults()
         self.send_reply("execute_reply", reply_content, msg, idents)
         self.kernel.send_status("idle", msg)
 
@@ -359,27 +357,19 @@ class Subshell:
         msg_type = msg["header"]["msg_type"]
         handler = self.shell_handlers.get(msg_type)
         if handler is None:
-            self.send_reply(msg_type.replace("_request", "_reply"), {}, msg, idents)
+            self.send_reply(_reply_type(msg_type), {}, msg, idents)
             return
         handler(msg, idents)
 
     def _abort_pending_executes(self, append_abort_clear: bool = False):
-        drained = self.inbox.drain_nowait()
-        if append_abort_clear: self.inbox.put((subshell_abort_clear, None))
+        drained = self.actor.drain_nowait()
+        if append_abort_clear: self.actor.submit((subshell_abort_clear, None))
         for msg, idents in drained:
-            if msg is subshell_stop:
-                self.inbox.put((msg, idents))
-                break
             if msg is subshell_abort_clear:
-                self.inbox.put((msg, idents))
+                self.actor.submit((msg, idents))
                 continue
-            msg_type = msg.get("header", {}).get("msg_type")
-            if msg_type == "execute_request":
-                self.kernel.send_status("busy", msg)
-                self._set_last_exec_state(ExecState.ABORTED)
-                reply_content = dict(status="aborted", execution_count=self.shell.ipy.execution_count, user_expressions={}, payload=[])
-                self.send_reply("execute_reply", reply_content, msg, idents)
-                self.kernel.send_status("idle", msg)
+            msg_type = nested_idx(msg, "header", "msg_type") or None
+            if msg_type == "execute_request": self._send_abort_reply(msg, idents)
             elif msg_type: self._dispatch_shell_non_execute(msg, idents)
 
     def _handle_kernel_info(self, msg: dict, idents: list[bytes]|None):
@@ -393,7 +383,7 @@ class Subshell:
         self.send_reply("connect_reply", content, msg, idents)
 
     async def _handle_execute(self, msg: dict, idents: list[bytes]|None):
-        msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
+        msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
         content = msg.get("content", {})
         code = content.get("code", "")
         silent = bool(content.get("silent", False))
@@ -421,10 +411,13 @@ class Subshell:
                 loop = asyncio.get_running_loop()
                 timeout_handle = loop.call_later(2.0, lambda: log.warning("execute still running msg_id=%s", msg_id))
             try:
+                scope = CancelScope()
+                self.exec_scope = scope
                 with self.shell.execution_context(allow_stdin=allow_stdin, silent=silent, comm_sender=iopub.send, parent=msg):
                     result = await self.shell.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             finally:
+                if self.exec_scope is scope: self.exec_scope = None
                 if timeout_handle: timeout_handle.cancel()
             dbg(f"BRIDGE_DONE id={msg_id}")
 
@@ -451,11 +444,10 @@ class Subshell:
                 self._start_aborting()
         except KeyboardInterrupt as exc:
             terminal_state = ExecState.ABORTED
-            error = dict(ename=type(exc).__name__, evalue=str(exc), traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
-            if not sent_error: iopub.error(msg, content=error)
+            error = _exc_content(exc)
+            if not sent_error: iopub.error(msg, ename=error["ename"], evalue=error["evalue"], traceback=error.get("traceback", []))
             if not sent_reply:
-                reply = dict(status="error", execution_count=exec_count or self.shell.ipy.execution_count, user_expressions={}, payload=[])
-                reply.update(error)
+                reply = dict(error) | self._execute_reply_defaults(exec_count)
                 self.send_reply("execute_reply", reply, msg, idents)
                 if stop_on_error:
                     self._abort_pending_executes(append_abort_clear=self.kernel.stop_on_error_timeout <= 0)
@@ -467,7 +459,7 @@ class Subshell:
             self._set_exec_state(ExecState.IDLE)
 
     def _shell_handler(self, msg: dict, idents: list[bytes]|None):
-        msg_type = msg.get("header", {}).get("msg_type")
+        msg_type = nested_idx(msg, "header", "msg_type") or None
         spec = shell_specs.get(msg_type)
         if spec is None: return
         reply_type, fields, method = spec
@@ -539,8 +531,7 @@ class SubshellManager:
         "Stop and remove a subshell by id."
         with self.lock: subshell = self.subs[subshell_id]
         subshell.stop(interrupt=True)
-        if not subshell.join(timeout=2):
-            raise RuntimeError(f"subshell {subshell_id} did not stop")
+        if not subshell.join(timeout=2): raise RuntimeError(f"subshell {subshell_id} did not stop")
         with self.lock:
             if self.subs.get(subshell_id) is subshell: self.subs.pop(subshell_id, None)
 
@@ -656,40 +647,25 @@ class MiniKernel:
         prev_hook = _install_thread_excepthook(self)
         prev_sigint = signal.getsignal(signal.SIGINT)
         try:
-            self.iopub_thread.start()
-            self.stdin_router.start()
             self.subshells.start()
-            self.hb.start()
-            self.iopub_thread.wait_started()
-            self.stdin_router.wait_started()
-            self.hb.wait_started()
+            ServiceGroup(self.iopub_thread, self.stdin_router, self.hb).start().wait_started()
             signal.signal(signal.SIGINT, self.handle_sigint)
             self.shell_router = AsyncRouterThread(context=self.context, session=self.session,
                 bind_addr=self.connection.addr(self.connection.shell_port), handler=self.handle_shell_msg, log_label="shell")
             self.control_router = AsyncRouterThread(context=self.context, session=self.session,
                 bind_addr=self.connection.addr(self.connection.control_port), handler=self.handle_control_msg, log_label="control")
-            self.shell_router.start()
-            self.control_router.start()
             dbg("waiting for routers to be ready...")
-            self.shell_router.wait_started()
-            self.control_router.wait_started()
+            ServiceGroup(self.shell_router, self.control_router).start().wait_started()
             dbg("kernel ready")
             self._set_state(KernelState.RUNNING)
             self.subshells.parent.run_main()
         finally:
             self.request_stop("kernel finalizer", interrupt=False, failed=sys.exc_info()[0] is not None)
             threading.excepthook = prev_hook
-            if self.shell_router is not None: self.shell_router.stop()
-            if self.control_router is not None: self.control_router.stop()
-            _join_or_log(self.shell_router, timeout=1)
-            _join_or_log(self.control_router, timeout=1)
-            self.hb.stop()
-            _join_or_log(self.hb, timeout=1)
+            ServiceGroup(self.shell_router, self.control_router).stop_join(timeout=1)
+            ServiceGroup(self.hb).stop_join(timeout=1)
             self.subshells.stop_all()
-            self.stdin_router.stop()
-            _join_or_log(self.stdin_router, timeout=1)
-            self.iopub_thread.stop()
-            _join_or_log(self.iopub_thread, timeout=1)
+            ServiceGroup(self.stdin_router, self.iopub_thread).stop_join(timeout=1)
             signal.signal(signal.SIGINT, prev_sigint)
             with self.state_lock:
                 if self.state != KernelState.FAILED: self.state = KernelState.STOPPED
@@ -724,32 +700,30 @@ class MiniKernel:
         msg_type = msg["header"]["msg_type"]
         trace_msg(log, "control recv", msg, enabled=_debug_flags.trace_msgs)
         if msg_type != "shutdown_request" and (content := self._stopping_control_error(msg_type)):
-            self.queue_control_reply(msg_type.replace("_request", "_reply"), content, msg, idents)
-            return
+            return self._queue_control_result(msg_type, content, msg, idents)
         spec = self.control_specs.get(msg_type)
-        if spec is not None:
-            reply_type, fn = spec
-            try:
-                extra = fn(msg) or {}
-                content = dict(status="ok") | extra
-            except Exception as exc:
-                log.warning("control handler failed: %s", msg_type, exc_info=True)
-                content = dict(status="error", ename=type(exc).__name__, evalue=str(exc),
-                    traceback=traceback.format_exception(type(exc), exc, exc.__traceback__))
-            self.queue_control_reply(reply_type, content, msg, idents)
-            return
+        if spec is not None: return self._dispatch_control_spec(msg_type, spec, msg, idents)
         handler = self.control_handlers.get(msg_type)
-        if handler is None:
-            self.queue_control_reply(msg_type.replace("_request", "_reply"), {}, msg, idents)
-            return
+        if handler is None: return self._queue_control_result(msg_type, {}, msg, idents)
         handler(msg, idents)
+
+    def _queue_control_result(self, msg_type:str, content: dict, msg: dict, idents: list[bytes]|None):
+        self.queue_control_reply(_reply_type(msg_type), content, msg, idents)
+
+    def _dispatch_control_spec(self, msg_type:str, spec, msg: dict, idents: list[bytes]|None):
+        reply_type, fn = spec
+        try: content = dict(status="ok") | (fn(msg) or {})
+        except Exception as exc:
+            log.warning("control handler failed: %s", msg_type, exc_info=True)
+            content = _exc_content(exc)
+        self.queue_control_reply(reply_type, content, msg, idents)
 
     def handle_shell_msg(self, msg: dict, idents: list[bytes]|None):
         "Handle shell request message and dispatch to subshells."
-        msg_type = msg.get("header", {}).get("msg_type", "?")
-        msg_id = msg.get("header", {}).get("msg_id", "?")[:8]
+        msg_type = nested_idx(msg, "header", "msg_type") or "?"
+        msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
         trace_msg(log, "shell recv", msg, enabled=_debug_flags.trace_msgs)
-        subshell_id = msg.get("header", {}).get("subshell_id") or None  # treat "" as None
+        subshell_id = nested_idx(msg, "header", "subshell_id") or None  # treat "" as None
         subshell = self.subshells.get(subshell_id)
         if subshell is None:
             dbg(f"DISPATCH {msg_type} id={msg_id} -> NO SUBSHELL")
@@ -802,19 +776,19 @@ class MiniKernel:
 
     def send_subshell_error(self, msg: dict, idents: list[bytes]|None):
         "Send SubshellNotFound error reply for unknown subshell. Always sends busy/idle for execute_request."
-        msg_type = msg.get("header", {}).get("msg_type", "")
-        subshell_id = msg.get("header", {}).get("subshell_id")
+        msg_type = nested_idx(msg, "header", "msg_type") or ""
+        subshell_id = nested_idx(msg, "header", "subshell_id")
         if not msg_type.endswith("_request"): return
-        content = dict(status="error", ename="SubshellNotFound", evalue=f"Unknown subshell_id {subshell_id!r}", traceback=[])
+        content = _error_content("SubshellNotFound", f"Unknown subshell_id {subshell_id!r}")
         if msg_type == "execute_request":
             content.update(dict(execution_count=0, user_expressions={}, payload=[]))
             self.send_status("busy", msg)
             self.iopub.error(msg, ename="SubshellNotFound", evalue=content["evalue"], traceback=[])
-        self.queue_shell_reply(msg_type.replace("_request", "_reply"), content, msg, idents)
+        self.queue_shell_reply(_reply_type(msg_type), content, msg, idents)
         if msg_type == "execute_request": self.send_status("idle", msg)
 
     def _delete_subshell(self, msg: dict)->dict:
-        subshell_id = msg.get("content", {}).get("subshell_id")
+        subshell_id = nested_idx(msg, "content", "subshell_id")
         if not isinstance(subshell_id, str): raise ValueError("subshell_id required")
         self.subshells.delete(subshell_id)
         return {}
