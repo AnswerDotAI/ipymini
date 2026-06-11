@@ -24,7 +24,7 @@ def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout:float)->dict|N
 
 
 def test_router_handover_same_identity():
-    with start_kernel(ready_timeout=2) as (km, kc):
+    with start_kernel() as (km, kc):
         kc.stop_channels()
         ctx = zmq.Context()
         sock1 = ctx.socket(zmq.DEALER)

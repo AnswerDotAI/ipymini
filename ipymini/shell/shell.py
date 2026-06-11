@@ -1,4 +1,4 @@
-import asyncio, json, logging, os, sys, traceback
+import asyncio, json, logging, os, sys, threading, traceback
 from contextlib import contextmanager, nullcontext
 from typing import Callable
 
@@ -29,6 +29,7 @@ def _dbg(*args):
 experimental_completions_key = "_jupyter_types_experimental"
 log = logging.getLogger("ipymini.startup")
 startup_done = False
+startup_lock = threading.Lock()
 
 
 def _maybe_json(value):
@@ -61,22 +62,24 @@ class _MiniShellApp(BaseIPythonApplication, InteractiveShellApp):
 
 def _init_ipython_app(shell):
     global startup_done
-    if startup_done: return
-    app = _MiniShellApp(shell)
-    app.init_profile_dir()
-    app.init_config_files()
-    app.load_config_file()
-    if shell is not None: shell.update_config(app.config)
-    app.init_path()
-    app.init_shell()
-    app.init_extensions()
-    app.init_code()
-    startup_done = True
+    with startup_lock:
+        if startup_done: return
+        app = _MiniShellApp(shell)
+        app.init_profile_dir()
+        app.init_config_files()
+        app.load_config_file()
+        if shell is not None: shell.update_config(app.config)
+        app.init_path()
+        app.init_shell()
+        app.init_extensions()
+        app.init_code()
+        startup_done = True
 
 
 class MiniShell:
     def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, async_cancel_scope=None):
+        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, async_cancel_scope=None,
+        sync_execution_context=None):
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
 
@@ -92,6 +95,7 @@ class MiniShell:
         self.request_input = request_input
         self.capture = IPythonCapture(self.ipy, request_input=request_input)
         self.async_cancel_scope = async_cancel_scope or (lambda: None)
+        self.sync_execution_context = sync_execution_context or nullcontext
 
         self.ipy.set_hook("show_in_pager", page.as_hook(self._show_in_pager), 99)
         self.ipy._last_traceback = None
@@ -153,13 +157,14 @@ class MiniShell:
             try:
                 try:
                     with (scope if scope is not None else nullcontext()): res = await coro
+                    if scope is not None and scope.cancelled_caught: raise KeyboardInterrupt
                 except asyncio.CancelledError as exc: raise KeyboardInterrupt() from exc
             finally:
                 shell.events.trigger("post_execute")
                 if not silent: shell.events.trigger("post_run_cell", res)
             _dbg("_run_cell: async task done")
             return res
-        return shell.run_cell(code, store_history=store_history, silent=silent)
+        with self.sync_execution_context(): return shell.run_cell(code, store_history=store_history, silent=silent)
 
     def _exc_to_error(self, exc: BaseException) -> dict:
         tb = traceback.format_exception(type(exc), exc, exc.__traceback__)

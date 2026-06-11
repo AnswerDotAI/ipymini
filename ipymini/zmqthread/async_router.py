@@ -80,8 +80,7 @@ class AsyncRouterThread(LoopServiceThread):
                 if not self.scope.closed: log.exception("%s router socket close failed", self.log_label)
 
     async def _drain_outbox(self, sock: zmq.asyncio.Socket):
-        sent = 0
-        for item in self.outbox.drain_nowait():
+        for item in self.outbox.drain_nowait(max_items=self.max_send_batch):
             msg_type, content, parent, idents = item
             msg = self.session.msg(msg_type, content, parent=parent)
             frames = self.session.serialize(msg, ident=idents)
@@ -89,8 +88,6 @@ class AsyncRouterThread(LoopServiceThread):
                 fut = sock.send_multipart(frames)
                 if asyncio.isfuture(fut): await fut
                 self.sent += 1
-                sent += 1
-                if sent >= self.max_send_batch: return
             except Exception as exc:
                 self.send_errors += 1
                 log.error("%s send error: %s", self.log_label, exc, exc_info=exc)

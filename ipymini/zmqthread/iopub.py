@@ -52,7 +52,6 @@ class IOPubThread(ServiceThread):
                 item = self._get_next()
                 if item is None: continue
                 msg_type, content, parent, metadata, ident, buffers = item
-                msg = self.session.msg(msg_type, content, parent=parent)
                 try:
                     self.session.send(sock, msg_type, content, parent=parent, metadata=metadata, ident=ident, buffers=buffers)
                     self.sent += 1

@@ -20,7 +20,7 @@ class ThreadBoundAsyncQueue:
 
     async def get(self): return await self.receive.receive()
 
-    def drain_nowait(self) -> list: return self.receive.drain_nowait()
+    def drain_nowait(self, max_items: int | None = None) -> list: return self.receive.drain_nowait(max_items=max_items)
 
     def close(self):
         self.suppress_late_puts()

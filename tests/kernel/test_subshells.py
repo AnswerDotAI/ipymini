@@ -284,12 +284,17 @@ def test_subshell_stop_on_error_isolated():
 def test_delete_busy_subshell_interrupts_before_removing():
     with start_kernel() as (_, kc):
         subshell_id = _create_subshell(kc)
-        msg_id = kc.cmd.execute_request(code="while True: pass", subshell_id=subshell_id)
+        msg_id = kc.cmd.execute_request(code="try:\n    while True: pass\nfinally:\n    import time; time.sleep(0.2)", subshell_id=subshell_id)
         wait_for_status(kc, "busy")
-        reply = kc.ctl.delete_subshell(subshell_id=subshell_id, timeout=default_timeout)
+        delete_msg = kc.session.msg("delete_subshell_request", {"subshell_id": subshell_id})
+        kc.control_channel.send(delete_msg)
+        time.sleep(0.12)
+        late_id = kc.cmd.execute_request(code="1+1", subshell_id=subshell_id)
+        reply = kc.control_reply(delete_msg["header"]["msg_id"], timeout=default_timeout)
         assert reply["content"]["status"] == "ok"
-        exec_reply = kc.shell_reply(msg_id, timeout=default_timeout)
-        assert exec_reply["content"]["status"] == "error"
+        replies = collect_shell_replies(kc, {msg_id, late_id})
+        assert replies[msg_id]["content"]["status"] == "error"
+        assert replies[late_id]["content"]["status"] == "error"
         list_reply = kc.ctl.list_subshell()
         assert subshell_id not in list_reply["content"]["subshell_id"]
 

@@ -132,6 +132,7 @@ Key files:
 - Each subshell has a persistent asyncio loop; code runs while the loop is running, so `asyncio.create_task(...)` works in sync cells.
 - Output routing uses contextvars to associate streams/displays with the current parent message (works across tasks and user-launched threads).
 - On POSIX, kernel startup isolates the kernel into its own process group; shutdown terminates that group as the final step. ipymini does not try to gracefully cancel arbitrary user-created threads/processes individually; the guarantee is that kernel shutdown reaps the kernel process and its process group. Windows currently skips this process-group teardown.
+- On POSIX, `SIGUSR1` dumps all Python thread stacks via `faulthandler` for stuck-kernel diagnostics.
 
 ### Router threads (shell/control)
 

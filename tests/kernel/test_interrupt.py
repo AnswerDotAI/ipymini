@@ -1,4 +1,4 @@
-import asyncio
+import asyncio, os, signal, pytest
 from queue import Empty
 from jupyter_client import AsyncKernelClient
 from ..kernel_utils import *
@@ -21,7 +21,17 @@ def _assert_interrupt(kc, msg_id:str, timeout:float = 2):
     return reply
 
 
+@pytest.mark.slow
 def test_interrupt_request_features():
+    with start_kernel() as (km, kc):
+        for _ in range(2):
+            msg_id = kc.execute("import asyncio; await asyncio.sleep(5)")
+            wait_for_msg(kc.get_iopub_msg, lambda m: parent_id(m) == msg_id and m.get("msg_type") == "status"
+                and m["content"]["execution_state"] == "busy", timeout=1, poll=0.05)
+            os.kill(kernel_pid(km), signal.SIGINT)
+            _assert_interrupt(kc, msg_id, timeout=1.5)
+            kc.exec_ok("41+1", timeout=1)
+
     with start_kernel() as (km, kc):
         for use_control_channel in [False, True]:
             msg_id = kc.execute("import time; time.sleep(1)")

@@ -1,5 +1,5 @@
 "Tests for error handling: never drop requests, always send busy/idle for execute."
-import time
+import time, pytest
 from queue import Empty
 from ..kernel_utils import *
 
@@ -187,9 +187,18 @@ def test_iopub_idle_arrives_before_next_request_starts():
         for msg_id in msg_ids: assert msg_id in idle_indices, f"no idle found for {msg_id}"
 
 
+@pytest.mark.slow
 def test_rapid_fire_200_executes():
     "Fire 200 execute_requests as fast as possible, verify order, idles, and outputs."
     with start_kernel() as (_, kc):
+        sleeper = kc.execute("import time; time.sleep(0.8)")
+        wait_for_status(kc, "busy")
+        burst_ids = {kc.shell_send("is_complete_request", code="1+1") for _ in range(130)}
+        replies = collect_shell_replies(kc, burst_ids | {sleeper}, timeout=20)
+        burst_replies = {msg_id: reply for msg_id, reply in replies.items() if msg_id in burst_ids}
+        assert all(reply["msg_type"] == "is_complete_reply" for reply in burst_replies.values())
+        assert replies[sleeper]["content"]["status"] == "ok"
+
         n = 200
         # Send all requests without waiting
         msg_ids = [kc.execute(f"1+{i}") for i in range(n)]

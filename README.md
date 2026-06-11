@@ -21,7 +21,7 @@ This was almost entirely implemented by AI, and no human currently fully underst
 
 ## Requirements
 
-- Python 3.11+ recommended (we test with 3.12)
+- Python 3.11+
 - `jupyter_client`, `jupyter_core`, `ipython`, `pyzmq`
 
 If you need system ZMQ libs on macOS:
@@ -113,6 +113,11 @@ km.start_kernel(env={"MY_FLAG": "1"}, cwd="/path/to/workdir")
 
 Optional env flags:
 - `IPYMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
+
+On POSIX, ipymini isolates the kernel into its own process group and terminates that group as the
+last shutdown step, so user-created child processes are cleaned up with the kernel. Windows does not
+provide this process-group cleanup guarantee; after normal cleanup the kernel process exits with
+`os._exit()`.
 
 ---
 

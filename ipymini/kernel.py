@@ -1,4 +1,4 @@
-import asyncio, contextvars, json, logging, os, signal, sys, threading, traceback, time, uuid
+import asyncio, contextvars, faulthandler, json, logging, os, signal, sys, threading, traceback, time, uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -114,7 +114,7 @@ def _env_float(name:str, default:float)->float:
     raw = os.environ.get(name)
     if raw is None: return default
     try: return float(raw)
-    except ValueError: return default
+    except ValueError: return log.warning("invalid %s=%r; using %s", name, raw, default) or default
 
 class Subshell:
     def __init__(self, kernel: "MiniKernel", subshell_id:str|None, user_ns: dict,
@@ -137,6 +137,7 @@ class Subshell:
         self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self.executing = threading.Event()
         self.exec_scope = None
+        self.sync_executing = threading.Event()
         self.exec_state = ExecState.IDLE
         self.last_exec_state = None
         self.state_lock = threading.Lock()
@@ -155,7 +156,8 @@ class Subshell:
     def _init_shell(self):
         if self._shell is not None: return
         self._shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
-            zmq_context=self.kernel.context, user_ns=self.user_ns, use_singleton=self.use_singleton, async_cancel_scope=lambda: self.exec_scope)
+            zmq_context=self.kernel.context, user_ns=self.user_ns, use_singleton=self.use_singleton,
+            async_cancel_scope=self._async_cancel_scope, sync_execution_context=self._sync_execution_context)
         self._shell.ipy.kernel = self.kernel
         self._shell.set_stream_sender(self._send_stream)
         self._shell.set_display_sender(self._send_display_event)
@@ -175,7 +177,7 @@ class Subshell:
 
     def join(self, timeout:float|None=None)->bool: return _join_or_log(self.thread, timeout=timeout)
 
-    def submit(self, msg: dict, idents: list[bytes]|None): self.actor.submit((msg, idents))
+    def submit(self, msg: dict, idents: list[bytes]|None)->bool: return bool(self.actor.submit((msg, idents)))
 
     def _set_exec_state(self, state: ExecState):
         with self.state_lock: self.exec_state = state
@@ -191,16 +193,31 @@ class Subshell:
         if self._get_exec_state() != ExecState.RUNNING: return False
         self._set_exec_state(ExecState.CANCELLING)
         if self.cancel_async_execution(): return True
+        if not self.sync_executing.is_set(): return True
         if self.thread is None: return False
         thread_id = self.thread.ident
         if thread_id is None: return False
         return _raise_async_exception(thread_id, KeyboardInterrupt)
 
-    def cancel_async_execution(self)->bool:
+    def cancel_async_execution(self, *, wake: bool = False)->bool:
         "Cancel the current async cell execution, if there is one."
         scope = self.exec_scope
-        if scope is None or not scope.active: return False
-        return scope.cancelled or scope.cancel("interrupt")
+        if scope is None: return False
+        return scope.cancelled or scope.cancel("interrupt", wake=wake)
+
+    def _async_cancel_scope(self):
+        scope = self.exec_scope
+        if scope is None: self.exec_scope = scope = CancelScope()
+        if self._get_exec_state() == ExecState.CANCELLING: scope.cancel("interrupt")
+        return scope
+
+    @contextmanager
+    def _sync_execution_context(self):
+        self.sync_executing.set()
+        try:
+            if self._get_exec_state() == ExecState.CANCELLING: raise KeyboardInterrupt
+            yield
+        finally: self.sync_executing.clear()
 
     def request_input(self, prompt:str, password: bool)->str:
         "Forward input_request through stdin router for this subshell."
@@ -411,13 +428,11 @@ class Subshell:
                 loop = asyncio.get_running_loop()
                 timeout_handle = loop.call_later(2.0, lambda: log.warning("execute still running msg_id=%s", msg_id))
             try:
-                scope = CancelScope()
-                self.exec_scope = scope
                 with self.shell.execution_context(allow_stdin=allow_stdin, silent=silent, comm_sender=iopub.send, parent=msg):
                     result = await self.shell.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             finally:
-                if self.exec_scope is scope: self.exec_scope = None
+                self.exec_scope = None
                 if timeout_handle: timeout_handle.cancel()
             dbg(f"BRIDGE_DONE id={msg_id}")
 
@@ -516,12 +531,12 @@ class SubshellManager:
         if subshell_id is None: return self.parent
         with self.lock: return self.subs.get(subshell_id)
 
-    def create(self)->str:
+    def create(self, wait: bool = True)->str:
         "Create and start a new subshell; return its id."
         subshell_id = str(uuid.uuid4())
         subshell = Subshell(self.kernel, subshell_id, self.user_ns)
+        subshell.start(wait=wait)
         with self.lock: self.subs[subshell_id] = subshell
-        subshell.start(wait=False)
         return subshell_id
 
     def list(self)->list[str]:
@@ -529,21 +544,18 @@ class SubshellManager:
 
     def delete(self, subshell_id:str):
         "Stop and remove a subshell by id."
-        with self.lock: subshell = self.subs[subshell_id]
+        with self.lock: subshell = self.subs.pop(subshell_id)
         subshell.stop(interrupt=True)
         if not subshell.join(timeout=2): raise RuntimeError(f"subshell {subshell_id} did not stop")
-        with self.lock:
-            if self.subs.get(subshell_id) is subshell: self.subs.pop(subshell_id, None)
 
     def stop_all(self):
         "Stop all subshells and the parent."
-        with self.lock: subshells = list(self.subs.items())
+        with self.lock:
+            subshells = list(self.subs.items())
+            self.subs.clear()
         for subshell_id, subshell in subshells:
             subshell.stop(interrupt=True)
             if not _join_or_log(subshell.thread, timeout=1): log.error("Subshell %s still alive during shutdown", subshell_id)
-            else:
-                with self.lock:
-                    if self.subs.get(subshell_id) is subshell: self.subs.pop(subshell_id, None)
         self.parent.stop()
         self.parent.join(timeout=1)
 
@@ -646,10 +658,16 @@ class MiniKernel:
         self._set_state(KernelState.STARTING)
         prev_hook = _install_thread_excepthook(self)
         prev_sigint = signal.getsignal(signal.SIGINT)
+        sigusr1_registered = False
         try:
             self.subshells.start()
             ServiceGroup(self.iopub_thread, self.stdin_router, self.hb).start().wait_started()
             signal.signal(signal.SIGINT, self.handle_sigint)
+            if hasattr(signal, "SIGUSR1"):
+                try:
+                    faulthandler.register(signal.SIGUSR1, file=sys.__stderr__, all_threads=True)
+                    sigusr1_registered = True
+                except (OSError, RuntimeError, ValueError): log.warning("could not register SIGUSR1 dump", exc_info=True)
             self.shell_router = AsyncRouterThread(context=self.context, session=self.session,
                 bind_addr=self.connection.addr(self.connection.shell_port), handler=self.handle_shell_msg, log_label="shell")
             self.control_router = AsyncRouterThread(context=self.context, session=self.session,
@@ -667,8 +685,11 @@ class MiniKernel:
             self.subshells.stop_all()
             ServiceGroup(self.stdin_router, self.iopub_thread).stop_join(timeout=1)
             signal.signal(signal.SIGINT, prev_sigint)
+            if sigusr1_registered: faulthandler.unregister(signal.SIGUSR1)
             with self.state_lock:
                 if self.state != KernelState.FAILED: self.state = KernelState.STOPPED
+                failed = self.state == KernelState.FAILED
+            if os.name == "nt": os._exit(1 if failed else 0)
             self._terminate_process_group_last()
 
     def _terminate_process_group_last(self):
@@ -689,11 +710,14 @@ class MiniKernel:
 
     def handle_sigint(self, signum, frame):
         "Handle SIGINT by interrupting subshells and input waits."
-        self.subshells.interrupt_all()
-        self.stdin_router.interrupt_pending()
-        if self.subshells.parent.executing.is_set():
-            self.subshells.parent._set_exec_state(ExecState.CANCELLING)
-            raise KeyboardInterrupt
+        with self.subshells.lock: children = list(self.subshells.subs.values())
+        for subshell in children: subshell.interrupt()
+        parent = self.subshells.parent
+        if not parent.executing.is_set(): return
+        parent._set_exec_state(ExecState.CANCELLING)
+        if parent.cancel_async_execution(wake=True): return
+        if not parent.sync_executing.is_set(): return
+        raise KeyboardInterrupt
 
     def handle_control_msg(self, msg: dict, idents: list[bytes]|None):
         "Handle control channel request message."
@@ -730,7 +754,7 @@ class MiniKernel:
             self.send_subshell_error(msg, idents)
             return
         dbg(f"DISPATCH {msg_type} id={msg_id}")
-        subshell.submit(msg, idents)
+        if not subshell.submit(msg, idents): self.send_subshell_error(msg, idents, f"Subshell {subshell_id!r} is not accepting requests")
 
     def queue_shell_reply(self, msg_type:str, content: dict, parent: dict, idents: list[bytes]|None)->int|None:
         "Enqueue a shell reply for async send."
@@ -774,12 +798,12 @@ class MiniKernel:
         if content is None: content = {}
         self.iopub_thread.send(msg_type, content, parent, metadata, ident, buffers)
 
-    def send_subshell_error(self, msg: dict, idents: list[bytes]|None):
+    def send_subshell_error(self, msg: dict, idents: list[bytes]|None, evalue: str | None = None):
         "Send SubshellNotFound error reply for unknown subshell. Always sends busy/idle for execute_request."
         msg_type = nested_idx(msg, "header", "msg_type") or ""
         subshell_id = nested_idx(msg, "header", "subshell_id")
         if not msg_type.endswith("_request"): return
-        content = _error_content("SubshellNotFound", f"Unknown subshell_id {subshell_id!r}")
+        content = _error_content("SubshellNotFound", evalue or f"Unknown subshell_id {subshell_id!r}")
         if msg_type == "execute_request":
             content.update(dict(execution_count=0, user_expressions={}, payload=[]))
             self.send_status("busy", msg)
