@@ -136,7 +136,10 @@ class Subshell:
         self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
         self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self.executing = threading.Event()
-        self.exec_scope = None
+        self.exec_scopes = set()
+        self.exec_scope_var = contextvars.ContextVar("exec_scope", default=None)
+        self.exec_count = 0
+        self.tasks = set()
         self.sync_executing = threading.Event()
         self.exec_state = ExecState.IDLE
         self.last_exec_state = None
@@ -200,14 +203,15 @@ class Subshell:
         return _raise_async_exception(thread_id, KeyboardInterrupt)
 
     def cancel_async_execution(self, *, wake: bool = False)->bool:
-        "Cancel the current async cell execution, if there is one."
-        scope = self.exec_scope
-        if scope is None: return False
-        return scope.cancelled or scope.cancel("interrupt", wake=wake)
+        "Cancel all current async cell executions, if there are any."
+        scopes = list(self.exec_scopes)
+        if not scopes: return False
+        return any([scope.cancelled or scope.cancel("interrupt", wake=wake) for scope in scopes])
 
     def _async_cancel_scope(self):
-        scope = self.exec_scope
-        if scope is None: self.exec_scope = scope = CancelScope()
+        scope = CancelScope()
+        self.exec_scopes.add(scope)
+        self.exec_scope_var.set(scope)
         if self._get_exec_state() == ExecState.CANCELLING: scope.cancel("interrupt")
         return scope
 
@@ -284,8 +288,23 @@ class Subshell:
         self.loop_ready.set()
         dbg(f"SUBSHELL started id={self.subshell_id}")
         await self.actor.run(bind=False)
+        await self._cancel_tasks()
 
-    async def _handle_actor_item(self, item):
+    async def _cancel_tasks(self):
+        if not self.tasks: return
+        tasks = list(self.tasks)
+        for task in tasks: task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _handle_actor_item(self, item):
+        # Handle each message in its own task so the mailbox keeps draining while an async cell awaits
+        # (e.g. a cell calling back into the kernel via a server roundtrip). Sync cells never suspend, so
+        # they still run strictly in order; tasks start in mailbox order, keeping the aborting check ordered.
+        task = asyncio.create_task(self._handle_item(item))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def _handle_item(self, item):
         msg, idents = item
         if msg is subshell_abort_clear:
             self._stop_aborting()
@@ -410,6 +429,7 @@ class Subshell:
         allow_stdin = bool(content.get("allow_stdin", False))
 
         dbg(f"HANDLE_EXEC id={msg_id} code={code[:30]!r}...")
+        with self.state_lock: self.exec_count += 1
         self._set_exec_state(ExecState.RUNNING)
         self.executing.set()
         terminal_state = ExecState.COMPLETED
@@ -432,7 +452,8 @@ class Subshell:
                     result = await self.shell.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             finally:
-                self.exec_scope = None
+                self.exec_scopes.discard(self.exec_scope_var.get())
+                self.exec_scope_var.set(None)
                 if timeout_handle: timeout_handle.cancel()
             dbg(f"BRIDGE_DONE id={msg_id}")
 
@@ -470,8 +491,10 @@ class Subshell:
         finally:
             self.kernel.send_status("idle", msg)
             self._set_last_exec_state(terminal_state)
-            self.executing.clear()
-            self._set_exec_state(ExecState.IDLE)
+            with self.state_lock:
+                self.exec_count -= 1
+                if (idle := self.exec_count == 0): self.exec_state = ExecState.IDLE
+            if idle: self.executing.clear()
 
     def _shell_handler(self, msg: dict, idents: list[bytes]|None):
         msg_type = nested_idx(msg, "header", "msg_type") or None

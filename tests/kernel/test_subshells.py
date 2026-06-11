@@ -244,7 +244,8 @@ def test_subshell_stop_on_error_isolated():
             subshell_ids = [_create_subshell(kc) if is_subshell else None for is_subshell in are_subshells]
 
             msg_ids = []
-            msg_id = _send_execute(kc, "import asyncio; await asyncio.sleep(0.1); raise ValueError()", subshell_id=subshell_ids[0])
+            # Sync cell: an async failing cell no longer aborts later submissions, since they run while it awaits
+            msg_id = _send_execute(kc, "import time; time.sleep(0.1); raise ValueError()", subshell_id=subshell_ids[0])
             msg_ids.append(msg_id)
             msg_id = _send_execute(kc, "print('hello')", subshell_id=subshell_ids[0])
             msg_ids.append(msg_id)
