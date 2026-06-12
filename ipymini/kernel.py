@@ -9,7 +9,7 @@ import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
 from .comms import get_comm_manager
-from .unlock import _release as _unlock_release
+from .concur import _release as _unlock_release, _subshell as _subshell_var
 from .debug import DebugFlags, setup_debug, trace_msg
 from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread
 
@@ -295,6 +295,7 @@ class Subshell:
         if not msg: return
         msg_type = nested_idx(msg, "header", "msg_type") or "?"
         msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
+        if self.scope.closed and msg_type == "execute_request": return self._send_abort_reply(msg, idents)  # don't run queued cells while stopping
         dbg(f"EXEC {msg_type} id={msg_id}")
         try: await self._handle_message(msg, idents, release)
         except Exception as exc: self._handle_internal_error(msg, idents, exc)
@@ -423,6 +424,7 @@ class Subshell:
 
         dbg(f"HANDLE_EXEC id={msg_id} code={code[:30]!r}...")
         _unlock_release.set(self._safe_release(release))
+        _subshell_var.set(self)
         self.exec_scopes.clear()  # a new execute ends any previous cancelling window
         self.exec_tracker.add()
         terminal_state = ExecState.COMPLETED
@@ -534,6 +536,7 @@ class SubshellManager:
         self.parent = Subshell(kernel, None, self.user_ns, use_singleton=True, run_in_thread=False)
         self.subs = {}
         self.lock = threading.Lock()
+        self.route_override = None  # (subshell_id, session) routing untagged executes from that session
 
     def start(self): return
 
@@ -552,6 +555,24 @@ class SubshellManager:
 
     def list(self)->list[str]:
         with self.lock: return list(self.subs.keys())
+
+    def set_route_override(self, subshell_id:str, session:str):
+        "Route untagged execute_requests from `session` to `subshell_id` until cleared."
+        with self.lock:
+            if self.route_override is not None: raise RuntimeError("subshell route override already active")
+            self.route_override = (subshell_id, session)
+
+    def clear_route_override(self):
+        with self.lock: self.route_override = None
+
+    def route_for(self, msg: dict)->str|None:
+        "Subshell id an untagged message should be redirected to, or None (called from the router thread)."
+        override = self.route_override
+        if override is None: return None
+        subshell_id, session = override
+        if not session or nested_idx(msg, "header", "session") != session: return None
+        if nested_idx(msg, "header", "msg_type") != "execute_request": return None
+        return subshell_id
 
     def delete(self, subshell_id:str):
         "Stop and remove a subshell by id."
@@ -758,6 +779,7 @@ class MiniKernel:
         msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
         trace_msg(log, "shell recv", msg, enabled=_debug_flags.trace_msgs)
         subshell_id = nested_idx(msg, "header", "subshell_id") or None  # treat "" as None
+        if subshell_id is None: subshell_id = self.subshells.route_for(msg)
         subshell = self.subshells.get(subshell_id)
         if subshell is None:
             dbg(f"DISPATCH {msg_type} id={msg_id} -> NO SUBSHELL")

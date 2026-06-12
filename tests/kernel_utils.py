@@ -312,6 +312,17 @@ def shell_send(self: KernelClient, msg_type:str, content: dict|None=None, subshe
 
 
 @patch
+@contextmanager
+def clone(self: KernelClient):
+    "A second client to the same kernel with its own Session (NB: km.client() shares the Session, so the clients drop each other's iopub)."
+    kc = type(self)()
+    kc.load_connection_info(self.get_connection_info())
+    kc.start_channels()
+    try: yield kc
+    finally: kc.stop_channels()
+
+
+@patch
 @delegates(KernelClient.execute)
 def exec_ok(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
     "Execute `code` and assert ok reply."
