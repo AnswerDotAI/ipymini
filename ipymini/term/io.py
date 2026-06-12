@@ -1,4 +1,5 @@
-import builtins, contextvars, getpass, sys, threading
+import builtins, contextvars, functools, getpass, sys, threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Callable
 
@@ -48,6 +49,7 @@ class _ThreadLocalIO:
         self.orig_getpass = getpass.getpass
         self.orig_get_ipython = _getipython_mod.get_ipython if _getipython_mod is not None else None
         self.orig_thread_start = None
+        self.orig_submit = None
 
     def install(self):
         "Install thread-local stdout/stderr/input/getpass/get_ipython hooks."
@@ -63,6 +65,7 @@ class _ThreadLocalIO:
         IPython.get_ipython = _thread_local_get_ipython
         builtins.get_ipython = _thread_local_get_ipython
         self._install_thread_context()
+        self._install_executor_context()
         sys.stdout = _ThreadLocalStream("stdout", self.orig_stdout)
         sys.stderr = _ThreadLocalStream("stderr", self.orig_stderr)
         builtins.input = _thread_local_input
@@ -94,6 +97,17 @@ class _ThreadLocalIO:
                 raise
 
         threading.Thread.start = _start
+
+    def _install_executor_context(self):
+        "Run each pooled work item in the context captured at submit time: worker threads persist across logical tasks."
+        if self.orig_submit is not None: return
+        self.orig_submit = ThreadPoolExecutor.submit
+        orig_submit = self.orig_submit
+
+        def _submit(executor, fn, /, *args, **kwargs):
+            return orig_submit(executor, functools.partial(contextvars.copy_context().run, fn), *args, **kwargs)
+
+        ThreadPoolExecutor.submit = _submit
 
     def get(self, name: str): return self.vars[name].get()
 
