@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.1.9
+
+### New Features
+
+- Add concurrent execution support via WorkTracker/ScopeGroup; isolate display hook per-context ([#25](https://github.com/AnswerDotAI/ipymini/issues/25))
+- Interrupt handling: wake async scopes, add SIGUSR1 faulthandler dump, tighten subshell lifecycle ([#23](https://github.com/AnswerDotAI/ipymini/issues/23))
+
+
 ## 0.1.8
 
 - Refactor using microio
