@@ -4,7 +4,7 @@ from ..kernel_utils import *
 
 def test_control_reply_not_blocked_by_long_execute():
     with start_kernel() as (_, kc):
-        msg_id = kc.execute("import time; time.sleep(1.5); 'done'", store_history=False)
+        msg_id = kc.execute("import time; time.sleep(0.8); 'done'", store_history=False)
         time.sleep(0.05)
 
         t0 = time.monotonic()

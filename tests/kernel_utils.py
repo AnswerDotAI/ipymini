@@ -13,7 +13,7 @@ root = Path(__file__).resolve().parents[1]
 
 __all__ = ("default_timeout debug_init_args root KernelHarness build_env load_connection kernel_pid assert_pid_gone ensure_separate_process start_kernel "
     "start_kernel_async temp_env wait_for_msg iter_timeout parent_id wait_for_debug_event wait_for_stop collect_shell_replies "
-    "collect_iopub_outputs wait_for_status iopub_msgs iopub_streams start_gateway_kernel gw_send_wait gw_wait_for_status").split()
+    "collect_iopub_outputs wait_for_status flush_channels iopub_msgs iopub_streams start_gateway_kernel gw_send_wait gw_wait_for_status").split()
 
 
 def _ensure_jupyter_path()->str:
@@ -372,6 +372,14 @@ def collect_iopub_outputs(kc, msg_ids: set[str], timeout:float|None=None)->dict:
 def wait_for_status(kc, state:str, timeout:float|None=None)->dict:
     pred = lambda m: m.get("msg_type") == "status" and nested_idx(m, "content", "execution_state") == state
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
+
+
+def flush_channels(kc, timeout:float = 0.02):
+    "Discard messages pending on the shell and iopub queues (for tests sharing a kernel)."
+    for get in (kc.get_shell_msg, kc.get_iopub_msg):
+        while True:
+            try: get(timeout=timeout)
+            except Empty: break
 
 
 def iopub_msgs(outputs: list[dict], msg_type:str|None=None)->list[dict]:

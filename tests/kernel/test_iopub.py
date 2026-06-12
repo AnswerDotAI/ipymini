@@ -1,4 +1,5 @@
-import os, pytest
+import pytest
+from pathlib import Path
 from ..kernel_utils import *
 
 
@@ -49,14 +50,11 @@ def test_iopub_status_not_dropped_when_output_queue_is_full():
 
 
 @pytest.mark.slow
-def test_matplotlib_inline_default_backend(tmp_path):
-    cache_dir = tmp_path / "mplconfig"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    if not os.access(cache_dir, os.W_OK): raise AssertionError(f"no writable mpl cache dir: {cache_dir}")
-    env = dict(MPLCONFIGDIR=str(cache_dir), XDG_CACHE_HOME=str(cache_dir))
-    with temp_env(env): pytest.importorskip("matplotlib")
-    extra_env = {"MPLCONFIGDIR":str(cache_dir), "XDG_CACHE_HOME":str(cache_dir)}
-    with start_kernel(extra_env=extra_env) as (_, kc):
+def test_matplotlib_inline_default_backend():
+    import matplotlib
+    cache_dir = Path(matplotlib.get_cachedir())
+    assert any(cache_dir.glob("fontlist-v*.json")), f"matplotlib font cache not built: {cache_dir}"
+    with start_kernel() as (_, kc):
         code = (
             "import matplotlib.pyplot as plt\n"
             "plt.plot([1, 2, 3], [1, 4, 9])\n"

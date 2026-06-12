@@ -21,7 +21,7 @@ def test_asyncio_features() -> None:
         assert reply["content"]["status"] == "ok"
         pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
         wait_for_msg(kc.get_iopub_msg, pred, timeout=default_timeout, err="expected stdout from create_task")
-        kc.iopub_drain(msg_id)
+        # NB: no iopub_drain here - wait_for_msg already consumed this request's idle, so a drain would block until timeout
 
         reply = kc.dap.initialize(**debug_init_args)
         assert reply.get("success"), f"initialize: {reply}"

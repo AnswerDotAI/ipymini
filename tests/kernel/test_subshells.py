@@ -1,8 +1,15 @@
 import time, random
+import pytest
 from ..kernel_utils import *
 
 
 timeout = 10
+
+
+@pytest.fixture(scope="module")
+def kc():
+    "One shared kernel for this module; tests create/delete their own subshells and use fresh names."
+    with start_kernel() as (_, kc): yield kc
 
 
 def _create_subshell(kc)->str:
@@ -108,252 +115,244 @@ def test_subshell_basics():
         assert _list_subshells(kc) == []
 
 
-def test_subshell_asyncio_create_task():
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
-        code = (
-            "import asyncio, time\n"
-            "async def f():\n"
-            "    await asyncio.sleep(0.01)\n"
-            "    print('ok')\n"
-            "asyncio.create_task(f())\n"
-            "time.sleep(0.05)\n")
-        msg_id = kc.cmd.execute_request(code=code, subshell_id=subshell_id)
+def test_subshell_asyncio_create_task(kc):
+    subshell_id = _create_subshell(kc)
+    code = (
+        "import asyncio, time\n"
+        "async def f():\n"
+        "    await asyncio.sleep(0.01)\n"
+        "    print('ok')\n"
+        "asyncio.create_task(f())\n"
+        "time.sleep(0.05)\n")
+    msg_id = kc.cmd.execute_request(code=code, subshell_id=subshell_id)
+    reply = kc.shell_reply(msg_id)
+    assert reply["content"]["status"] == "ok"
+    pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
+    wait_for_msg(kc.get_iopub_msg, pred, timeout=timeout, err="expected stdout from subshell create_task")
+    _delete_subshell(kc, subshell_id)
+
+
+def test_subshell_concurrency_and_control(kc):
+    flush_channels(kc)
+    cmd = kc.cmd
+    subshell_a = _create_subshell(kc)
+    subshell_b = _create_subshell(kc)
+
+    _execute(kc, "import threading; control_gate = threading.Event()")
+    msg_id = cmd.execute_request(code="ok = control_gate.wait(5); print(ok)")
+    wait_for_status(kc, "busy")
+
+    control_msg = kc.session.msg("create_subshell_request", {})
+    kc.control_channel.send(control_msg)
+    control_msg_id = control_msg["header"]["msg_id"]
+    control_reply = kc.control_reply(control_msg_id, timeout=1)
+    subshell_id = control_reply["content"]["subshell_id"]
+    release_id = cmd.execute_request(code="control_gate.set(); print('released')", subshell_id=subshell_a)
+    release_reply = kc.shell_reply(release_id)
+    assert release_reply["content"]["status"] == "ok"
+
+    shell_reply = kc.shell_reply(msg_id)
+    outputs = collect_iopub_outputs(kc, {msg_id, release_id})
+    release_streams = iopub_streams(outputs[release_id])
+    assert any("released" in m["content"].get("text", "") for m in release_streams)
+    shell_streams = iopub_streams(outputs[msg_id])
+    assert any("True" in m["content"].get("text", "") for m in shell_streams)
+
+    _delete_subshell(kc, subshell_id)
+
+    assert shell_reply["content"]["status"] == "ok"
+
+    _execute(kc, "import threading; evt = threading.Event()")
+
+    msg_wait_id = cmd.execute_request(code="ok = evt.wait(1.0); print(ok)", subshell_id=subshell_a)
+    msg_set_id = cmd.execute_request(code="evt.set(); print('set')")
+
+    replies = collect_shell_replies(kc, {msg_wait_id, msg_set_id})
+    reply_wait = replies[msg_wait_id]
+    reply_set = replies[msg_set_id]
+    outputs = collect_iopub_outputs(kc, {msg_wait_id, msg_set_id})
+    outputs_wait = outputs[msg_wait_id]
+    outputs_set = outputs[msg_set_id]
+
+    assert reply_wait["content"]["status"] == "ok"
+    assert reply_set["content"]["status"] == "ok"
+    streams_wait = iopub_streams(outputs_wait)
+    assert any("True" in m["content"].get("text", "") for m in streams_wait), f"wait outputs: {outputs_wait}; set outputs: {outputs_set}"
+    streams_set = iopub_streams(outputs_set)
+    assert any("set" in m["content"].get("text", "") for m in streams_set)
+
+
+    _execute(kc, "import threading, time; barrier = threading.Barrier(3)")
+
+    def _send(code:str, subshell_id:str|None=None)->str: return cmd.execute_request(code=code, subshell_id=subshell_id)
+
+    msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
+    msg_a = _send("barrier.wait(); time.sleep(0.05); print('a')", subshell_a)
+    msg_b = _send("barrier.wait(); time.sleep(0.05); print('b')", subshell_b)
+
+    msg_ids = {msg_parent, msg_a, msg_b}
+    replies = collect_shell_replies(kc, msg_ids)
+    outputs = collect_iopub_outputs(kc, msg_ids)
+
+    assert all(reply["content"]["status"] == "ok" for reply in replies.values())
+    expected = {msg_parent: "parent", msg_a: "a", msg_b: "b"}
+    for msg_id, text in expected.items():
+        streams = iopub_streams(outputs[msg_id])
+        assert any(text in m["content"].get("text", "") for m in streams)
+
+    _delete_subshell(kc, subshell_a)
+    _delete_subshell(kc, subshell_b)
+
+
+def test_subshell_reads_shared_ns_during_parent_sleep(kc):
+    subshell_id = _create_subshell(kc)
+    parent_msg_id = kc.execute("x = 123; import time; time.sleep(1.0); print('done')")
+    time.sleep(0.1)
+
+    subshell_msg_id = kc.cmd.execute_request(code="print(x)", subshell_id=subshell_id)
+    wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == subshell_msg_id,
+        timeout=0.8, poll=0.2, err="subshell reply did not arrive while parent was busy")
+
+    outputs = kc.iopub_drain(subshell_msg_id)
+    streams = iopub_streams(outputs)
+    assert any("123" in m["content"].get("text", "") for m in streams), f"expected subshell to read shared ns, got: {streams}"
+
+    reply_parent = kc.shell_reply(parent_msg_id, timeout=3)
+    assert reply_parent["content"]["status"] == "ok"
+    outputs_parent = kc.iopub_drain(parent_msg_id)
+    streams_parent = iopub_streams(outputs_parent)
+    assert any("done" in m["content"].get("text", "") for m in streams_parent)
+    _delete_subshell(kc, subshell_id)
+
+
+def test_subshell_interrupt_request_breaks_sleep(kc):
+    subshell_id = _create_subshell(kc)
+    msg_id = _send_execute(kc, "import time; time.sleep(0.7); print('done')", subshell_id=subshell_id)
+    time.sleep(0.1)
+    kc.interrupt_request()
+    reply = kc.shell_reply(msg_id, timeout=timeout)
+    assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
+    outputs = kc.iopub_drain(msg_id)
+    errors = iopub_msgs(outputs, "error")
+    assert errors, f"expected iopub error after interrupt, got: {[m.get('msg_type') for m in outputs]}"
+    assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"interrupt iopub: {errors[-1].get('content')}"
+    _delete_subshell(kc, subshell_id)
+
+
+def test_subshell_stop_on_error_isolated(kc):
+    for are_subshells in [(False, True), (True, False), (True, True)]:
+        subshell_ids = [_create_subshell(kc) if is_subshell else None for is_subshell in are_subshells]
+
+        msg_ids = []
+        msg_id = _send_execute(kc, "import asyncio; await asyncio.sleep(0.1); raise ValueError()", subshell_id=subshell_ids[0])
+        msg_ids.append(msg_id)
+        msg_id = _send_execute(kc, "print('hello')", subshell_id=subshell_ids[0])
+        msg_ids.append(msg_id)
+        msg_id = _send_execute(kc, "print('goodbye')", subshell_id=subshell_ids[0])
+        msg_ids.append(msg_id)
+
+        msg_id = _send_execute(kc, "import time; time.sleep(0.15)", subshell_id=subshell_ids[1])
+        msg_ids.append(msg_id)
+        msg_id = _send_execute(kc, "print('other')", subshell_id=subshell_ids[1])
+        msg_ids.append(msg_id)
+
+        replies = collect_shell_replies(kc, set(msg_ids))
+
+        assert replies[msg_ids[0]]["parent_header"].get("subshell_id") == subshell_ids[0]
+        assert replies[msg_ids[1]]["parent_header"].get("subshell_id") == subshell_ids[0]
+        assert replies[msg_ids[2]]["parent_header"].get("subshell_id") == subshell_ids[0]
+        assert replies[msg_ids[3]]["parent_header"].get("subshell_id") == subshell_ids[1]
+        assert replies[msg_ids[4]]["parent_header"].get("subshell_id") == subshell_ids[1]
+
+        assert replies[msg_ids[0]]["content"]["status"] == "error"
+        assert replies[msg_ids[1]]["content"]["status"] == "aborted"
+        assert replies[msg_ids[2]]["content"]["status"] == "aborted"
+        assert replies[msg_ids[3]]["content"]["status"] == "ok"
+        assert replies[msg_ids[4]]["content"]["status"] == "ok"
+
+        msg_id = _send_execute(kc, "print('check')", subshell_id=subshell_ids[0])
         reply = kc.shell_reply(msg_id)
+        assert reply["parent_header"].get("subshell_id") == subshell_ids[0]
         assert reply["content"]["status"] == "ok"
-        pred = lambda m: parent_id(m) == msg_id and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", "")
-        wait_for_msg(kc.get_iopub_msg, pred, timeout=timeout, err="expected stdout from subshell create_task")
+
+        kc.iopub_drain(msg_id)
+
+        for subshell_id in subshell_ids:
+            if subshell_id: _delete_subshell(kc, subshell_id)
 
 
-def test_subshell_concurrency_and_control():
-    with start_kernel() as (_, kc):
-        cmd = kc.cmd
-        subshell_a = _create_subshell(kc)
-        subshell_b = _create_subshell(kc)
-
-        _execute(kc, "import threading; control_gate = threading.Event()")
-        msg_id = cmd.execute_request(code="ok = control_gate.wait(5); print(ok)")
-        wait_for_status(kc, "busy")
-
-        control_msg = kc.session.msg("create_subshell_request", {})
-        kc.control_channel.send(control_msg)
-        control_msg_id = control_msg["header"]["msg_id"]
-        control_reply = kc.control_reply(control_msg_id, timeout=1)
-        subshell_id = control_reply["content"]["subshell_id"]
-        release_id = cmd.execute_request(code="control_gate.set(); print('released')", subshell_id=subshell_a)
-        release_reply = kc.shell_reply(release_id)
-        assert release_reply["content"]["status"] == "ok"
-
-        shell_reply = kc.shell_reply(msg_id)
-        outputs = collect_iopub_outputs(kc, {msg_id, release_id})
-        release_streams = iopub_streams(outputs[release_id])
-        assert any("released" in m["content"].get("text", "") for m in release_streams)
-        shell_streams = iopub_streams(outputs[msg_id])
-        assert any("True" in m["content"].get("text", "") for m in shell_streams)
-
-        _delete_subshell(kc, subshell_id)
-
-        assert shell_reply["content"]["status"] == "ok"
-
-        _execute(kc, "import threading; evt = threading.Event()")
-
-        msg_wait_id = cmd.execute_request(code="ok = evt.wait(1.0); print(ok)", subshell_id=subshell_a)
-        msg_set_id = cmd.execute_request(code="evt.set(); print('set')")
-
-        replies = collect_shell_replies(kc, {msg_wait_id, msg_set_id})
-        reply_wait = replies[msg_wait_id]
-        reply_set = replies[msg_set_id]
-        outputs = collect_iopub_outputs(kc, {msg_wait_id, msg_set_id})
-        outputs_wait = outputs[msg_wait_id]
-        outputs_set = outputs[msg_set_id]
-
-        assert reply_wait["content"]["status"] == "ok"
-        assert reply_set["content"]["status"] == "ok"
-        streams_wait = iopub_streams(outputs_wait)
-        assert any("True" in m["content"].get("text", "") for m in streams_wait), f"wait outputs: {outputs_wait}; set outputs: {outputs_set}"
-        streams_set = iopub_streams(outputs_set)
-        assert any("set" in m["content"].get("text", "") for m in streams_set)
+def test_delete_busy_subshell_interrupts_before_removing(kc):
+    flush_channels(kc)
+    subshell_id = _create_subshell(kc)
+    msg_id = kc.cmd.execute_request(code="try:\n    while True: pass\nfinally:\n    import time; time.sleep(0.2)", subshell_id=subshell_id)
+    wait_for_status(kc, "busy")
+    delete_msg = kc.session.msg("delete_subshell_request", {"subshell_id": subshell_id})
+    kc.control_channel.send(delete_msg)
+    time.sleep(0.12)
+    late_id = kc.cmd.execute_request(code="1+1", subshell_id=subshell_id)
+    reply = kc.control_reply(delete_msg["header"]["msg_id"], timeout=default_timeout)
+    assert reply["content"]["status"] == "ok"
+    replies = collect_shell_replies(kc, {msg_id, late_id})
+    assert replies[msg_id]["content"]["status"] == "error"
+    assert replies[late_id]["content"]["status"] == "error"
+    list_reply = kc.ctl.list_subshell()
+    assert subshell_id not in list_reply["content"]["subshell_id"]
 
 
-        _execute(kc, "import threading, time; barrier = threading.Barrier(3)")
+def test_subshell_fuzzes(kc):
+    cmd = kc.cmd
+    code = ("import time, warnings; from IPython.core import completer; "
+        "warnings.filterwarnings('ignore', category=completer.ProvisionalCompleterWarning)")
 
-        def _send(code:str, subshell_id:str|None=None)->str: return cmd.execute_request(code=code, subshell_id=subshell_id)
+    subshells = [_create_subshell(kc) for _ in range(2)]
+    _execute(kc, code)
 
-        msg_parent = _send("barrier.wait(); time.sleep(0.05); print('parent')")
-        msg_a = _send("barrier.wait(); time.sleep(0.05); print('a')", subshell_a)
-        msg_b = _send("barrier.wait(); time.sleep(0.05); print('b')", subshell_b)
+    msg_ids = set()
+    for idx in range(4):
+        msg_id = cmd.execute_request(code=f"time.sleep(0.02); print('parent:{idx}')")
+        msg_ids.add(msg_id)
 
-        msg_ids = {msg_parent, msg_a, msg_b}
-        replies = collect_shell_replies(kc, msg_ids)
-        outputs = collect_iopub_outputs(kc, msg_ids)
-
-        assert all(reply["content"]["status"] == "ok" for reply in replies.values())
-        expected = {msg_parent: "parent", msg_a: "a", msg_b: "b"}
-        for msg_id, text in expected.items():
-            streams = iopub_streams(outputs[msg_id])
-            assert any(text in m["content"].get("text", "") for m in streams)
-
-        _delete_subshell(kc, subshell_a)
-        _delete_subshell(kc, subshell_b)
-
-
-def test_subshell_reads_shared_ns_during_parent_sleep():
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
-        parent_msg_id = kc.execute("x = 123; import time; time.sleep(2); print('done')")
-        time.sleep(0.1)
-
-        subshell_msg_id = kc.cmd.execute_request(code="print(x)", subshell_id=subshell_id)
-
-        start = time.monotonic()
-        reply = wait_for_msg(kc.get_shell_msg, lambda m: parent_id(m) == subshell_msg_id,
-            timeout=0.8, poll=0.2, err="timeout waiting for subshell reply")
-        elapsed = time.monotonic() - start
-        assert elapsed < 1.0, f"subshell reply took too long: {elapsed:.2f}s"
-
-        outputs = kc.iopub_drain(subshell_msg_id)
-        streams = iopub_streams(outputs)
-        assert any("123" in m["content"].get("text", "") for m in streams), f"expected subshell to read shared ns, got: {streams}"
-
-        reply_parent = kc.shell_reply(parent_msg_id, timeout=3)
-        assert reply_parent["content"]["status"] == "ok"
-        outputs_parent = kc.iopub_drain(parent_msg_id)
-        streams_parent = iopub_streams(outputs_parent)
-        assert any("done" in m["content"].get("text", "") for m in streams_parent)
-        _delete_subshell(kc, subshell_id)
-
-
-def test_subshell_interrupt_request_breaks_sleep():
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
-        msg_id = _send_execute(kc, "import time; time.sleep(2); print('done')", subshell_id=subshell_id)
-        time.sleep(0.1)
-        kc.interrupt_request()
-        reply = kc.shell_reply(msg_id, timeout=timeout)
-        assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
-        outputs = kc.iopub_drain(msg_id)
-        errors = iopub_msgs(outputs, "error")
-        assert errors, f"expected iopub error after interrupt, got: {[m.get('msg_type') for m in outputs]}"
-        assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"interrupt iopub: {errors[-1].get('content')}"
-        _delete_subshell(kc, subshell_id)
-
-
-def test_subshell_stop_on_error_isolated():
-    with start_kernel() as (_, kc):
-        for are_subshells in [(False, True), (True, False), (True, True)]:
-            subshell_ids = [_create_subshell(kc) if is_subshell else None for is_subshell in are_subshells]
-
-            msg_ids = []
-            msg_id = _send_execute(kc, "import asyncio; await asyncio.sleep(0.1); raise ValueError()", subshell_id=subshell_ids[0])
-            msg_ids.append(msg_id)
-            msg_id = _send_execute(kc, "print('hello')", subshell_id=subshell_ids[0])
-            msg_ids.append(msg_id)
-            msg_id = _send_execute(kc, "print('goodbye')", subshell_id=subshell_ids[0])
-            msg_ids.append(msg_id)
-
-            msg_id = _send_execute(kc, "import time; time.sleep(0.15)", subshell_id=subshell_ids[1])
-            msg_ids.append(msg_id)
-            msg_id = _send_execute(kc, "print('other')", subshell_id=subshell_ids[1])
-            msg_ids.append(msg_id)
-
-            replies = collect_shell_replies(kc, set(msg_ids))
-
-            assert replies[msg_ids[0]]["parent_header"].get("subshell_id") == subshell_ids[0]
-            assert replies[msg_ids[1]]["parent_header"].get("subshell_id") == subshell_ids[0]
-            assert replies[msg_ids[2]]["parent_header"].get("subshell_id") == subshell_ids[0]
-            assert replies[msg_ids[3]]["parent_header"].get("subshell_id") == subshell_ids[1]
-            assert replies[msg_ids[4]]["parent_header"].get("subshell_id") == subshell_ids[1]
-
-            assert replies[msg_ids[0]]["content"]["status"] == "error"
-            assert replies[msg_ids[1]]["content"]["status"] == "aborted"
-            assert replies[msg_ids[2]]["content"]["status"] == "aborted"
-            assert replies[msg_ids[3]]["content"]["status"] == "ok"
-            assert replies[msg_ids[4]]["content"]["status"] == "ok"
-
-            msg_id = _send_execute(kc, "print('check')", subshell_id=subshell_ids[0])
-            reply = kc.shell_reply(msg_id)
-            assert reply["parent_header"].get("subshell_id") == subshell_ids[0]
-            assert reply["content"]["status"] == "ok"
-
-            kc.iopub_drain(msg_id)
-
-            for subshell_id in subshell_ids:
-                if subshell_id: _delete_subshell(kc, subshell_id)
-
-
-def test_delete_busy_subshell_interrupts_before_removing():
-    with start_kernel() as (_, kc):
-        subshell_id = _create_subshell(kc)
-        msg_id = kc.cmd.execute_request(code="try:\n    while True: pass\nfinally:\n    import time; time.sleep(0.2)", subshell_id=subshell_id)
-        wait_for_status(kc, "busy")
-        delete_msg = kc.session.msg("delete_subshell_request", {"subshell_id": subshell_id})
-        kc.control_channel.send(delete_msg)
-        time.sleep(0.12)
-        late_id = kc.cmd.execute_request(code="1+1", subshell_id=subshell_id)
-        reply = kc.control_reply(delete_msg["header"]["msg_id"], timeout=default_timeout)
-        assert reply["content"]["status"] == "ok"
-        replies = collect_shell_replies(kc, {msg_id, late_id})
-        assert replies[msg_id]["content"]["status"] == "error"
-        assert replies[late_id]["content"]["status"] == "error"
-        list_reply = kc.ctl.list_subshell()
-        assert subshell_id not in list_reply["content"]["subshell_id"]
-
-
-def test_subshell_fuzzes():
-    with start_kernel() as (km, kc):
-        cmd = kc.cmd
-        code = ("import time, warnings; from IPython.core import completer; "
-            "warnings.filterwarnings('ignore', category=completer.ProvisionalCompleterWarning)")
-
-        subshells = [_create_subshell(kc) for _ in range(2)]
-        _execute(kc, code)
-
-        msg_ids = set()
-        for idx in range(4):
-            msg_id = cmd.execute_request(code=f"time.sleep(0.02); print('parent:{idx}')")
+        for sid in subshells:
+            msg_id = cmd.execute_request(code=f"time.sleep(0.02); print('{sid[:4]}:{idx}')", subshell_id=sid)
             msg_ids.add(msg_id)
 
-            for sid in subshells:
-                msg_id = cmd.execute_request(code=f"time.sleep(0.02); print('{sid[:4]}:{idx}')", subshell_id=sid)
-                msg_ids.add(msg_id)
+    replies = collect_shell_replies(kc, msg_ids)
+    outputs = collect_iopub_outputs(kc, msg_ids)
+    assert all(reply["content"]["status"] == "ok" for reply in replies.values())
+    for msg_id, msgs in outputs.items():
+        streams = iopub_streams(msgs)
+        assert streams, f"missing stream output for {msg_id}"
 
-        replies = collect_shell_replies(kc, msg_ids)
-        outputs = collect_iopub_outputs(kc, msg_ids)
-        assert all(reply["content"]["status"] == "ok" for reply in replies.values())
-        for msg_id, msgs in outputs.items():
-            streams = iopub_streams(msgs)
-            assert streams, f"missing stream output for {msg_id}"
+    for sid in subshells: _delete_subshell(kc, sid)
 
-        for sid in subshells: _delete_subshell(kc, sid)
+    rng = random.Random(0)
+    subshells = [_create_subshell(kc) for _ in range(3)]
+    _execute(kc, "import time")
 
-        rng = random.Random(0)
-        subshells = [_create_subshell(kc) for _ in range(3)]
-        _execute(kc, "import time")
+    requests = []
+    for idx in range(20):
+        subshell_id = rng.choice([None, *subshells])
+        action = rng.choice(["execute", "complete", "inspect", "history"])
+        if action == "execute":
+            code = f"time.sleep(0.01); print('fuzz:{idx}')"
+            msg_id = cmd.execute_request(code=code, subshell_id=subshell_id)
+        elif action == "complete":
+            code = "rang"
+            msg_id = cmd.complete_request(code=code, cursor_pos=len(code), subshell_id=subshell_id)
+        elif action == "inspect":
+            code = "print"
+            msg_id = cmd.inspect_request(code=code, cursor_pos=len(code), subshell_id=subshell_id)
+        else: msg_id = cmd.history_request(hist_access_type="tail", n=1, output=False, raw=True, subshell_id=subshell_id)
+        requests.append((msg_id, action))
 
-        requests = []
-        for idx in range(20):
-            subshell_id = rng.choice([None, *subshells])
-            action = rng.choice(["execute", "complete", "inspect", "history"])
-            if action == "execute":
-                code = f"time.sleep(0.01); print('fuzz:{idx}')"
-                msg_id = cmd.execute_request(code=code, subshell_id=subshell_id)
-            elif action == "complete":
-                code = "rang"
-                msg_id = cmd.complete_request(code=code, cursor_pos=len(code), subshell_id=subshell_id)
-            elif action == "inspect":
-                code = "print"
-                msg_id = cmd.inspect_request(code=code, cursor_pos=len(code), subshell_id=subshell_id)
-            else: msg_id = cmd.history_request(hist_access_type="tail", n=1, output=False, raw=True, subshell_id=subshell_id)
-            requests.append((msg_id, action))
+    msg_ids = {msg_id for msg_id, _ in requests}
+    replies = collect_shell_replies(kc, msg_ids)
+    assert all(reply["content"]["status"] in {"ok", "error"} for reply in replies.values())
 
-        msg_ids = {msg_id for msg_id, _ in requests}
-        replies = collect_shell_replies(kc, msg_ids)
-        assert all(reply["content"]["status"] in {"ok", "error"} for reply in replies.values())
+    exec_ids = {msg_id for msg_id, action in requests if action == "execute"}
+    outputs = collect_iopub_outputs(kc, exec_ids) if exec_ids else {}
+    for msg_id in exec_ids:
+        streams = iopub_streams(outputs[msg_id])
+        assert streams, f"missing stream output for {msg_id}"
 
-        exec_ids = {msg_id for msg_id, action in requests if action == "execute"}
-        outputs = collect_iopub_outputs(kc, exec_ids) if exec_ids else {}
-        for msg_id in exec_ids:
-            streams = iopub_streams(outputs[msg_id])
-            assert streams, f"missing stream output for {msg_id}"
-
-        for sid in subshells: _delete_subshell(kc, sid)
+    for sid in subshells: _delete_subshell(kc, sid)

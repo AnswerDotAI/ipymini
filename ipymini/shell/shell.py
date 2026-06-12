@@ -14,6 +14,8 @@ from IPython.core.completer import rectify_completions as _rectify_completions
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.shellapp import InteractiveShellApp
 
+from microio import ScopeGroup
+
 from .comms import comm_context
 from ipymini.debug import Debugger, debug_cell_filename
 from ipymini.term import IPythonCapture
@@ -78,7 +80,7 @@ def _init_ipython_app(shell):
 
 class MiniShell:
     def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, async_cancel_scope=None,
+        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, exec_scopes=None,
         sync_execution_context=None):
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
@@ -94,7 +96,7 @@ class MiniShell:
         self.ipy.compile.get_code_name = _code_name
         self.request_input = request_input
         self.capture = IPythonCapture(self.ipy, request_input=request_input)
-        self.async_cancel_scope = async_cancel_scope or (lambda: None)
+        self.exec_scopes = exec_scopes or ScopeGroup()
         self.sync_execution_context = sync_execution_context or nullcontext
 
         self.ipy.set_hook("show_in_pager", page.as_hook(self._show_in_pager), 99)
@@ -153,11 +155,10 @@ class MiniShell:
             coro = shell.run_cell_async(code, store_history=store_history, silent=silent,
                 transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
             _dbg("_run_cell: awaiting async task")
-            scope = self.async_cancel_scope()
             try:
                 try:
-                    with (scope if scope is not None else nullcontext()): res = await coro
-                    if scope is not None and scope.cancelled_caught: raise KeyboardInterrupt
+                    with self.exec_scopes.scope() as scope: res = await coro
+                    if scope.cancelled_caught: raise KeyboardInterrupt
                 except asyncio.CancelledError as exc: raise KeyboardInterrupt() from exc
             finally:
                 shell.events.trigger("post_execute")

@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from fastcore.basics import nested_idx, store_attr
-from microio import ActorCore, CancelScope, CloseScope, ServiceGroup
+from microio import ActorCore, CloseScope, ScopeGroup, ServiceGroup, WorkTracker
 import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
 from .comms import get_comm_manager
+from .unlock import _release as _unlock_release
 from .debug import DebugFlags, setup_debug, trace_msg
 from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread
 
@@ -128,17 +129,17 @@ class Subshell:
         self.thread = None if not run_in_thread else threading.Thread(target=self._run_loop, daemon=True, name=name)
         self.loop = None
         self.loop_ready = threading.Event()
-        self.actor = ActorCore(self._handle_actor_item)
+        self.actor = ActorCore(self._handle_actor_item, concurrent=True)
         self.aborting = False
         self.abort_handle = None
         self._shell = None
         self.shell_ready = threading.Event()
         self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
         self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
-        self.executing = threading.Event()
-        self.exec_scope = None
+        self.exec_tracker = WorkTracker()
+        self.executing = self.exec_tracker.busy
+        self.exec_scopes = ScopeGroup()
         self.sync_executing = threading.Event()
-        self.exec_state = ExecState.IDLE
         self.last_exec_state = None
         self.state_lock = threading.Lock()
         self.shell_handlers = dict(kernel_info_request=self._handle_kernel_info, connect_request=self._handle_connect,
@@ -157,7 +158,7 @@ class Subshell:
         if self._shell is not None: return
         self._shell = MiniShell(request_input=self.request_input, debug_event_callback=self.send_debug_event,
             zmq_context=self.kernel.context, user_ns=self.user_ns, use_singleton=self.use_singleton,
-            async_cancel_scope=self._async_cancel_scope, sync_execution_context=self._sync_execution_context)
+            exec_scopes=self.exec_scopes, sync_execution_context=self._sync_execution_context)
         self._shell.ipy.kernel = self.kernel
         self._shell.set_stream_sender(self._send_stream)
         self._shell.set_display_sender(self._send_display_event)
@@ -177,22 +178,31 @@ class Subshell:
 
     def join(self, timeout:float|None=None)->bool: return _join_or_log(self.thread, timeout=timeout)
 
-    def submit(self, msg: dict, idents: list[bytes]|None)->bool: return bool(self.actor.submit((msg, idents)))
+    def submit(self, msg: dict, idents: list[bytes]|None)->bool:
+        "Queue executes behind the cell baton; run other messages on the loop directly."
+        if nested_idx(msg, "header", "msg_type") == "execute_request": return bool(self.actor.submit((msg, idents)))
+        return self._submit_direct(msg, idents)
 
-    def _set_exec_state(self, state: ExecState):
-        with self.state_lock: self.exec_state = state
+    def _submit_direct(self, msg: dict, idents: list[bytes]|None)->bool:
+        "Handle a non-execute message promptly, without queueing behind busy cells."
+        if self.scope.closed: return False
+        loop = self.loop
+        if loop is None: return bool(self.actor.submit((msg, idents)))  # loop not started yet; deliver via mailbox
+        item = (msg, idents)
+        def _run(): loop.create_task(self._handle_actor_item(item, lambda: None))
+        try: loop.call_soon_threadsafe(_run)
+        except RuntimeError: return False
+        return True
 
     def _set_last_exec_state(self, state: ExecState):
         with self.state_lock: self.last_exec_state = state
 
-    def _get_exec_state(self)->ExecState:
-        with self.state_lock: return self.exec_state
-
     def interrupt(self)->bool:
-        "Raise KeyboardInterrupt in subshell thread if executing."
-        if self._get_exec_state() != ExecState.RUNNING: return False
-        self._set_exec_state(ExecState.CANCELLING)
-        if self.cancel_async_execution(): return True
+        "Cancel running async executions, or raise KeyboardInterrupt in a sync one."
+        if not self.executing.is_set(): return False
+        already_cancelling = self.exec_scopes.cancelling
+        if self.exec_scopes.cancel("interrupt", latch=True): return True
+        if already_cancelling: return True  # still cancelling from a previous interrupt; don't double-inject
         if not self.sync_executing.is_set(): return True
         if self.thread is None: return False
         thread_id = self.thread.ident
@@ -200,22 +210,14 @@ class Subshell:
         return _raise_async_exception(thread_id, KeyboardInterrupt)
 
     def cancel_async_execution(self, *, wake: bool = False)->bool:
-        "Cancel the current async cell execution, if there is one."
-        scope = self.exec_scope
-        if scope is None: return False
-        return scope.cancelled or scope.cancel("interrupt", wake=wake)
-
-    def _async_cancel_scope(self):
-        scope = self.exec_scope
-        if scope is None: self.exec_scope = scope = CancelScope()
-        if self._get_exec_state() == ExecState.CANCELLING: scope.cancel("interrupt")
-        return scope
+        "Cancel all active async cell executions, if any."
+        return self.exec_scopes.cancel("interrupt", wake=wake, latch=True)
 
     @contextmanager
     def _sync_execution_context(self):
         self.sync_executing.set()
         try:
-            if self._get_exec_state() == ExecState.CANCELLING: raise KeyboardInterrupt
+            if self.exec_scopes.cancelling: raise KeyboardInterrupt
             yield
         finally: self.sync_executing.clear()
 
@@ -285,7 +287,7 @@ class Subshell:
         dbg(f"SUBSHELL started id={self.subshell_id}")
         await self.actor.run(bind=False)
 
-    async def _handle_actor_item(self, item):
+    async def _handle_actor_item(self, item, release):
         msg, idents = item
         if msg is subshell_abort_clear:
             self._stop_aborting()
@@ -294,7 +296,7 @@ class Subshell:
         msg_type = nested_idx(msg, "header", "msg_type") or "?"
         msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
         dbg(f"EXEC {msg_type} id={msg_id}")
-        try: await self._handle_message(msg, idents)
+        try: await self._handle_message(msg, idents, release)
         except Exception as exc: self._handle_internal_error(msg, idents, exc)
         dbg(f"DONE {msg_type} id={msg_id}")
 
@@ -317,7 +319,7 @@ class Subshell:
         self.send_reply(_reply_type(msg_type), reply, msg, idents)
         if msg_type == "execute_request": self.kernel.send_status("idle", msg)
 
-    async def _handle_message(self, msg: dict, idents: list[bytes]|None):
+    async def _handle_message(self, msg: dict, idents: list[bytes]|None, release):
         msg_type = msg["header"]["msg_type"]
         msg_id = msg["header"].get("msg_id", "?")[:8]
         dbg(f"HANDLE_MSG {msg_type} id={msg_id}")
@@ -334,7 +336,7 @@ class Subshell:
                 return
             if msg_type == "execute_request":
                 dbg(f"DISPATCH_EXEC id={msg_id}")
-                await self._handle_execute(msg, idents)
+                await self._handle_execute(msg, idents, release)
                 return
             self._dispatch_shell_non_execute(msg, idents)
         finally:
@@ -399,7 +401,17 @@ class Subshell:
             stdin_port=self.kernel.connection.stdin_port, control_port=self.kernel.connection.control_port, hb_port=self.kernel.connection.hb_port)
         self.send_reply("connect_reply", content, msg, idents)
 
-    async def _handle_execute(self, msg: dict, idents: list[bytes]|None):
+    def _safe_release(self, release):
+        "Wrap an actor release callback so it is safe to call from any thread."
+        loop = asyncio.get_running_loop()
+        def _do():
+            try: running = asyncio.get_running_loop()
+            except RuntimeError: running = None
+            if running is loop: release()
+            else: loop.call_soon_threadsafe(release)
+        return _do
+
+    async def _handle_execute(self, msg: dict, idents: list[bytes]|None, release):
         msg_id = (nested_idx(msg, "header", "msg_id") or "?")[:8]
         content = msg.get("content", {})
         code = content.get("code", "")
@@ -410,8 +422,9 @@ class Subshell:
         allow_stdin = bool(content.get("allow_stdin", False))
 
         dbg(f"HANDLE_EXEC id={msg_id} code={code[:30]!r}...")
-        self._set_exec_state(ExecState.RUNNING)
-        self.executing.set()
+        _unlock_release.set(self._safe_release(release))
+        self.exec_scopes.clear()  # a new execute ends any previous cancelling window
+        self.exec_tracker.add()
         terminal_state = ExecState.COMPLETED
         iopub = self.kernel.iopub
         sent_reply = sent_error = False
@@ -432,12 +445,11 @@ class Subshell:
                     result = await self.shell.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             finally:
-                self.exec_scope = None
                 if timeout_handle: timeout_handle.cancel()
             dbg(f"BRIDGE_DONE id={msg_id}")
 
             error = result.get("error")
-            if error and error.get("ename") == "CancelledError" and self._get_exec_state() == ExecState.CANCELLING:
+            if error and error.get("ename") == "CancelledError" and self.exec_scopes.cancelling:
                 error = dict(error) | dict(ename="KeyboardInterrupt", evalue="")
             exec_count = result.get("execution_count")
 
@@ -470,8 +482,7 @@ class Subshell:
         finally:
             self.kernel.send_status("idle", msg)
             self._set_last_exec_state(terminal_state)
-            self.executing.clear()
-            self._set_exec_state(ExecState.IDLE)
+            self.exec_tracker.done()
 
     def _shell_handler(self, msg: dict, idents: list[bytes]|None):
         msg_type = nested_idx(msg, "header", "msg_type") or None
@@ -714,7 +725,6 @@ class MiniKernel:
         for subshell in children: subshell.interrupt()
         parent = self.subshells.parent
         if not parent.executing.is_set(): return
-        parent._set_exec_state(ExecState.CANCELLING)
         if parent.cancel_async_execution(wake=True): return
         if not parent.sync_executing.is_set(): return
         raise KeyboardInterrupt

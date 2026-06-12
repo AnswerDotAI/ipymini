@@ -1,3 +1,5 @@
+import contextvars
+
 from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
 
@@ -30,12 +32,27 @@ class MiniDisplayPublisher(DisplayPublisher):
 
 
 class MiniDisplayHook(DisplayHook):
-    def __init__(self, shell=None):
-        "DisplayHook that captures last result metadata."
-        super().__init__(shell=shell)
-        self.last = None
-        self.last_metadata = None
-        self.last_execution_count = None
+    "DisplayHook that captures last result metadata, isolated per execution context."
+
+    # ContextVars so concurrent (unlocked) executions cannot read or clobber each other's result
+    _last = contextvars.ContextVar("ipymini.dh_last", default=None)
+    _last_metadata = contextvars.ContextVar("ipymini.dh_last_metadata", default=None)
+    _last_execution_count = contextvars.ContextVar("ipymini.dh_last_execution_count", default=None)
+
+    @property
+    def last(self): return self._last.get()
+    @last.setter
+    def last(self, v): self._last.set(v)
+
+    @property
+    def last_metadata(self): return self._last_metadata.get()
+    @last_metadata.setter
+    def last_metadata(self, v): self._last_metadata.set(v)
+
+    @property
+    def last_execution_count(self): return self._last_execution_count.get()
+    @last_execution_count.setter
+    def last_execution_count(self, v): self._last_execution_count.set(v)
 
     def write_output_prompt(self): self.last_execution_count = self.prompt_count
 
