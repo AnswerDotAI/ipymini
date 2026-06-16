@@ -710,19 +710,22 @@ class MiniKernel:
             self._set_state(KernelState.RUNNING)
             self.subshells.parent.run_main()
         finally:
-            self.request_stop("kernel finalizer", interrupt=False, failed=sys.exc_info()[0] is not None)
-            threading.excepthook = prev_hook
-            ServiceGroup(self.shell_router, self.control_router).stop_join(timeout=1)
-            ServiceGroup(self.hb).stop_join(timeout=1)
-            self.subshells.stop_all()
-            ServiceGroup(self.stdin_router, self.iopub_thread).stop_join(timeout=1)
-            signal.signal(signal.SIGINT, prev_sigint)
-            if sigusr1_registered: faulthandler.unregister(signal.SIGUSR1)
-            with self.state_lock:
-                if self.state != KernelState.FAILED: self.state = KernelState.STOPPED
-                failed = self.state == KernelState.FAILED
-            if os.name == "nt": os._exit(1 if failed else 0)
-            self._terminate_process_group_last()
+            failed = sys.exc_info()[0] is not None
+            try:
+                self.request_stop("kernel finalizer", interrupt=False, failed=failed)
+                threading.excepthook = prev_hook
+                ServiceGroup(self.shell_router, self.control_router).stop_join(timeout=1)
+                ServiceGroup(self.hb).stop_join(timeout=1)
+                self.subshells.stop_all()
+                ServiceGroup(self.stdin_router, self.iopub_thread).stop_join(timeout=1)
+                signal.signal(signal.SIGINT, prev_sigint)
+                if sigusr1_registered: faulthandler.unregister(signal.SIGUSR1)
+                with self.state_lock:
+                    if self.state != KernelState.FAILED: self.state = KernelState.STOPPED
+                    failed = self.state == KernelState.FAILED
+            finally:
+                if os.name == "nt": os._exit(1 if failed else 0)
+                self._terminate_process_group_last()
 
     def _terminate_process_group_last(self):
         "Terminate the kernel-owned process group as the last shutdown action."
