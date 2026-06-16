@@ -1,3 +1,4 @@
+*_.ipynb
 .claude/
 tests/test_gateway_e2e.py
 meta/
