@@ -1,3 +1,4 @@
+from itertools import groupby
 from typing import Callable
 
 
@@ -7,7 +8,7 @@ class MiniStream:
         self.name = name
         self.events = events
         self.sink = sink
-        self.buffer = ""
+        self.buffer = []
 
     def write(self, value) -> int:
         "Write text to buffer or emit live output."
@@ -18,8 +19,7 @@ class MiniStream:
         if not text: return 0
         if self.sink is not None: self._emit_live(text)
         if self.events is None: return len(text)
-        if self.events and self.events[-1]["name"] == self.name: self.events[-1]["text"] += text
-        else: self.events.append({"name": self.name, "text": text})
+        self.events.append({"name": self.name, "text": text})
         return len(text)
 
     def writelines(self, lines) -> int:
@@ -32,14 +32,19 @@ class MiniStream:
         "Flush buffered text to the sink."
         if self.sink is None: return None
         if self.buffer:
-            self.sink(self.name, self.buffer)
-            self.buffer = ""
+            self.sink(self.name, "".join(self.buffer))
+            self.buffer = []
         return None
 
     def isatty(self) -> bool: return False
 
     def _emit_live(self, text: str):
-        self.buffer += text
-        if self.buffer.endswith("\n"):
-            self.sink(self.name, self.buffer)
-            self.buffer = ""
+        self.buffer.append(text)
+        if text.endswith("\n"):
+            self.sink(self.name, "".join(self.buffer))
+            self.buffer = []
+
+
+def coalesce_streams(events: list[dict]) -> list[dict]:
+    "Merge adjacent same-name stream events into one event each."
+    return [dict(name=name, text="".join(e["text"] for e in grp)) for name, grp in groupby(events, key=lambda e: e["name"])]

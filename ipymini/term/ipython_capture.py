@@ -4,7 +4,7 @@ from typing import Callable
 
 from .display import MiniDisplayHook, MiniDisplayPublisher
 from .io import thread_local_io
-from .streams import MiniStream
+from .streams import MiniStream, coalesce_streams
 
 log = logging.getLogger("ipymini.term")
 
@@ -62,7 +62,7 @@ class IPythonCapture:
         return self._dedupe_set_next_input(payload)
 
     def snapshot(self, *, result=None, result_metadata=None, execution_count=None) -> dict:
-        streams = [] if self.stream_sender is not None else list(self.stream_events)
+        streams = [] if self.stream_sender is not None else coalesce_streams(self.stream_events)
         display_events = [] if self.display_sender is not None else list(self.shell.display_pub.events)
         if result is None: result = self.shell.displayhook.last
         if result_metadata is None: result_metadata = self.shell.displayhook.last_metadata or {}
