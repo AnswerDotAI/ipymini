@@ -1,6 +1,6 @@
-import asyncio, logging, sys, time, traceback
+import asyncio, contextlib, logging, sys, time, traceback
 from fastcore.basics import nested_idx
-from microio import LoopServiceThread
+from microio import EndOfStream, LoopServiceThread
 import zmq, zmq.asyncio
 
 from .queues import ThreadBoundAsyncQueue
@@ -23,6 +23,7 @@ class AsyncRouterThread(LoopServiceThread):
 
         self.sock = None
         self.outbox = ThreadBoundAsyncQueue()
+        self.wake_item = None  # one reply pulled by the wakeup waiter, not yet sent
         self.enqueued = 0
         self.sent = 0
         self.send_errors = 0
@@ -62,10 +63,23 @@ class AsyncRouterThread(LoopServiceThread):
         self.sock = sock
         self.started()
 
+        get_task = None
         try:
             while not self.scope.closed:
                 await self._drain_outbox(sock)
-                try: ready = await sock.poll(timeout=self.poll_ms, flags=zmq.POLLIN)
+                # Wait on the outbox and the socket together so a reply enqueued from a subshell
+                # thread wakes the loop at once instead of waiting out the poll timeout.
+                if get_task is None: get_task = asyncio.ensure_future(self._next_outbox_item())
+                poll_fut = asyncio.ensure_future(sock.poll(timeout=self.poll_ms, flags=zmq.POLLIN))
+                done, _ = await asyncio.wait({get_task, poll_fut}, return_when=asyncio.FIRST_COMPLETED)
+                if get_task in done:
+                    if (item := get_task.result()) is not None: self.wake_item = item
+                    get_task = None
+                if poll_fut not in done:
+                    poll_fut.cancel()
+                    with contextlib.suppress(asyncio.CancelledError): await poll_fut
+                    continue
+                try: ready = poll_fut.result()
                 except zmq.ZMQError as exc:
                     if not self.scope.closed:
                         log.exception("%s router stopped while polling", self.log_label)
@@ -75,22 +89,33 @@ class AsyncRouterThread(LoopServiceThread):
                 await self._handle_recv(sock)
         except asyncio.CancelledError: return
         finally:
+            if get_task is not None: get_task.cancel()
             try: sock.close(0)
             except Exception:
                 if not self.scope.closed: log.exception("%s router socket close failed", self.log_label)
 
+    async def _next_outbox_item(self):
+        "Await the next queued reply; None once the outbox is closed."
+        try: return await self.outbox.get()
+        except EndOfStream: return None
+
     async def _drain_outbox(self, sock: zmq.asyncio.Socket):
-        for item in self.outbox.drain_nowait(max_items=self.max_send_batch):
-            msg_type, content, parent, idents = item
-            msg = self.session.msg(msg_type, content, parent=parent)
-            frames = self.session.serialize(msg, ident=idents)
-            try:
-                fut = sock.send_multipart(frames)
-                if asyncio.isfuture(fut): await fut
-                self.sent += 1
-            except Exception as exc:
-                self.send_errors += 1
-                log.error("%s send error: %s", self.log_label, exc, exc_info=exc)
+        if self.wake_item is not None:
+            item, self.wake_item = self.wake_item, None
+            await self._send_item(sock, item)
+        for item in self.outbox.drain_nowait(max_items=self.max_send_batch): await self._send_item(sock, item)
+
+    async def _send_item(self, sock: zmq.asyncio.Socket, item):
+        msg_type, content, parent, idents = item
+        msg = self.session.msg(msg_type, content, parent=parent)
+        frames = self.session.serialize(msg, ident=idents)
+        try:
+            fut = sock.send_multipart(frames)
+            if asyncio.isfuture(fut): await fut
+            self.sent += 1
+        except Exception as exc:
+            self.send_errors += 1
+            log.error("%s send error: %s", self.log_label, exc, exc_info=exc)
 
     async def _handle_recv(self, sock: zmq.asyncio.Socket):
         try: msg_list = await sock.recv_multipart(copy=False)
