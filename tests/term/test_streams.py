@@ -1,4 +1,4 @@
-from ipymini.term import MiniStream
+from ipymini.term import MiniStream, coalesce_streams
 
 
 def test_ministream_behaviors():
@@ -7,7 +7,8 @@ def test_ministream_behaviors():
     stream.write("hello")
     stream.write(" world\n")
     stream.write("again")
-    assert events == [dict(name="stdout", text="hello world\nagain")]
+    # Events are recorded one-per-write; consumers coalesce adjacent same-name events.
+    assert coalesce_streams(events) == [dict(name="stdout", text="hello world\nagain")]
 
     seen = []
     def sink(name: str, text: str): seen.append((name, text))
@@ -22,10 +23,11 @@ def test_ministream_behaviors():
     out = MiniStream("stdout", events)
     err = MiniStream("stderr", events)
     out.write("a")
+    out.write("a2")
     err.write("b")
     out.write("c")
-    assert events == [
-        {"name": "stdout", "text": "a"},
+    assert coalesce_streams(events) == [
+        {"name": "stdout", "text": "aa2"},
         {"name": "stderr", "text": "b"},
         {"name": "stdout", "text": "c"}]
 
