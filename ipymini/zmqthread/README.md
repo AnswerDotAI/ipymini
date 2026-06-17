@@ -24,8 +24,8 @@ pip install ipymini-zmqthread
 ## API
 
 ```python
-from ipymini_zmqthread import ( ThreadBoundAsyncQueue, AsyncRouterThread,
-  IOPubThread, StdinRouterThread, HeartbeatThread)
+from ipymini_zmqthread import (AsyncRouterThread, IOPubThread,
+  StdinRouterThread, HeartbeatThread)
 ```
 
 ### AsyncRouterThread

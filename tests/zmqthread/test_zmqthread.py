@@ -2,8 +2,9 @@ import asyncio, socket, threading, time
 
 import zmq
 from jupyter_client.session import Session
+from microio import Mailbox
 
-from ipymini.zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread, ThreadBoundAsyncQueue
+from ipymini.zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread
 
 
 def _free_port() -> int:
@@ -22,7 +23,7 @@ def _poll_recv(sock, session, timeout:int = 1000):
 
 
 def test_zmqthread_features():
-    q = ThreadBoundAsyncQueue()
+    q = Mailbox()  # the router's outbox: thread-safe put + asyncio get, drops late puts after close
     q.put("a")
 
     async def _runner():
@@ -30,11 +31,10 @@ def test_zmqthread_features():
         assert await asyncio.wait_for(q.get(), timeout=1) == "a"
 
     asyncio.run(_runner())
-    q.suppress_late_puts()
     q.receive.close()
-    q.put("ignored")
+    q.put("ignored")  # late_send="drop": no raise after the loop is gone
 
-    q = ThreadBoundAsyncQueue()
+    q = Mailbox()
 
     async def _runner():
         q.bind(asyncio.get_running_loop())
