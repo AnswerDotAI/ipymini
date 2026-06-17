@@ -85,8 +85,7 @@ class AsyncRouterThread(LoopServiceThread):
             msg = self.session.msg(msg_type, content, parent=parent)
             frames = self.session.serialize(msg, ident=idents)
             try:
-                fut = sock.send_multipart(frames)
-                if asyncio.isfuture(fut): await fut
+                await sock.send_multipart(frames)
                 self.sent += 1
             except Exception as exc:
                 self.send_errors += 1
