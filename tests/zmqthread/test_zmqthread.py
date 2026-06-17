@@ -82,10 +82,10 @@ def test_zmqthread_features():
 
     iopub = IOPubThread(ctx, f"tcp://127.0.0.1:{_free_port()}", session, qmax=1)
     iopub.send("stream", {"name": "stdout", "text": "one"}, parent=None)
-    iopub.send("stream", {"name": "stdout", "text": "two"}, parent=None)
-    iopub.send("status", {"execution_state": "idle"}, parent=None)
-    assert iopub.q.qsize() == 1
-    assert iopub.priority_q.qsize() == 1
+    iopub.send("stream", {"name": "stdout", "text": "two"}, parent=None)  # dropped: q full at qmax=1
+    iopub.send("status", {"execution_state": "idle"}, parent=None)        # status always queued
+    assert iopub.q.qsize() == 2
+    assert iopub.dropped == 1
     assert iopub.enqueued == 3
 
     router = None
