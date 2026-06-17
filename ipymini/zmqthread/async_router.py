@@ -21,7 +21,6 @@ class AsyncRouterThread(LoopServiceThread):
         self.poll_ms = poll_ms
         self.max_send_batch = max_send_batch
 
-        self.sock = None
         self.outbox = ThreadBoundAsyncQueue()
         self.enqueued = 0
         self.sent = 0
@@ -44,9 +43,6 @@ class AsyncRouterThread(LoopServiceThread):
     def stop(self):
         first = super().stop("router stop")
         self.outbox.close()
-        if self.loop is not None and self.sock is not None:
-            try: self.loop.call_soon_threadsafe(self.sock.close, 0)
-            except RuntimeError: pass
         return first
 
     async def run_async(self):
@@ -54,12 +50,9 @@ class AsyncRouterThread(LoopServiceThread):
         if self._needs_selector_loop(self.loop): log.warning("Windows event loop may not support zmq.asyncio; consider SelectorEventLoop policy.")
         self.outbox.bind(self.loop)
 
-        async_ctx = zmq.asyncio.Context.shadow(self.context) if hasattr(zmq.asyncio.Context, "shadow") else zmq.asyncio.Context.instance()
-        sock = async_ctx.socket(zmq.ROUTER)
-        if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
-        sock.linger = 0
+        sock = zmq.asyncio.Context.shadow(self.context).socket(zmq.ROUTER)
+        sock.router_handover,sock.linger = 1,0  # let client reconnect, drop msgs on close instead of waiting
         sock.bind(self.bind_addr)
-        self.sock = sock
         self.started()
 
         try:
