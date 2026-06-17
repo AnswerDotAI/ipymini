@@ -1,6 +1,6 @@
 import asyncio, logging, sys, time, traceback
 from fastcore.basics import nested_idx
-from microio import LoopServiceThread, Mailbox
+from microio import EndOfStream, LoopServiceThread, Mailbox
 import zmq, zmq.asyncio
 
 log = logging.getLogger("ipymini.zmqthread")
@@ -53,34 +53,36 @@ class AsyncRouterThread(LoopServiceThread):
         sock.bind(self.bind_addr)
         self.started()
 
-        try:
+        async def send():
             while not self.scope.closed:
-                await self._drain_outbox(sock)
+                try: item = await self.outbox.get()
+                except EndOfStream: return
+                await self._send_item(sock, item)
+
+        async def read():
+            while not self.scope.closed:
                 try: ready = await sock.poll(timeout=self.poll_ms, flags=zmq.POLLIN)
-                except zmq.ZMQError as exc:
-                    if not self.scope.closed:
-                        log.exception("%s router stopped while polling", self.log_label)
-                        raise
+                except zmq.ZMQError:
+                    if not self.scope.closed: log.exception("%s router stopped while polling", self.log_label); raise
                     return
-                if not ready: continue
-                await self._handle_recv(sock)
+                if ready: await self._handle_recv(sock)
+
+        try: await asyncio.gather(send(), read())
         except asyncio.CancelledError: return
         finally:
             try: sock.close(0)
             except Exception:
                 if not self.scope.closed: log.exception("%s router socket close failed", self.log_label)
 
-    async def _drain_outbox(self, sock: zmq.asyncio.Socket):
-        for item in self.outbox.drain_nowait(max_items=self.max_send_batch):
-            msg_type, content, parent, idents = item
-            msg = self.session.msg(msg_type, content, parent=parent)
-            frames = self.session.serialize(msg, ident=idents)
-            try:
-                await sock.send_multipart(frames)
-                self.sent += 1
-            except Exception as exc:
-                self.send_errors += 1
-                log.error("%s send error: %s", self.log_label, exc, exc_info=exc)
+    async def _send_item(self, sock, item):
+        msg_type,content,parent,idents = item
+        frames = self.session.serialize(self.session.msg(msg_type, content, parent=parent), ident=idents)
+        try:
+            await sock.send_multipart(frames)
+            self.sent += 1
+        except Exception as exc:
+            self.send_errors += 1
+            log.error("%s send error: %s", self.log_label, exc, exc_info=exc)
 
     async def _handle_recv(self, sock: zmq.asyncio.Socket):
         try: msg_list = await sock.recv_multipart(copy=False)
@@ -109,8 +111,7 @@ class AsyncRouterThread(LoopServiceThread):
         msg = self.session.msg(reply_type, content, parent=parent)
         frames = self.session.serialize(msg, ident=idents)
         try:
-            fut = sock.send_multipart(frames)
-            if asyncio.isfuture(fut): await fut
+            await sock.send_multipart(frames)
             self.sent += 1
         except Exception:
             self.send_errors += 1
