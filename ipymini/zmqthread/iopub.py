@@ -14,28 +14,25 @@ class IOPubThread(ServiceThread):
         self.addr = addr
         self.session = session
         self.sndhwm = sndhwm
-        self.priority_q = queue.Queue()
-        self.q = queue.Queue(maxsize=int(qmax))
+        self.qmax = int(qmax)
+        self.q = queue.Queue()
         self.enqueued = 0
+        self.dropped = 0
         self.sent = 0
         self.send_errors = 0
 
     def send(self, msg_type, content, parent, metadata=None, ident=None, buffers=None):
-        "Queue an IOPub message for send; never drop status messages."
+        "Queue an IOPub message in FIFO order; drop non-status output past qmax, never status."
         self.enqueued += 1
-        item = (msg_type, content, parent, metadata, ident, buffers)
-        try: self.q.put_nowait(item)
-        except queue.Full:
-            if msg_type == "status":
-                self.priority_q.put(item)
-                return
-            backlog = self.enqueued - self.sent
-            if backlog in (100, 500, 1000): log.warning("IOPub queue full; dropping non-critical output. enq=%d sent=%d", self.enqueued, self.sent)
+        if msg_type != "status" and self.q.qsize() >= self.qmax:
+            self.dropped += 1
+            if self.dropped == 1 or self.dropped % 1000 == 0:
+                log.warning("IOPub queue full; dropping non-critical output. dropped=%d enq=%d sent=%d", self.dropped, self.enqueued, self.sent)
+            return
+        self.q.put_nowait((msg_type, content, parent, metadata, ident, buffers))
 
     def _get_next(self):
         try: return self.q.get(timeout=0.05)
-        except queue.Empty: pass
-        try: return self.priority_q.get_nowait()
         except queue.Empty: return None
 
     def run_service(self):
