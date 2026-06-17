@@ -1,9 +1,7 @@
 import asyncio, logging, sys, time, traceback
 from fastcore.basics import nested_idx
-from microio import LoopServiceThread
+from microio import LoopServiceThread, Mailbox
 import zmq, zmq.asyncio
-
-from .queues import ThreadBoundAsyncQueue
 
 log = logging.getLogger("ipymini.zmqthread")
 
@@ -21,7 +19,7 @@ class AsyncRouterThread(LoopServiceThread):
         self.poll_ms = poll_ms
         self.max_send_batch = max_send_batch
 
-        self.outbox = ThreadBoundAsyncQueue()
+        self.outbox = Mailbox()  # late_send="drop": enqueues after the loop is gone are dropped, not raised
         self.enqueued = 0
         self.sent = 0
         self.send_errors = 0
