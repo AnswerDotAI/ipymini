@@ -14,7 +14,7 @@ dependencies = [
   "ipython>=8.18",
   "jupyter_client>=8.6",
   "jupyter_core>=5.5",
-  "microio>=0.1.1",
+  "microio>=0.1.2",
   "pyzmq>=25.1",
 ]
 
