@@ -5,6 +5,7 @@ from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from fastcore.basics import nested_idx, store_attr
 from microio import ActorCore, CloseScope, ScopeGroup, ServiceGroup, WorkTracker
+from watchpid import watch_parent
 import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
@@ -655,6 +656,7 @@ class MiniKernel:
         self.state = KernelState.STARTING
         self.state_lock = threading.Lock()
         self.stop_scope = CloseScope()
+        self.parent_watcher = None
         self.shutdown_restart = None
         self.stop_on_error_timeout = _env_float("IPYMINI_STOP_ON_ERROR_TIMEOUT", 0.0)
         self.iopub_cmd = None
@@ -703,6 +705,7 @@ class MiniKernel:
             self.subshells.start()
             ServiceGroup(self.iopub_thread, self.stdin_router, self.hb).start().wait_started()
             signal.signal(signal.SIGINT, self.handle_sigint)
+            if os.name != "nt": self.parent_watcher = watch_parent(self._parent_exited)
             if hasattr(signal, "SIGUSR1"):
                 try:
                     faulthandler.register(signal.SIGUSR1, file=sys.__stderr__, all_threads=True)
@@ -734,6 +737,13 @@ class MiniKernel:
             finally:
                 if os.name == "nt": os._exit(1 if failed else 0)
                 self._terminate_process_group_last()
+
+    def _parent_exited(self):
+        "Stop when our launcher exits; this runs in the daemon parent watcher."
+        self.request_stop("parent process exited", interrupt=True)
+        time.sleep(2)
+        self._terminate_process_group_last()
+        os._exit(1)
 
     def _terminate_process_group_last(self):
         "Terminate the kernel-owned process group as the last shutdown action."

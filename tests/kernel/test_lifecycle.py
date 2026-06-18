@@ -1,4 +1,4 @@
-import os, threading, pytest
+import json, os, signal, threading, time, pytest
 from jupyter_client import KernelManager
 from microio import CloseScope
 from ipymini.kernel import KernelState, MiniKernel
@@ -68,7 +68,10 @@ def test_shutdown_reaps_kernel_process():
     km, kc, pid = _raw_kernel()
     try:
         assert pid and pid != os.getpid()
-        km.shutdown_kernel(now=True)
+        start = time.perf_counter()
+        _shutdown_request(kc)
+        _wait_kernel_process(km)
+        assert time.perf_counter() - start < 1.9
         assert_pid_gone(pid)
     finally:
         kc.stop_channels()
@@ -132,4 +135,40 @@ def test_graceful_shutdown_kills_user_resources():
         except Exception: pass
         if child_pid is not None:
             try: os.kill(child_pid, 9)
+            except OSError: pass
+
+
+@pytest.mark.slow
+def test_graceful_shutdown_kills_nested_ipymini_kernel():
+    "A nested ipymini KernelManager should not survive when the outer kernel stops."
+    km, kc, pid = _raw_kernel()
+    nested = None
+    try:
+        code = (
+            "import json, os\n"
+            "from jupyter_client import KernelManager\n"
+            "nested_km = KernelManager(kernel_name='ipymini')\n"
+            "nested_km.start_kernel()\n"
+            "nested_kc = nested_km.client()\n"
+            "nested_kc.start_channels()\n"
+            "nested_kc.wait_for_ready(timeout=10)\n"
+            "nested_pid = nested_km.provisioner.pid\n"
+            "print(json.dumps(dict(pid=nested_pid, pgid=os.getpgid(nested_pid), outer_pid=os.getpid(), outer_pgid=os.getpgrp())))\n")
+        _msg_id, reply, outputs = kc.exec_drain(code, timeout=15)
+        assert reply["content"]["status"] == "ok", reply["content"]
+        streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
+        nested = json.loads(streams.strip().splitlines()[-1])
+        assert nested["pid"] != pid
+        assert nested["pgid"] != nested["outer_pgid"]
+
+        _shutdown_request(kc)
+        _wait_kernel_process(km)
+        assert_pid_gone(pid)
+        assert_pid_gone(nested["pid"], timeout=1)
+    finally:
+        kc.stop_channels()
+        try: km.shutdown_kernel(now=True)
+        except Exception: pass
+        if nested is not None:
+            try: os.killpg(nested["pgid"], signal.SIGKILL)
             except OSError: pass
