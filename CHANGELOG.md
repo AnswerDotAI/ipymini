@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.12
+
+### New Features
+
+- Shut down nested ipymini kernels when their launcher exits via `JPY_PARENT_PID` watcher ([#35](https://github.com/AnswerDotAI/ipymini/issues/35))
+
+
 ## 0.1.11
 
 ### New Features
