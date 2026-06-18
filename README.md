@@ -32,6 +32,16 @@ brew install libzmq
 
 ---
 
+## Install
+
+From PyPI:
+
+```
+pip install ipymini
+```
+
+Wheel installs include a kernelspec in the environment, so Jupyter from that environment should discover `ipymini` without a separate install step.
+
 ## Install (editable)
 
 From the repo root:
@@ -48,9 +58,7 @@ pip install -e ".[test]"
 
 ## Installing the kernel spec
 
-You have a few options:
-
-### Option A: Use the built-in installer
+For editable installs, use the built-in installer. It copies the repo kernelspec into a Jupyter kernels directory.
 
 ```
 python -m ipymini install --user
@@ -68,13 +76,7 @@ After either option, you should see it in:
 jupyter kernelspec list
 ```
 
-### Option B: Install the spec into your user Jupyter dir
-
-```
-jupyter kernelspec install --user /path/to/ipymini/share/jupyter/kernels/ipymini
-```
-
-### Option C: Use the repo’s `JUPYTER_PATH`
+Alternatively, use the repo’s `JUPYTER_PATH` during development.
 Set `JUPYTER_PATH` to include the repo’s `share/jupyter`:
 
 ```

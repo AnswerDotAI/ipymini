@@ -63,7 +63,9 @@ class AsyncRouterThread(LoopServiceThread):
             while not self.scope.closed:
                 try: ready = await sock.poll(timeout=self.poll_ms, flags=zmq.POLLIN)
                 except zmq.ZMQError:
-                    if not self.scope.closed: log.exception("%s router stopped while polling", self.log_label); raise
+                    if not self.scope.closed:
+                        log.exception("%s router stopped while polling", self.log_label)
+                        raise
                     return
                 if ready: await self._handle_recv(sock)
 

@@ -9,6 +9,7 @@ def test_kernelspec_features():
     data = json.loads(spec_path.read_text(encoding="utf-8"))
     argv = data["argv"]
     assert argv[0] == "python"
+    assert "-Xfrozen_modules=off" in argv
     assert "-m" in argv
     assert "ipymini" in argv
     assert argv[-2:] == ["-f", "{connection_file}"]
@@ -21,5 +22,6 @@ def test_kernelspec_features():
     ksm = KernelSpecManager()
     spec = ksm.get_kernel_spec("ipymini")
     assert spec.argv[0] == "python"
+    assert "-Xfrozen_modules=off" in spec.argv
     assert "-m" in spec.argv
     assert "ipymini" in spec.argv

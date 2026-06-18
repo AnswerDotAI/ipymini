@@ -83,15 +83,13 @@ Notes:
 
 ## Releases
 
-- Normal releases: `tools/release.sh [patch|minor|major]`.
-- Initial PyPI permission setup (one‑time):
+- Normal releases use fastship:
 
 ```
-hatch build
-twine upload dist/*
+ship-gh
+ship-pypi
+ship-bump
 ```
-
-After the initial manual release, bump the version before running `tools/release.sh`.
 
 ## Where to start reading
 
