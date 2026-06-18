@@ -111,7 +111,7 @@ def test_graceful_shutdown_exits_with_busy_subshell():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="process-group teardown is POSIX-only")
-def test_graceful_shutdown_kills_user_resources():
+def test_sigterm_kills_user_resources():
     km, kc, pid = _raw_kernel()
     child_pid = None
     try:
@@ -125,7 +125,7 @@ def test_graceful_shutdown_kills_user_resources():
         streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
         child_pid = int(streams.strip().splitlines()[-1])
         os.kill(child_pid, 0)
-        _shutdown_request(kc)
+        os.kill(pid, signal.SIGTERM)
         _wait_kernel_process(km)
         assert_pid_gone(pid)
         assert_pid_gone(child_pid)

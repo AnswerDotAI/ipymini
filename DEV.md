@@ -129,7 +129,7 @@ Key files:
 - The parent subshell runs in the main thread, so SIGINT can interrupt running code without killing the kernel when idle.
 - Each subshell has a persistent asyncio loop; code runs while the loop is running, so `asyncio.create_task(...)` works in sync cells.
 - Output routing uses contextvars to associate streams/displays with the current parent message (works across tasks and user-launched threads).
-- On POSIX, kernel startup isolates the kernel into its own process group; shutdown terminates that group as the final step. Kernels launched by `KernelManager` also watch `JPY_PARENT_PID`, so nested ipymini kernels shut down when their launcher exits and then reap their own process group. ipymini does not try to gracefully cancel arbitrary user-created threads/processes individually. Windows currently skips this process-group teardown.
+- On POSIX, kernel startup isolates the kernel into its own process group; shutdown and direct `SIGTERM` terminate that group as the final step. Kernels launched by `KernelManager` also watch `JPY_PARENT_PID`, so nested ipymini kernels shut down when their launcher exits and then reap their own process group. ipymini does not try to gracefully cancel arbitrary user-created threads/processes individually. Windows currently skips this process-group teardown.
 - On POSIX, `SIGUSR1` dumps all Python thread stacks via `faulthandler` for stuck-kernel diagnostics.
 
 ### Router threads (shell/control)

@@ -699,12 +699,14 @@ class MiniKernel:
         dbg("kernel starting...")
         self._set_state(KernelState.STARTING)
         prev_hook = _install_thread_excepthook(self)
-        prev_sigint = signal.getsignal(signal.SIGINT)
+        prev_signals = {}
         sigusr1_registered = False
         try:
             self.subshells.start()
             ServiceGroup(self.iopub_thread, self.stdin_router, self.hb).start().wait_started()
-            signal.signal(signal.SIGINT, self.handle_sigint)
+            for signum, handler in ((signal.SIGINT, self.handle_sigint), (signal.SIGTERM, self.handle_sigterm)):
+                prev_signals[signum] = signal.getsignal(signum)
+                signal.signal(signum, handler)
             if os.name != "nt": self.parent_watcher = watch_parent(self._parent_exited)
             if hasattr(signal, "SIGUSR1"):
                 try:
@@ -729,7 +731,7 @@ class MiniKernel:
                 ServiceGroup(self.hb).stop_join(timeout=1)
                 self.subshells.stop_all()
                 ServiceGroup(self.stdin_router, self.iopub_thread).stop_join(timeout=1)
-                signal.signal(signal.SIGINT, prev_sigint)
+                for signum, handler in prev_signals.items(): signal.signal(signum, handler)
                 if sigusr1_registered: faulthandler.unregister(signal.SIGUSR1)
                 with self.state_lock:
                     if self.state != KernelState.FAILED: self.state = KernelState.STOPPED
@@ -770,6 +772,11 @@ class MiniKernel:
         if parent.cancel_async_execution(wake=True): return
         if not parent.sync_executing.is_set(): return
         raise KeyboardInterrupt
+
+    def handle_sigterm(self, signum, frame):
+        "Handle external termination through the normal shutdown finalizer."
+        self.request_stop("SIGTERM", interrupt=False, failed=True)
+        raise SystemExit(128 + signum)
 
     def handle_control_msg(self, msg: dict, idents: list[bytes]|None):
         "Handle control channel request message."
