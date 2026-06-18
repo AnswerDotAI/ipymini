@@ -13,9 +13,8 @@ def kc():
 # semantics, but opt-in per cell). The event dependency is the proof: cell 1 can only complete if
 # cell 2 ran during its await.
 _unlocker = """import asyncio
-from ipymini import unlock
 ev = asyncio.Event()
-unlock()
+get_ipython().kernel.unlock()
 await asyncio.wait_for(ev.wait(), 5)
 """
 
@@ -58,11 +57,10 @@ def test_unlock_trades_away_dependency_ordering(kc):
 # arrival time, so the client must send the cells only after the CM is entered - hence the
 # 'subshell ready' print, mirroring load_dialog asking the client for cells mid-cell.
 _subshell_caller = """import asyncio
-from ipymini import subshell
 globals().pop('hijack_flag', None)
 loop = asyncio.get_running_loop()
 ev = asyncio.Event()
-with subshell():
+with get_ipython().kernel.subshell():
     print('subshell ready', flush=True)
     await asyncio.wait_for(ev.wait(), 5)
     hijacked = 'hijack_flag' in globals()

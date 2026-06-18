@@ -97,6 +97,19 @@ python -m ipymini -f /path/to/connection.json
 
 ---
 
+## Concurrent execution helpers
+
+Inside an ipymini cell, `get_ipython().kernel.unlock()` lets queued shell messages run while the current cell awaits. `get_ipython().kernel.subshell()` is a context manager that routes later execute requests from the same client session to a temporary subshell:
+
+```
+with get_ipython().kernel.subshell():
+    await something()
+```
+
+The same helpers are also available as `from ipymini import unlock, subshell`.
+
+---
+
 ## Configuring env and working directory
 
 For per-launch configuration, rely on the kernel launcher:

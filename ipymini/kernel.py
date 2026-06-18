@@ -9,7 +9,7 @@ import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
 from .comms import get_comm_manager
-from .concur import _release as _unlock_release, _subshell as _subshell_var
+from .concur import _release as _unlock_release, _subshell as _subshell_var, unlock as _unlock, subshell as _subshell_context
 from .debug import DebugFlags, setup_debug, trace_msg
 from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread
 
@@ -667,6 +667,14 @@ class MiniKernel:
 
     def _set_state(self, state: KernelState):
         with self.state_lock: self.state = state
+
+    def unlock(self)->bool:
+        "Let queued shell messages run while the current cell awaits."
+        return _unlock()
+
+    def subshell(self):
+        "Run same-session execute_requests in a temporary subshell while the current cell awaits."
+        return _subshell_context()
 
     def request_stop(self, reason: str, *, interrupt: bool = True, failed: bool = False)->bool:
         "Transition toward shutdown once and wake blocked work."
