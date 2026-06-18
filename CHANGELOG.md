@@ -2,6 +2,16 @@
 
 <!-- do not remove -->
 
+## 0.1.10
+
+### New Features
+
+- Run router send and recv concurrently (kill ~40ms reply latency) ([#33](https://github.com/AnswerDotAI/ipymini/pull/33)), thanks to [@PiotrCzapla](https://github.com/PiotrCzapla)
+- De-slop AsyncRouterThread.`run_async` ([#32](https://github.com/AnswerDotAI/ipymini/pull/32)), thanks to [@PiotrCzapla](https://github.com/PiotrCzapla)
+- Propagate thread-local IO context through ThreadPoolExecutor.submit ([#27](https://github.com/AnswerDotAI/ipymini/issues/27))
+- Add unlock() and subshell() opt-ins for concurrent in-cell execution ([#26](https://github.com/AnswerDotAI/ipymini/issues/26))
+
+
 ## 0.1.9
 
 ### New Features
