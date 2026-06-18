@@ -4,6 +4,9 @@
 
 ## 0.1.11
 
+### New Features
+
+- Add Concurrent execution helpers ([#34](https://github.com/AnswerDotAI/ipymini/issues/34))
 
 
 ## 0.1.10
