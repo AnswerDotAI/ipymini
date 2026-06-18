@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.13
+
+### New Features
+
+- Add SIGTERM handler ([#36](https://github.com/AnswerDotAI/ipymini/issues/36))
+
+
 ## 0.1.12
 
 ### New Features
