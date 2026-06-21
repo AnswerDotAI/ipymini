@@ -1,12 +1,10 @@
 # ipymini
 
-🛑 **WARNING** This is a very early, very experimental, purely research project for now. Have fun playing with it, but don't expect it to work, or be supported, or to still exist next week. Perhaps it'll turn out to be useful, and we'll invest in it and maintain it, in which case we'll remove this warning. If you play with it and find issues, have improvement ideas, etc, we're keen to hear, and to research together!
-
-`ipymini` is a **Python-only** Jupyter kernel for Python with a small, readable codebase and strong IPython parity.
-
-The design goal is: **a small, readable, testable kernel** with **first‑class IPython behavior**.
+`ipymini` is a **Python-only** Jupyter kernel for Python with a small(ish), readable(ish) codebase and strong IPython parity.
 
 This was almost entirely implemented by AI, and no human currently fully understands all the generated code, so please be very careful, because we don't actually know what this code does. The AI closely referenced the `ipykernel`, `xeus`, `xeus-python`, and `jupyter_kernel_test` projects during development. So all credit for this project belongs to the authors of those packages, and to authors of the excellent documentation and specifications referred to (e.g DAP spec; JEPs; etc) - but of course all blame for mistakes is entirely our/AI's fault.
+
+Having said all that, we have been working on this and testing it for ~6 months before making it public, and it is working well for our needs at least (Mac and Linux usage on nbclassic and Solveit). We have restructured it a number of times to make it more modular and understandable, and added a lot of tests of concurrency, complex workflows, etc.
 
 ---
 
