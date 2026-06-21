@@ -40,20 +40,6 @@ pip install ipymini
 
 Wheel installs include a kernelspec in the environment, so Jupyter from that environment should discover `ipymini` without a separate install step.
 
-## Install (editable)
-
-From the repo root:
-
-```
-pip install -e .
-```
-
-Optional test deps:
-
-```
-pip install -e ".[test]"
-```
-
 ## Installing the kernel spec
 
 For editable installs, use the built-in installer. It copies the repo kernelspec into a Jupyter kernels directory.
