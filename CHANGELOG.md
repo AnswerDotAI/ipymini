@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.14
+
+### New Features
+
+- Support `comm_manager`; replace per-subshell parent ContextVars and `comm_context` with shared module-level vars and `set_kernel` binding; stop echoing inbound comms on IOPub ([#37](https://github.com/AnswerDotAI/ipymini/issues/37))
+
+
 ## 0.1.13
 
 ### New Features
