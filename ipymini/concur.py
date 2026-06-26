@@ -21,7 +21,7 @@ def subshell():
     sub = _subshell.get()
     if sub is None: raise RuntimeError("subshell() only works inside a cell running under ipymini")
     subs = sub.kernel.subshells
-    session = ((sub.parent_header_var.get() or {}).get("header") or {}).get("session")
+    session = ((sub.kernel.current_parent() or {}).get("header") or {}).get("session")
     sid = subs.create()
     try:
         subs.set_route_override(sid, session)

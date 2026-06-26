@@ -3,9 +3,16 @@ import asyncio
 import comm
 from IPython.core.async_helpers import _asyncio_runner
 from ipymini import shell as shell_mod
-from ipymini.shell import comm_context
+from ipymini.shell import set_kernel
 
 def _run(coro): return asyncio.run(coro)
+
+
+class _FakeKernel:
+    "Minimal stand-in for the comm layer's kernel handle: records IOPub sends and a fixed parent."
+    def __init__(self, parent, seen): self.iopub = self; self._parent = parent; self._seen = seen
+    def current_parent(self): return self._parent
+    def send(self, msg_type, parent, **kw): self._seen.append((msg_type, parent, kw))
 
 
 def test_shell_features(minishell):
@@ -13,10 +20,9 @@ def test_shell_features(minishell):
     assert shell_mod.MiniShell
 
     parent = {"header": {"msg_id": "demo"}}
-    def sender(*args, **kwargs): return None
 
     async def _go():
-        with minishell.execution_context(allow_stdin=False, silent=False, comm_sender=sender, parent=parent):
+        with minishell.execution_context(allow_stdin=False, silent=False):
             return await minishell.execute("from IPython.display import display\nprint('hello')\ndisplay('hi')\n1+1\n",
                 silent=False, store_history=False)
 
@@ -29,7 +35,7 @@ def test_shell_features(minishell):
     parent = {"header": {"msg_id": "demo2"}}
 
     async def _go():
-        with minishell.execution_context(allow_stdin=False, silent=False, comm_sender=sender, parent=parent):
+        with minishell.execution_context(allow_stdin=False, silent=False):
             return await minishell.execute("1/0\n", silent=False, store_history=False, user_expressions={"a": "1+1"})
 
     res = _run(_go())
@@ -40,7 +46,7 @@ def test_shell_features(minishell):
     parent = {"header": {"msg_id": "demo3"}}
 
     async def _go():
-        with minishell.execution_context(allow_stdin=False, silent=True, comm_sender=sender, parent=parent):
+        with minishell.execution_context(allow_stdin=False, silent=True):
             return await minishell.execute("x=1\n", silent=True, store_history=False, user_expressions='{"a":"x+1"}')
 
     res = _run(_go())
@@ -66,7 +72,7 @@ def test_shell_features(minishell):
     parent = {"header": {"msg_id": "hist"}}
 
     async def _go():
-        with minishell.execution_context(allow_stdin=False, silent=False, comm_sender=sender, parent=parent):
+        with minishell.execution_context(allow_stdin=False, silent=False):
             await minishell.execute("x = 123\n", silent=False, store_history=True)
     _run(_go())
 
@@ -80,7 +86,7 @@ def test_shell_features(minishell):
 
     minishell.capture.consume_payload()
     parent = {"header": {"msg_id": "payload"}}
-    with minishell.execution_context(allow_stdin=False, silent=True, comm_sender=sender, parent=parent):
+    with minishell.execution_context(allow_stdin=False, silent=True):
         minishell.ipy.set_next_input("first")
         minishell.ipy.set_next_input("second")
 
@@ -91,32 +97,28 @@ def test_shell_features(minishell):
 
     seen = []
     parent = {"header": {"msg_id": "p"}}
-
-    def comm_sender(msg_type, parent_msg, **kwargs): seen.append((msg_type, parent_msg, kwargs))
-
-    with comm_context(comm_sender, parent):
+    set_kernel(_FakeKernel(parent, seen))
+    try:
         c = comm.create_comm(target_name="demo", primary=False)
         c.open(data={"a": 1})
         c.send(data={"b": 2})
         c.close(data={"c": 3})
+        assert [m for (m, _p, _k) in seen][:3] == ["comm_open", "comm_msg", "comm_close"]
+        for msg_type, parent_msg, kw in seen:
+            assert parent_msg == parent
+            content = kw.get("content") or {}
+            assert content.get("comm_id")
+            assert "data" in content
 
-    assert [m for (m, _p, _k) in seen][:3] == ["comm_open", "comm_msg", "comm_close"]
-    for msg_type, parent_msg, kw in seen:
-        assert parent_msg == parent
-        content = kw.get("content") or {}
-        assert content.get("comm_id")
-        assert "data" in content
-
-    called = {"n": 0}
-    def comm_sender(*args, **kwargs): called["n"] += 1
-
-    parent = {"header": {"msg_id": "p2"}}
-    c = comm.create_comm(target_name="demo2")
-    c.open(data={"x": 1})
-    assert called["n"] == 0
-
-    with comm_context(comm_sender, parent): c.send(data={"y": 2})
-    assert called["n"] == 1
+        called = []
+        set_kernel(None)  # no kernel bound -> outbound comms are dropped, not queued
+        c = comm.create_comm(target_name="demo2")
+        c.open(data={"x": 1})
+        assert called == []
+        set_kernel(_FakeKernel({"header": {"msg_id": "p2"}}, called))
+        c.send(data={"y": 2})
+        assert len(called) == 1
+    finally: set_kernel(None)
 
     code = "import asyncio\nawait asyncio.sleep(1)\n"
     shell = minishell.ipy
@@ -132,7 +134,7 @@ def test_shell_features(minishell):
             parent = {"header": {"msg_id": "cancel"}}
 
             async def _go():
-                with minishell.execution_context(allow_stdin=False, silent=True, comm_sender=sender, parent=parent):
+                with minishell.execution_context(allow_stdin=False, silent=True):
                     task = asyncio.create_task(minishell.execute(code, silent=True, store_history=False))
                     await asyncio.sleep(0.05)
                     task.cancel()

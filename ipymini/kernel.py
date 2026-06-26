@@ -9,12 +9,18 @@ from watchpid import watch_parent
 import zmq
 from jupyter_client.session import Session
 from .shell import MiniShell
-from .comms import get_comm_manager
+from .comms import get_comm_manager, set_kernel
 from .concur import _release as _unlock_release, _subshell as _subshell_var, unlock as _unlock, subshell as _subshell_context
 from .debug import DebugFlags, setup_debug, trace_msg
 from .zmqthread import AsyncRouterThread, HeartbeatThread, IOPubThread, StdinRouterThread
 
 log = logging.getLogger("ipymini.kernel")
+
+# Shared across subshells: a single ContextVar gives the right value per execution context (thread/task),
+# so streams, displays, stdin, and the global comm layer all resolve the active parent the same way.
+parent_header_var = contextvars.ContextVar("ipymini_parent_header", default=None)
+parent_idents_var = contextvars.ContextVar("ipymini_parent_idents", default=None)
+
 _debug_flags = DebugFlags.from_env("IPYMINI")
 _debug = _debug_flags.enabled
 _dbg_lock = threading.Lock()
@@ -135,8 +141,6 @@ class Subshell:
         self.abort_handle = None
         self._shell = None
         self.shell_ready = threading.Event()
-        self.parent_header_var = contextvars.ContextVar("parent_header", default=None)
-        self.parent_idents_var = contextvars.ContextVar("parent_idents", default=None)
         self.exec_tracker = WorkTracker()
         self.executing = self.exec_tracker.busy
         self.exec_scopes = ScopeGroup()
@@ -228,17 +232,17 @@ class Subshell:
             if sys.stdout is not None: sys.stdout.flush()
             if sys.stderr is not None: sys.stderr.flush()
         except (OSError, ValueError): pass
-        parent = self.parent_header_var.get()
-        idents = self.parent_idents_var.get()
+        parent = parent_header_var.get()
+        idents = parent_idents_var.get()
         return self.kernel.stdin_router.request_input(prompt, password, parent, idents)
 
     def _send_stream(self, name:str, text:str):
-        parent = self.parent_header_var.get()
+        parent = parent_header_var.get()
         if not parent: return
         self.kernel.iopub.stream(parent, name=name, text=text)
 
     def _send_display_event(self, event: dict):
-        parent = self.parent_header_var.get()
+        parent = parent_header_var.get()
         if not parent: return
         if event.get("type") == "clear_output":
             self.kernel.iopub.clear_output(parent, wait=event.get("wait", False))
@@ -253,7 +257,7 @@ class Subshell:
 
     def send_debug_event(self, event: dict):
         "Send debug_event on IOPub for current parent message."
-        parent = self.parent_header_var.get() or {}
+        parent = parent_header_var.get() or {}
         self.kernel.iopub.debug_event(parent, content=event)
 
     def send_status(self, state:str, parent: dict|None): self.kernel.iopub.status(parent, execution_state=state)
@@ -325,8 +329,8 @@ class Subshell:
         msg_type = msg["header"]["msg_type"]
         msg_id = msg["header"].get("msg_id", "?")[:8]
         dbg(f"HANDLE_MSG {msg_type} id={msg_id}")
-        token_header = self.parent_header_var.set(msg)
-        token_idents = self.parent_idents_var.set(idents)
+        token_header = parent_header_var.set(msg)
+        token_idents = parent_idents_var.set(idents)
         try:
             missing = self._missing_fields(msg_type, msg.get("content", {}))
             if missing:
@@ -342,8 +346,8 @@ class Subshell:
                 return
             self._dispatch_shell_non_execute(msg, idents)
         finally:
-            self.parent_header_var.reset(token_header)
-            self.parent_idents_var.reset(token_idents)
+            parent_header_var.reset(token_header)
+            parent_idents_var.reset(token_idents)
 
     def _missing_fields(self, msg_type:str, content: dict)->list[str]:
         required = shell_required.get(msg_type)
@@ -444,7 +448,7 @@ class Subshell:
                 loop = asyncio.get_running_loop()
                 timeout_handle = loop.call_later(2.0, lambda: log.warning("execute still running msg_id=%s", msg_id))
             try:
-                with self.shell.execution_context(allow_stdin=allow_stdin, silent=silent, comm_sender=iopub.send, parent=msg):
+                with self.shell.execution_context(allow_stdin=allow_stdin, silent=silent):
                     result = await self.shell.execute(code, silent=silent, store_history=store_history,
                         user_expressions=user_expressions, allow_stdin=allow_stdin)
             finally:
@@ -524,7 +528,6 @@ class Subshell:
         msg_type = msg["header"]["msg_type"]
         manager = get_comm_manager()
         getattr(manager, msg_type)(None, None, msg)
-        self.kernel.iopub.send(msg_type, msg, msg.get("content", {}), metadata=msg.get("metadata"), buffers=msg.get("buffers"))
 
     def handle_shutdown(self, msg: dict, idents: list[bytes]|None): self.kernel.handle_shutdown(msg, idents, channel="shell")
 
@@ -649,6 +652,8 @@ class MiniKernel:
         self.hb = HeartbeatThread(self.context, self.connection.addr(self.connection.hb_port))
         self.subshells = SubshellManager(self)
         self.shell = self.subshells.parent.shell
+        self.comm_manager = get_comm_manager()  # ipywidgets-style reach: get_ipython().kernel.comm_manager
+        set_kernel(self)
         self.parent_header = None
         self.parent_idents = None
         self.shell_router = None
@@ -844,6 +849,10 @@ class MiniKernel:
         "Send a debug_event on IOPub using current parent header."
         parent = self.parent_header or {}
         self.iopub.debug_event(parent, content=event)
+
+    def current_parent(self)->dict:
+        "Active parent header for the current context (cell, comm handler, or thread it spawned); falls back to last parent."
+        return parent_header_var.get() or self.parent_header or {}
 
     @property
     def iopub(self)->IOPubCommand:

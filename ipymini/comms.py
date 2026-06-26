@@ -1,3 +1,3 @@
-from .shell.comms import IpyminiComm, comm_context, get_comm_manager
+from .shell.comms import IpyminiComm, get_comm_manager, set_kernel
 
-__all__ = ["IpyminiComm", "comm_context", "get_comm_manager"]
+__all__ = ["IpyminiComm", "get_comm_manager", "set_kernel"]

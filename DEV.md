@@ -156,7 +156,8 @@ Key files:
 
 - `execute_input` is emitted before any live stream/display output.
 - Streams and display data are live when a sender is configured; otherwise they buffer and flush after execution.
-- Comm open/msg/close are routed through IPython’s comm manager and broadcast on IOPub (buffers preserved).
+- Inbound comm open/msg/close are routed to the `comm` package's `CommManager` (reachable as `get_ipython().kernel.comm_manager`), which drives the registered target/`on_msg`/`on_close` callbacks; inbound messages are not echoed back on IOPub.
+- Outbound comms (`comm.create_comm(...).send(...)`, callback replies) publish on IOPub via `IpyminiComm.publish_msg`, parented to `kernel.current_parent()` — the shared `parent_header_var` for the active cell/comm-handler/spawned-thread, falling back to the kernel's last parent. The comm layer is bound to the kernel at startup via `set_kernel` (buffers preserved).
 
 ### History / inspect / completion
 

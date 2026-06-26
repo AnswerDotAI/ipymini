@@ -16,7 +16,6 @@ from IPython.core.shellapp import InteractiveShellApp
 
 from microio import ScopeGroup
 
-from .comms import comm_context
 from ipymini.debug import Debugger, debug_cell_filename
 from ipymini.term import IPythonCapture
 
@@ -119,9 +118,9 @@ class MiniShell:
             debug_just_my_code=False, filter_internal_frames=True)
 
     @contextmanager
-    def execution_context(self, *, allow_stdin: bool, silent: bool, comm_sender, parent: dict):
+    def execution_context(self, *, allow_stdin: bool, silent: bool):
         self.capture.reset()
-        with comm_context(comm_sender, parent), self.capture.capture(allow_stdin=bool(allow_stdin), silent=silent): yield
+        with self.capture.capture(allow_stdin=bool(allow_stdin), silent=silent): yield
 
     def _payloadpage_page(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None):
         start = max(0, start)

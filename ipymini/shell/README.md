@@ -3,7 +3,7 @@
 `ipymini-shell` is the IPython integration layer for ipymini. It bundles:
 
 - `MiniShell`: a small wrapper around `InteractiveShell` that executes code, captures outputs, and normalizes errors.
-- `comm_context`: a tiny context manager used by comm publish helpers to attach parent metadata.
+- `get_comm_manager` / `set_kernel`: comm wiring. `set_kernel(kernel)` binds the global comm layer to a running kernel; outbound comms then publish on its IOPub, parented via `kernel.current_parent()`.
 
 The goal is to keep IPython-specific wiring in one place so the kernel can stay focused on protocol, routing, and lifecycle.
 
@@ -16,14 +16,12 @@ pip install -e .
 ## Quick start
 
 ```python
-from ipymini_shell import MiniShell, comm_context
+from ipymini_shell import MiniShell
 
 def request_input(prompt: str, password: bool) -> str: return "Ada" if not password else "secret"
 shell = MiniShell(request_input=request_input)
 
-def iopub_send(msg_type, parent, content=None, **kwargs): print(msg_type, content)
-parent = {"header": {"msg_id": "demo"}}
-with shell.execution_context(allow_stdin=True, silent=False, comm_sender=iopub_send, parent=parent):
+with shell.execution_context(allow_stdin=True, silent=False):
     result = await shell.execute("print('hello')\n1+1", silent=False, store_history=True)
 
 print(result["result"])   # last displayhook result bundle
@@ -43,20 +41,20 @@ MiniShell(
 
 Key methods:
 
-- `execution_context(allow_stdin, silent, comm_sender, parent)` — binds per-request IO capture + comm context.
+- `execution_context(allow_stdin, silent)` — binds per-request IO capture.
 - `execute(code, silent=False, store_history=True, user_expressions=None, allow_stdin=False)` — runs code and returns a snapshot dict.
 - `complete(code, cursor_pos=None)`, `inspect(code, cursor_pos=None, detail_level=0)`, `is_complete(code)`, `history(...)`
 - `set_stream_sender(...)`, `set_display_sender(...)`
 - `debug_request(request_json)` — DAP request handler
 
-### `comm_context`
+### `set_kernel`
 
 ```python
-with comm_context(sender, parent):
-    ...
+from ipymini_shell import set_kernel
+set_kernel(kernel)  # kernel must expose `.iopub.send(...)` and `.current_parent()`
 ```
 
-Attaches the parent header and IOPub sender used by comms.
+Binds the process-global comm layer to a kernel. Outbound comms (`comm.create_comm(...).send(...)`) then publish on that kernel's IOPub, parented to `kernel.current_parent()` — the active cell, comm handler, or thread it spawned. With no kernel bound, outbound comms are dropped.
 
 ## Dependencies
 
