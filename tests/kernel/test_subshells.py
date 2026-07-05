@@ -225,6 +225,22 @@ def test_subshell_reads_shared_ns_during_parent_sleep(kc):
     _delete_subshell(kc, subshell_id)
 
 
+def test_subshell_creation_keeps_history_ns_linked(kc):
+    "Creating a subshell must not orphan In/Out in the shared user_ns from the parent's HistoryManager."
+    subshell_id = _create_subshell(kc)
+    try:
+        _, reply, _ = _execute(kc, "hist_probe = 42")
+        assert reply["content"]["status"] == "ok"
+        code = ("ip = get_ipython()\n"
+            "print(ip.user_ns['In'] is ip.history_manager.input_hist_parsed,"
+            " ip.user_ns['Out'] is ip.history_manager.output_hist, In[-2])")
+        _, reply, outputs = _execute(kc, code)
+        assert reply["content"]["status"] == "ok"
+        text = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
+        assert "True True hist_probe = 42" in text, f"history ns decoupled: {text!r}"
+    finally: _delete_subshell(kc, subshell_id)
+
+
 def test_subshell_interrupt_request_breaks_sleep(kc):
     subshell_id = _create_subshell(kc)
     msg_id = _send_execute(kc, "import time; time.sleep(0.7); print('done')", subshell_id=subshell_id)
