@@ -123,7 +123,7 @@ Key files:
 - Each `Subshell` holds a `MiniShell` (`self.shell`), which wraps an IPython `InteractiveShell` (`self.shell.ipy`).
 - `Subshell.__init__` receives the `MiniKernel` as `kernel` and stores it via `store_attr`.
 - `MiniKernel.shell` is a shortcut to `self.subshells.parent.shell` (the parent subshell's `MiniShell`).
-- Child subshells (created via `SubshellManager.create`) share the same `user_ns` dict but get their own `MiniShell` and IPython instance.
+- Child subshells (created via `SubshellManager.create`) share the same `user_ns` dict but get their own `MiniShell` and IPython instance. Their in-memory history (`In`/`Out` etc.) is shared with the parent's `HistoryManager`, but execution counts stay per-subshell, so `In[n]`/`Out[n]` may not match prompt `n` and concurrent subshells at the same count overwrite each other's `Out[n]`.
 - `get_ipython()` returns `MiniShell.ipy` (the `InteractiveShell` singleton for the parent, non-singleton for children).
 
 ### Execution model

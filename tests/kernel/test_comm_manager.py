@@ -62,3 +62,35 @@ async def test_inbound_comm_not_echoed():
             if parent_id(m) == bid and m["msg_type"] == "status" and m["content"].get("execution_state") == "idle": break
         assert not echoed, f"inbound comm should not be echoed on iopub: {echoed}"
         assert (await barrier)["content"]["status"] == "ok"
+
+
+_printer = """from comm import get_comm_manager
+def _target(comm, open_msg):
+    print('open-print')
+    comm.on_msg(lambda m: print('msg-print', m['content']['data'].get('x')))
+get_comm_manager().register_target('printer', _target)
+"""
+
+
+async def test_comm_callback_output_reaches_iopub():
+    "stdout inside a comm target/on_msg callback is captured and published on iopub, parented to the inbound msg."
+    async with mini_kernel() as (_, kc):
+        assert (await kc.exec_drain(_printer, store_history=False))[0]["content"]["status"] == "ok"
+        cid = "pr-1"
+        open_id = kc.shell_request("comm_open", reply=False, comm_id=cid, target_name="printer", data={})
+        s1 = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "open-print" in m["content"].get("text", ""),
+            err="comm_open callback stdout never reached iopub")
+        assert parent_id(s1) == open_id, "stream parent should be the inbound comm_open"
+        mid = kc.shell_request("comm_msg", reply=False, comm_id=cid, data={"x": 9})
+        s2 = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "msg-print" in m["content"].get("text", ""),
+            err="comm_msg callback stdout never reached iopub")
+        assert parent_id(s2) == mid, "stream parent should be the inbound comm_msg"
+
+
+async def test_kernel_get_parent():
+    "get_ipython().kernel.get_parent() returns the active parent header (ipywidgets Output relies on it)."
+    async with mini_kernel() as (_, kc):
+        reply, out = await kc.exec_drain("print(get_ipython().kernel.get_parent()['header']['msg_id'])", store_history=False)
+        assert reply["content"]["status"] == "ok", reply["content"]
+        printed = "".join(m["content"]["text"] for m in iopub_streams(out)).strip()
+        assert printed == parent_id(reply), (printed, parent_id(reply))

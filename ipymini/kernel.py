@@ -527,7 +527,7 @@ class Subshell:
     def _handle_comm(self, msg: dict, idents: list[bytes]|None):
         msg_type = msg["header"]["msg_type"]
         manager = get_comm_manager()
-        getattr(manager, msg_type)(None, None, msg)
+        with self.shell.output_context(): getattr(manager, msg_type)(None, None, msg)
 
     def handle_shutdown(self, msg: dict, idents: list[bytes]|None): self.kernel.handle_shutdown(msg, idents, channel="shell")
 
@@ -853,6 +853,10 @@ class MiniKernel:
     def current_parent(self)->dict:
         "Active parent header for the current context (cell, comm handler, or thread it spawned); falls back to last parent."
         return parent_header_var.get() or self.parent_header or {}
+
+    def get_parent(self, channel=None)->dict:
+        "ipykernel-compatible accessor for the active parent header (ipywidgets `Output` uses it to grab the current msg_id)."
+        return self.current_parent()
 
     @property
     def iopub(self)->IOPubCommand:

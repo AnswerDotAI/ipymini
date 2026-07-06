@@ -113,3 +113,34 @@ async def test_sync_cells_still_run_in_order(kc):
         for code in ("order = []", "order.append(1)", "order.append(2)", "order.append(3)")]
     for r in await asyncio.gather(*cs): assert r["content"]["status"] == "ok", r["content"]
     assert (o := await kc.eval_expr("order")) == [1, 2, 3], o
+
+
+_reentrant_setup = """import asyncio
+from comm import get_comm_manager
+rev = asyncio.Event()
+def _rt(comm, open_msg):
+    comm.on_msg(lambda m: (print('reentrant-print'), rev.set()))
+get_comm_manager().register_target('reentrant', _rt)
+"""
+
+_reentrant_unlocker = """import asyncio
+get_ipython().kernel.unlock()
+await asyncio.wait_for(rev.wait(), 5)
+print('cell-b-after')
+"""
+
+
+async def test_comm_capture_reentrant_during_unlock(kc):
+    "A comm callback firing during an unlocked cell's await captures stdout to iopub parented to the comm_msg, without disturbing the awaiting cell's own output parent."
+    assert (await kc.exec_drain(_reentrant_setup))[0]["content"]["status"] == "ok"
+    c1 = kc.execute(_reentrant_unlocker, reply=True, timeout=10)
+    kc.shell_request("comm_open", reply=False, comm_id="re-1", target_name="reentrant", data={})
+    mid = kc.shell_request("comm_msg", reply=False, comm_id="re-1", data={})
+    s = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "reentrant-print" in m["content"].get("text", ""),
+        err="comm callback stdout during unlock never reached iopub")
+    assert parent_id(s) == mid, "comm-callback stream must be parented to the comm_msg, not the unlocked cell"
+    r1 = await c1
+    assert r1["content"]["status"] == "ok", r1["content"]
+    b = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "cell-b-after" in m["content"].get("text", ""),
+        err="unlocked cell's own stdout after resume never reached iopub")
+    assert parent_id(b) == parent_id(r1), "resumed cell's stream must be parented to its own execute"

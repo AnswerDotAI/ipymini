@@ -77,6 +77,14 @@ def _init_ipython_app(shell):
         startup_done = True
 
 
+def _share_history(shell, parent):
+    "Point `shell`'s in-memory history at `parent`'s, then rebind `In`/`Out` in the shared user_ns (which `shell`'s init clobbered)."
+    hm,phm = shell.history_manager,parent.history_manager
+    hm.input_hist_parsed,hm.input_hist_raw = phm.input_hist_parsed,phm.input_hist_raw
+    hm.output_hist,hm.output_hist_reprs,hm.dir_hist = phm.output_hist,phm.output_hist_reprs,phm.dir_hist
+    shell.init_user_ns()
+
+
 class MiniShell:
     def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
         zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, exec_scopes=None,
@@ -86,7 +94,10 @@ class MiniShell:
 
         os.environ.setdefault("MPLBACKEND", "module://matplotlib_inline.backend_inline")
         if use_singleton: self.ipy = InteractiveShell.instance(user_ns=user_ns)
-        else: self.ipy = InteractiveShell(user_ns=user_ns)
+        else:
+            self.ipy = InteractiveShell(user_ns=user_ns)
+            if InteractiveShell.initialized() and user_ns is InteractiveShell.instance().user_ns:
+                _share_history(self.ipy, InteractiveShell.instance())
         use_jedi = _env_flag("IPYMINI_USE_JEDI")
         if use_jedi is not None: self.ipy.Completer.use_jedi = use_jedi
 
@@ -121,6 +132,11 @@ class MiniShell:
     def execution_context(self, *, allow_stdin: bool, silent: bool):
         self.capture.reset()
         with self.capture.capture(allow_stdin=bool(allow_stdin), silent=silent): yield
+
+    @contextmanager
+    def output_context(self, *, allow_stdin: bool = False):
+        "Live-capture stdout/stderr/display for out-of-cell handlers (e.g. comm callbacks) without resetting execute state."
+        with self.capture.capture(allow_stdin=allow_stdin, silent=False): yield
 
     def _payloadpage_page(self, strg, start: int = 0, screen_lines: int = 0, pager_cmd=None):
         start = max(0, start)
