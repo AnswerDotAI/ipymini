@@ -1,9 +1,8 @@
 import os
 from pathlib import Path
-from ..kernel_utils import *
+from ..aclient import *
 
-
-def test_ipython_startup_integration(tmp_path):
+async def test_ipython_startup_integration(tmp_path):
     root = Path(__file__).resolve().parents[1]
     ipdir = tmp_path / "ipdir"
     profile = ipdir / "profile_default"
@@ -30,13 +29,10 @@ c.InteractiveShellApp.exec_lines = ['EXEC_LINE = 123']
     pythonpath = os.pathsep.join(paths)
     extra_env = dict(IPYTHONDIR=str(ipdir), PYTHONPATH=pythonpath)
 
-    with KernelHarness(extra_env=extra_env) as h:
-        kc = h.kc
+    async with mini_kernel(extra_env=extra_env) as (_, kc):
         code = """assert EXT_LOADED == 'ok'
 assert EXEC_LINE == 123
 assert STARTUP_OK == 456
 """
-        msg_id = kc.execute(code, store_history=False)
-        reply = kc.shell_reply(msg_id)
+        reply, _ = await kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        kc.iopub_drain(msg_id)

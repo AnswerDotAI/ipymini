@@ -10,7 +10,7 @@ def _run(coro): return asyncio.run(coro)
 
 class _FakeKernel:
     "Minimal stand-in for the comm layer's kernel handle: records IOPub sends and a fixed parent."
-    def __init__(self, parent, seen): self.iopub = self; self._parent = parent; self._seen = seen
+    def __init__(self, parent, seen): self.iopub,self._parent,self._seen = self,parent,seen
     def current_parent(self): return self._parent
     def send(self, msg_type, parent, **kw): self._seen.append((msg_type, parent, kw))
 

@@ -1,35 +1,35 @@
-from ..kernel_utils import *
+import asyncio
+from ..aclient import *
 
-
-def test_execute_features():
-    with start_kernel() as (_, kc):
-        _, reply, output_msgs = kc.exec_drain("print('hi')", silent=True)
+async def test_execute_features():
+    async with mini_kernel() as (_, kc):
+        reply, output_msgs = await kc.exec_drain("print('hi')", silent=True)
         assert reply["content"]["status"] == "ok"
         assert not any(msg["msg_type"] in {"stream", "execute_result", "display_data"} for msg in output_msgs)
 
-        msg_id1, reply1, _ = kc.exec_drain("1+1")
+        reply1, _ = await kc.exec_drain("1+1")
         assert reply1["content"]["status"] == "ok"
         count1 = reply1["content"]["execution_count"]
 
-        msg_id2, reply2, _ = kc.exec_drain("2+2", store_history=False)
+        reply2, _ = await kc.exec_drain("2+2", store_history=False)
         assert reply2["content"]["status"] == "ok"
         count2 = reply2["content"]["execution_count"]
 
-        msg_id3, reply3, _ = kc.exec_drain("3+3")
+        reply3, _ = await kc.exec_drain("3+3")
         assert reply3["content"]["status"] == "ok"
         count3 = reply3["content"]["execution_count"]
 
         assert count2 == count1 + 1
         assert count3 == count2
 
-        _, reply, output_msgs = kc.exec_drain("1+2+3", store_history=False)
+        reply, output_msgs = await kc.exec_drain("1+2+3", store_history=False)
         assert reply["content"]["status"] == "ok"
         results = iopub_msgs(output_msgs, "execute_result")
         assert results
         data = results[-1]["content"].get("data", {})
         assert data.get("text/plain") == "6"
 
-        _, reply, outputs = kc.exec_drain("1+1")
+        reply, outputs = await kc.exec_drain("1+1")
         execute_inputs = iopub_msgs(outputs, "execute_input")
         execute_results = iopub_msgs(outputs, "execute_result")
         assert execute_inputs and execute_results
@@ -38,22 +38,22 @@ def test_execute_features():
         reply_count = reply["content"]["execution_count"]
         assert input_count == result_count == reply_count, f"mismatch: input={input_count}, result={result_count}, reply={reply_count}"
 
-        _, reply, _ = kc.exec_drain("a = 10", user_expressions={"x": "a+1", "bad": "1/0"})
+        reply, _ = await kc.exec_drain("a = 10", user_expressions={"x": "a+1", "bad": "1/0"})
         assert reply["content"]["status"] == "ok"
         expr = reply["content"]["user_expressions"]
         assert expr["x"]["status"] == "ok"
         assert expr["x"]["data"]["text/plain"] == "11"
         assert expr["bad"]["status"] == "error"
 
-        _, reply, output_msgs = kc.exec_drain("1/0", store_history=False)
+        reply, output_msgs = await kc.exec_drain("1/0", store_history=False)
         assert reply["content"]["status"] == "error"
         errors = iopub_msgs(output_msgs, "error")
         assert errors
 
-        _, reply1, _ = kc.exec_drain("import sys; sys.stdout.write('GHOST')", silent=True)
+        reply1, _ = await kc.exec_drain("import sys; sys.stdout.write('GHOST')", silent=True)
         assert reply1["content"]["status"] == "ok"
 
-        _, reply2, outputs = kc.exec_drain("print('hello')")
+        reply2, outputs = await kc.exec_drain("print('hello')")
         assert reply2["content"]["status"] == "ok"
         streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(outputs)]
         texts = "".join(t for _, t in streams)
@@ -61,44 +61,39 @@ def test_execute_features():
         assert "hello" in texts
 
 
-def test_stop_on_error_features():
-    with start_kernel() as (_, kc):
+async def test_stop_on_error_features():
+    async with mini_kernel() as (_, kc):
         fail = "import time\n" "time.sleep(0.2)\n" "raise ValueError('boom')"
-        msg_id_fail = kc.execute(fail)
-        msg_id_hello = kc.execute("print('Hello')")
-        msg_id_world = kc.execute("print('world')")
-
-        reply_fail = kc.shell_reply(msg_id_fail)
+        # default fail_pending=False: the kernel aborts the queued cells (wire stop_on_error=True)
+        # and their real kernel-issued "aborted" replies come back to each await
+        c_fail = kc.execute(fail, reply=True, timeout=10)
+        c_hello = kc.execute("print('Hello')", reply=True, timeout=10)
+        c_world = kc.execute("print('world')", reply=True, timeout=10)
+        reply_fail, reply_hello, reply_world = await asyncio.gather(c_fail, c_hello, c_world)
         assert reply_fail["content"]["status"] == "error"
-
-        reply_hello = kc.shell_reply(msg_id_hello)
         assert reply_hello["content"]["status"] == "aborted"
-
-        reply_world = kc.shell_reply(msg_id_world)
         assert reply_world["content"]["status"] == "aborted"
 
-        msg_id_fail = kc.execute(fail, stop_on_error=False)
-        msg_id_ok = kc.execute("1+1")
-
-        reply_fail = kc.shell_reply(msg_id_fail)
+        c_fail = kc.execute(fail, reply=True, timeout=10, stop_on_error=False)
+        c_ok = kc.execute("1+1", reply=True, timeout=10)
+        reply_fail, reply_ok = await asyncio.gather(c_fail, c_ok)
         assert reply_fail["content"]["status"] == "error"
-
-        reply_ok = kc.shell_reply(msg_id_ok)
         assert reply_ok["content"]["status"] == "ok"
 
-        msg_id_fail = kc.execute(fail)
-        msg_id_info = kc.kernel_info()
-        msg_id_comm = kc.comm_info()
-        msg_id_inspect = kc.inspect("print")
-
-        reply_fail = kc.shell_reply(msg_id_fail)
+        c_fail = kc.execute(fail, reply=True, timeout=10)
+        c_info = kc.shell_request("kernel_info_request")
+        c_comm = kc.shell_request("comm_info_request")
+        c_inspect = kc.cmd.inspect(code="print", cursor_pos=5)
+        reply_fail, reply_info, reply_comm, reply_inspect = await asyncio.gather(c_fail, c_info, c_comm, c_inspect)
         assert reply_fail["content"]["status"] == "error"
-
-        reply_info = kc.shell_reply(msg_id_info)
         assert reply_info["content"]["status"] == "ok"
-
-        reply_comm = kc.shell_reply(msg_id_comm)
         assert reply_comm["content"]["status"] == "ok"
-
-        reply_inspect = kc.shell_reply(msg_id_inspect)
         assert reply_inspect["content"]["status"] == "ok"
+
+        # fail_pending=None follows stop_on_error: the erroring request fails the other pending
+        # reply client-side with a RuntimeError naming the root cause (solveit's pipelining behavior)
+        c_fail = kc.execute(fail, reply=True, timeout=10, fail_pending=None)
+        c_dead = kc.execute("print('never seen')", reply=True, timeout=10)
+        results = await asyncio.gather(c_fail, c_dead, return_exceptions=True)
+        assert results[0]["content"]["status"] == "error"
+        assert isinstance(results[1], RuntimeError) and "boom" in str(results[1])

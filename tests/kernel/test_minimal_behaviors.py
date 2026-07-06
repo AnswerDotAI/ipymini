@@ -1,8 +1,8 @@
 import time, zmq
 from jupyter_client.session import Session
 
-from ..kernel_utils import *
-
+from ..aclient import *
+from ..kernel_utils import start_kernel, iter_timeout, iopub_msgs
 
 def _shell_addr(conn: dict)->str:
     transport = conn["transport"]
@@ -24,6 +24,7 @@ def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout:float)->dict|N
 
 
 def test_router_handover_same_identity():
+    "Raw ZMQ DEALER-socket identity handover: transport-level, not kernel semantics, so left on the sync harness."
     with start_kernel() as (km, kc):
         kc.stop_channels()
         ctx = zmq.Context()
@@ -58,8 +59,8 @@ def test_router_handover_same_identity():
             ctx.term()
 
 
-def test_execute_reply_after_keyboardinterrupt_during_send():
-    with start_kernel() as (_, kc):
+async def test_execute_reply_after_keyboardinterrupt_during_send():
+    async with mini_kernel() as (_, kc):
         patch = """import ipymini.kernel as _k
 if not hasattr(_k, "_orig_send_reply"):
     _k._orig_send_reply = _k.Subshell.send_reply
@@ -72,25 +73,20 @@ def _send_reply(self, msg_type, content, parent, idents):
     return _k._orig_send_reply(self, msg_type, content, parent, idents)
 _k.Subshell.send_reply = _send_reply
 """
-        msg_id = kc.execute(patch)
-        reply = kc.shell_reply(msg_id, timeout=10)
+        reply = await kc.execute(patch, reply=True, timeout=10)
         assert reply["content"]["status"] == "ok", f"patch reply: {reply.get('content')}"
 
-        msg_id = kc.execute("1+1")
-        reply = kc.shell_reply(msg_id, timeout=10)
+        reply, outputs = await kc.exec_drain("1+1", timeout=10)
         assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
-        assert reply["content"].get("ename") == "KeyboardInterrupt", f"interrupt ename: {reply.get('content')}"
-        outputs = kc.iopub_drain(msg_id)
+        assert reply["content"].get("ename") == "KeyboardInterrupt", f"interrupt reply: {reply.get('content')}"
         errors = iopub_msgs(outputs, "error")
         assert errors, f"missing iopub error: {[m.get('msg_type') for m in outputs]}"
         assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"iopub error: {errors[-1].get('content')}"
 
 
-def test_uncollected_execute_requests_do_not_wedge_iopub():
-    with start_kernel() as (_, kc):
+async def test_uncollected_execute_requests_do_not_wedge_iopub():
+    async with mini_kernel() as (_, kc):
         for _ in range(3):
             for i in range(30): kc.execute(f"__u{i}={i}")
-            msg_id = kc.execute("1+1")
-            reply = kc.shell_reply(msg_id, timeout=5)
+            reply, _ = await kc.exec_drain("1+1", timeout=5)
             assert reply["content"]["status"] == "ok", f"reply: {reply.get('content')}"
-            kc.iopub_drain(msg_id, timeout=5)

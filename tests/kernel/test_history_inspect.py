@@ -1,62 +1,51 @@
-from ..kernel_utils import *
+from ..aclient import *
 
-
-def test_history_and_inspect_features():
-    with start_kernel() as (_, kc):
-        msg_id = kc.complete("pri")
-        reply = kc.shell_reply(msg_id)
+async def test_history_and_inspect_features():
+    async with mini_kernel() as (_, kc):
+        reply = await kc.cmd.complete(code="pri", cursor_pos=3, timeout=10)
         matches = set(reply["content"].get("matches", []))
         assert "print" in matches
 
-        msg_id = kc.complete("from sys imp")
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.complete(code="from sys imp", cursor_pos=12, timeout=10)
         matches = set(reply["content"].get("matches", []))
         assert "import " in matches
 
-        msg_id = kc.is_complete("print('hello, world')")
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.is_complete(code="print('hello, world')", timeout=10)
         assert reply["content"]["status"] == "complete"
 
-        msg_id = kc.is_complete("print('''hello")
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.is_complete(code="print('''hello", timeout=10)
         assert reply["content"]["status"] == "incomplete"
 
-        msg_id = kc.is_complete("import = 7q")
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.is_complete(code="import = 7q", timeout=10)
         assert reply["content"]["status"] == "invalid"
 
-        msg_id = kc.inspect("open")
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.inspect(code="open", cursor_pos=4, detail_level=0, timeout=10)
         content = reply["content"]
         assert content["status"] == "ok"
         assert content["found"]
         assert "text/plain" in content.get("data", {})
 
-        _, reply, _ = kc.exec_drain("1+1")
+        reply, _ = await kc.exec_drain("1+1")
         assert reply["content"]["status"] == "ok"
 
-        _, reply, _ = kc.exec_drain("2+2")
+        reply, _ = await kc.exec_drain("2+2")
         assert reply["content"]["status"] == "ok"
 
-        msg_id = kc.history(hist_access_type="tail", n=2, output=False, raw=True)
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.history(hist_access_type="tail", n=2, output=False, raw=True, timeout=10)
         assert reply["content"]["status"] == "ok"
         assert reply["content"]["history"]
 
-        msg_id = kc.history(hist_access_type="search", pattern="1?2*", output=False, raw=True)
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.history(hist_access_type="search", pattern="1?2*", output=False, raw=True, timeout=10)
         assert reply["content"]["status"] == "ok"
 
         for code in ("1+1", "1+2", "1+3", "1+1"):
-            _, reply, _ = kc.exec_drain(code)
+            reply, _ = await kc.exec_drain(code)
             assert reply["content"]["status"] == "ok"
 
-        msg_id = kc.history(hist_access_type="search", pattern="1+*", output=False, raw=True, unique=True)
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.history(hist_access_type="search", pattern="1+*", output=False, raw=True, unique=True, timeout=10)
         assert reply["content"]["status"] == "ok"
         assert len(reply["content"]["history"]) >= 1
 
-        msg_id = kc.history(hist_access_type="search", pattern="1+*", output=False, raw=True, n=3)
-        reply = kc.shell_reply(msg_id)
+        reply = await kc.cmd.history(hist_access_type="search", pattern="1+*", output=False, raw=True, n=3, timeout=10)
         assert reply["content"]["status"] == "ok"
         assert len(reply["content"]["history"]) == 3

@@ -1,19 +1,18 @@
-import asyncio, json, os, time
+import json, os, time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from queue import Empty
 from jupyter_client import AsyncKernelClient, KernelClient, KernelManager
 from fastcore.basics import nested_idx, patch
 from fastcore.meta import delegates
+from conkernelclient.ops import parent_id, iter_timeout, iopub_msgs, iopub_streams  # importing is side-effect free (no Session patch)
 
 default_timeout = 10
-debug_init_args = dict( clientID="test-client", clientName="testClient", adapterID="", pathFormat="path", linesStartAt1=True,
-    columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
 root = Path(__file__).resolve().parents[1]
 
-__all__ = ("default_timeout debug_init_args root KernelHarness build_env load_connection kernel_pid assert_pid_gone ensure_separate_process start_kernel "
-    "start_kernel_async temp_env wait_for_msg iter_timeout parent_id wait_for_debug_event wait_for_stop collect_shell_replies "
-    "collect_iopub_outputs wait_for_status flush_channels iopub_msgs iopub_streams start_gateway_kernel gw_send_wait gw_wait_for_status").split()
+__all__ = ["default_timeout", "root", "build_env", "load_connection", "kernel_pid", "assert_pid_gone",
+    "ensure_separate_process", "start_kernel", "start_kernel_async", "wait_for_msg", "iter_timeout",
+    "parent_id", "wait_for_status", "iopub_msgs", "iopub_streams"]
 
 
 def _ensure_jupyter_path()->str:
@@ -33,14 +32,6 @@ def build_env(extra_env: dict|None=None)->dict:
     if extra_env: env = {**env, **extra_env}
     return env
 
-
-def parent_id(msg: dict)->str|None: return nested_idx(msg, "parent_header", "msg_id") or None
-
-
-def iter_timeout(timeout:float|None=None, default:float = default_timeout):
-    "Yield remaining time (seconds) until timeout expires, using monotonic time."
-    end = time.monotonic() + (timeout or default)
-    while (rem := end - time.monotonic()) > 0: yield rem
 
 
 def wait_for_msg(get_msg, match, timeout:float|None=None, poll:float = 0.5, err:str = "timeout"):
@@ -81,16 +72,6 @@ def ensure_separate_process(km: KernelManager):
     if pid is None or pid == os.getpid(): raise RuntimeError("kernel must run in a separate process")
 
 
-@contextmanager
-def temp_env(update: dict):
-    "Temporarily update environment variables."
-    old_env = {key: os.environ.get(key) for key in update}
-    os.environ.update({key:str(value) for key, value in update.items()})
-    try: yield
-    finally:
-        for key, value in old_env.items():
-            if value is None: os.environ.pop(key, None)
-            else: os.environ[key] = value
 
 
 @delegates(KernelManager.start_kernel, but="env")
@@ -127,46 +108,6 @@ async def start_kernel_async(extra_env: dict|None=None, ready_timeout: float|Non
     finally:
         kc.stop_channels()
         km.shutdown_kernel(now=True)
-
-
-class KernelHarness:
-    def __init__(self, extra_env: dict|None=None, **kwargs):
-        "Minimal kernel harness for protocol-style tests."
-        self.extra_env = extra_env
-        self.kwargs = kwargs
-        self.ctx = None
-        self.km = None
-        self.kc = None
-
-    def __enter__(self):
-        self.ctx = start_kernel(extra_env=self.extra_env, **self.kwargs)
-        self.km, self.kc = self.ctx.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if self.ctx is not None: return self.ctx.__exit__(exc_type, exc, tb)
-
-    def send_wait(self, msg_type:str, timeout:float = default_timeout, content: dict|None=None, **kwargs):
-        "Send shell request and return (msg_id, reply)."
-        msg_id = self.kc.shell_send(msg_type, content, **kwargs)
-        reply = self.kc.shell_reply(msg_id, timeout=timeout)
-        return msg_id, reply
-
-    def control_send_wait(self, msg_type:str, timeout:float = default_timeout, content: dict|None=None):
-        "Send control request and return (msg_id, reply)."
-        if content is None: content = {}
-        msg = self.kc.session.msg(msg_type, content)
-        self.kc.control_channel.send(msg)
-        reply = self.kc.control_reply(msg["header"]["msg_id"], timeout=timeout)
-        return msg["header"]["msg_id"], reply
-
-    def jmsgs(self, msg_id:str, timeout:float = default_timeout)->list[dict]:
-        "Return iopub messages for `msg_id`."
-        return self.kc.iopub_drain(msg_id, timeout=timeout)
-
-    def exec_drain(self, code:str, timeout:float|None=None, **kwargs):
-        "Execute `code` and return (msg_id, reply, outputs)."
-        return self.kc.exec_drain(code, timeout=timeout, **kwargs)
 
 
 @patch
@@ -255,30 +196,6 @@ def ctl(self: KernelClient)->_ReqProxy:
     return proxy
 
 
-class _DapProxy:
-    def __init__(self, kc: KernelClient):
-        self.kc = kc
-        self.seq = 1
-
-    def __getattr__(self, command:str):
-        if command.endswith('_') and not command.endswith('__'): command = command[:-1]
-        def _call(*, timeout:float = default_timeout, full: bool = False, **arguments):
-            seq = self.seq
-            self.seq += 1
-            msg = self.kc.session.msg("debug_request", dict(type="request", seq=seq, command=command, arguments=arguments))
-            self.kc.control_channel.send(msg)
-            reply = self.kc.control_reply(msg["header"]["msg_id"], timeout=timeout)
-            return reply if full else reply["content"]
-
-        return _call
-
-
-@patch(as_prop=True)
-def dap(self: KernelClient)->_DapProxy:
-    if (proxy := getattr(self, "dap_cache", None)) is None: self.dap_cache = proxy = _DapProxy(self)
-    return proxy
-
-
 class ShellCommand:
     def __init__(self, kc: KernelClient):
         "Shell command proxy for `kc`."
@@ -311,73 +228,7 @@ def shell_send(self: KernelClient, msg_type:str, content: dict|None=None, subshe
     return msg["header"]["msg_id"]
 
 
-@patch
-@contextmanager
-def clone(self: KernelClient):
-    "A second client to the same kernel with its own Session (NB: km.client() shares the Session, so the clients drop each other's iopub)."
-    kc = type(self)()
-    kc.load_connection_info(self.get_connection_info())
-    kc.start_channels()
-    try: yield kc
-    finally: kc.stop_channels()
 
-
-@patch
-@delegates(KernelClient.execute)
-def exec_ok(self: KernelClient, code:str, timeout:float|None=None, **kwargs):
-    "Execute `code` and assert ok reply."
-    msg_id, reply, outputs = self.exec_drain(code, timeout=timeout, **kwargs)
-    assert reply["content"]["status"] == "ok", reply.get("content")
-    return msg_id, reply, outputs
-
-
-def wait_for_debug_event(kc, event_name:str, timeout:float|None=None)->dict:
-    pred = lambda m: m.get("msg_type") == "debug_event" and nested_idx(m, "content", "event") == event_name
-    return wait_for_msg(kc.get_iopub_msg, pred, timeout, poll=0.5, err=f"debug_event {event_name} not received")
-
-
-def wait_for_stop(kc, timeout:float|None=None)->dict:
-    timeout = timeout or default_timeout
-    try: return wait_for_debug_event(kc, "stopped", timeout=timeout / 2)
-    except AssertionError:
-        last = None
-        for _ in iter_timeout(timeout, default=timeout):
-            reply = kc.dap.stackTrace(threadId=1)
-            if reply.get("success"): return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
-            last = reply
-            time.sleep(0.1)
-        raise AssertionError(f"stopped debug_event not received: {last}")
-
-
-def collect_shell_replies(kc, msg_ids: set[str], timeout:float|None=None)->dict:
-    timeout = timeout or default_timeout
-    replies = {}
-    for _ in iter_timeout(timeout):
-        if len(replies) >= len(msg_ids): break
-        try: reply = kc.get_shell_msg(timeout=timeout)
-        except Empty: continue
-        if (mid := parent_id(reply)) in msg_ids: replies[mid] = reply
-    if len(replies) != len(msg_ids):
-        missing = msg_ids - set(replies)
-        raise AssertionError(f"timeout waiting for shell replies: {sorted(missing)}")
-    return replies
-
-
-def collect_iopub_outputs(kc, msg_ids: set[str], timeout:float|None=None)->dict:
-    timeout = timeout or default_timeout
-    outputs = {msg_id: [] for msg_id in msg_ids}
-    idle = set()
-    for _ in iter_timeout(timeout):
-        if len(idle) >= len(msg_ids): break
-        try: msg = kc.get_iopub_msg(timeout=timeout)
-        except Empty: continue
-        if (mid := parent_id(msg)) not in outputs: continue
-        outputs[mid].append(msg)
-        if msg.get("msg_type") == "status" and nested_idx(msg, "content", "execution_state") == "idle": idle.add(mid)
-    if len(idle) != len(msg_ids):
-        missing = msg_ids - idle
-        raise AssertionError(f"timeout waiting for iopub idle: {sorted(missing)}")
-    return outputs
 
 
 def wait_for_status(kc, state:str, timeout:float|None=None)->dict:
@@ -385,73 +236,3 @@ def wait_for_status(kc, state:str, timeout:float|None=None)->dict:
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
 
 
-def flush_channels(kc, timeout:float = 0.02):
-    "Discard messages pending on the shell and iopub queues (for tests sharing a kernel)."
-    for get in (kc.get_shell_msg, kc.get_iopub_msg):
-        while True:
-            try: get(timeout=timeout)
-            except Empty: break
-
-
-def iopub_msgs(outputs: list[dict], msg_type:str|None=None)->list[dict]:
-    return outputs if msg_type is None else [m for m in outputs if m["msg_type"] == msg_type]
-
-
-def iopub_streams(outputs: list[dict], name:str|None=None)->list[dict]:
-    streams = iopub_msgs(outputs, "stream")
-    return streams if name is None else [m for m in streams if m["content"].get("name") == name]
-
-
-# Async gateway test helpers
-
-async def _gw_router(kc, waiters: dict, stop: asyncio.Event):
-    "Route shell replies to waiters by msg_id."
-    from queue import Empty
-    while not stop.is_set():
-        try: msg = await kc.get_shell_msg(timeout=0.1)
-        except Empty: continue
-        except (asyncio.CancelledError, RuntimeError): break
-        waiter = waiters.get(parent_id(msg))
-        if waiter is not None: waiter.put_nowait(msg)
-
-
-async def gw_send_wait(kc, waiters: dict, code:str, timeout:float)->tuple[str, dict]:
-    "Execute code and wait for reply via gateway router."
-    msg_id = kc.execute(code)
-    q = asyncio.Queue()
-    waiters[msg_id] = q
-    try: return msg_id, await asyncio.wait_for(q.get(), timeout=timeout)
-    finally: waiters.pop(msg_id, None)
-
-
-async def gw_wait_for_status(kc, state:str, timeout:float)->dict:
-    "Wait for iopub status message with given execution_state."
-    async with asyncio.timeout(timeout):
-        while True:
-            msg = await kc.get_iopub_msg(timeout=0.2)
-            if msg.get("msg_type") == "status" and nested_idx(msg, "content", "execution_state") == state: return msg
-
-
-@asynccontextmanager
-async def start_gateway_kernel(extra_env: dict|None=None):
-    "Async context manager for gateway-style kernel tests with router."
-    env = build_env(extra_env)
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
-    ensure_separate_process(km)
-    kc = AsyncKernelClient(**km.get_connection_info(session=True))
-    kc.parent = km
-    kc.start_channels()
-    await kc.wait_for_ready(timeout=default_timeout)
-    waiters = {}
-    stop = asyncio.Event()
-    router_task = asyncio.create_task(_gw_router(kc, waiters, stop))
-    kc.gw_waiters = waiters
-    try: yield km, kc
-    finally:
-        stop.set()
-        router_task.cancel()
-        await asyncio.gather(router_task, return_exceptions=True)
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)

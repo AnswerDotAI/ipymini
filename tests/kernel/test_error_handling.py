@@ -1,131 +1,103 @@
 "Tests for error handling: never drop requests, always send busy/idle for execute."
-import time, pytest
+import asyncio, time, pytest
+from uuid import uuid4
 from queue import Empty
-from ..kernel_utils import *
+from ..aclient import *
+from ..kernel_utils import start_kernel
+
+@pytest.fixture(scope="module")
+async def kc():
+    "One shared kernel for this module; every test filters messages by its own msg_ids."
+    async with mini_kernel() as (_, kc): yield kc
 
 
 @pytest.fixture(scope="module")
-def kc():
-    "One shared kernel for this module; every test filters messages by its own msg_ids."
+def sync_kc():
+    "A sync-client kernel for the raw-channel-timing test below that can't move to ConKernelClient (see its comment)."
     with start_kernel() as (_, kc): yield kc
 
 
-def test_error_reply_status_features(kc):
+async def _states(kc, mid):
+    outputs = await kc.iopub_drain(mid)
+    return [m["content"]["execution_state"] for m in outputs if m["msg_type"] == "status"]
+
+
+async def test_error_reply_status_features(kc):
     "Empty string subshell_id should route to parent subshell (treat as None)."
+    await aflush(kc)
     # Send execute with empty subshell_id - should work, not error
-    msg_id = kc.shell_send("execute_request", code="1+1", subshell_id="")
-    reply = kc.shell_reply(msg_id)
+    reply = await kc.shell_request("execute_request", code="1+1", subshell_id="")
     assert reply["content"]["status"] == "ok", f"expected ok, got {reply['content']}"
-    outputs = kc.iopub_drain(msg_id)
-    statuses = [m for m in outputs if m["msg_type"] == "status"]
-    states = [m["content"]["execution_state"] for m in statuses]
+    states = await _states(kc, parent_id(reply))
     assert "busy" in states, "should have busy status"
     assert "idle" in states, "should have idle status"
 
-    msg_id = kc.shell_send("execute_request", code="1+1", subshell_id="nonexistent-subshell-123")
-    reply = kc.shell_reply(msg_id)
+    reply = await kc.shell_request("execute_request", code="1+1", subshell_id="nonexistent-subshell-123")
     assert reply["content"]["status"] == "error"
     assert reply["content"]["ename"] == "SubshellNotFound"
     # Must have busy/idle on iopub to prevent frontend spinner
-    outputs = kc.iopub_drain(msg_id)
-    statuses = [m for m in outputs if m["msg_type"] == "status"]
-    states = [m["content"]["execution_state"] for m in statuses]
-    assert "busy" in states, f"missing busy status, got {statuses}"
-    assert "idle" in states, f"missing idle status, got {statuses}"
+    states = await _states(kc, parent_id(reply))
+    assert "busy" in states, f"missing busy status, got {states}"
+    assert "idle" in states, f"missing idle status, got {states}"
 
-    msg_id = kc.shell_send("complete_request", code="pri", cursor_pos=3, subshell_id="bad-subshell")
-    reply = kc.shell_reply(msg_id)
+    reply = await kc.cmd.complete(code="pri", cursor_pos=3, subshell_id="bad-subshell")
     assert reply["content"]["status"] == "error"
     assert reply["content"]["ename"] == "SubshellNotFound"
 
     # Send execute_request without 'code' field
-    msg_id = kc.shell_send("execute_request", content={})  # no code field
-    reply = kc.shell_reply(msg_id)
+    reply = await kc.shell_request("execute_request")  # no code field
     assert reply["content"]["status"] == "error"
     assert reply["content"]["ename"] == "MissingField"
     assert "code" in reply["content"]["evalue"]
     # Must have busy/idle
-    outputs = kc.iopub_drain(msg_id)
-    statuses = [m for m in outputs if m["msg_type"] == "status"]
-    states = [m["content"]["execution_state"] for m in statuses]
-    assert "busy" in states, f"missing busy, got {statuses}"
-    assert "idle" in states, f"missing idle, got {statuses}"
+    states = await _states(kc, parent_id(reply))
+    assert "busy" in states, f"missing busy, got {states}"
+    assert "idle" in states, f"missing idle, got {states}"
 
     # complete_request requires 'code' and 'cursor_pos'
-    msg_id = kc.shell_send("complete_request", content={})
-    reply = kc.shell_reply(msg_id)
+    reply = await kc.shell_request("complete_request")
     assert reply["content"]["status"] == "error"
     assert reply["content"]["ename"] == "MissingField"
 
-    msg_id = kc.cmd.history_request()
-    reply = kc.shell_reply(msg_id)
+    reply = await kc.cmd.history()
     assert reply["content"]["status"] == "error"
     assert reply["content"].get("ename") == "MissingField"
 
-    msg_id, reply, outputs = kc.exec_drain("x = 42")
+    reply, outputs = await kc.exec_drain("x = 42")
     assert reply["content"]["status"] == "ok"
-    statuses = [m for m in outputs if m["msg_type"] == "status"]
-    states = [m["content"]["execution_state"] for m in statuses]
+    states = [m["content"]["execution_state"] for m in outputs if m["msg_type"] == "status"]
     assert states[0] == "busy", "first status should be busy"
     assert states[-1] == "idle", "last status should be idle"
 
-    msg_id, reply, outputs = kc.exec_drain("1/0")
+    reply, outputs = await kc.exec_drain("1/0")
     assert reply["content"]["status"] == "error"
-    statuses = [m for m in outputs if m["msg_type"] == "status"]
-    states = [m["content"]["execution_state"] for m in statuses]
+    states = [m["content"]["execution_state"] for m in outputs if m["msg_type"] == "status"]
     assert "busy" in states
     assert "idle" in states
 
-    # First execute raises, setting abort state
-    fail_code = "import time; time.sleep(0.2); raise ValueError('boom')"
-    msg_id_fail = kc.execute(fail_code)
-    msg_id_abort = kc.execute("print('should abort')")
+    # First execute raises, setting abort state; default fail_pending=False lets us
+    # observe the queued cell's real kernel-issued "aborted" reply and its busy/idle pair
+    mid_fail, mid_abort = str(uuid4()), str(uuid4())
+    c_fail = kc.execute("import time; time.sleep(0.2); raise ValueError('boom')", reply=True, timeout=10, msg_id=mid_fail)
+    c_abort = kc.execute("print('should abort')", reply=True, timeout=10, msg_id=mid_abort)
+    reply_fail, reply_abort = await asyncio.gather(c_fail, c_abort)
+    assert reply_fail["content"]["status"] == "error"
+    assert reply_abort["content"]["status"] == "aborted"
 
-    # Collect both shell replies
-    replies_needed = {msg_id_fail, msg_id_abort}
-    replies = {}
-    all_iopub = []
-    end_time = time.monotonic() + default_timeout
-
-    while replies_needed and time.monotonic() < end_time:
-        try:
-            msg = kc.get_shell_msg(timeout=0.1)
-            pid = parent_id(msg)
-            if pid in replies_needed:
-                replies[pid] = msg
-                replies_needed.remove(pid)
-        except Empty: pass
-        try:
-            msg = kc.get_iopub_msg(timeout=0.1)
-            all_iopub.append(msg)
-        except Empty: pass
-
-    # Drain remaining iopub
-    time.sleep(0.1)
-    while True:
-        try: all_iopub.append(kc.get_iopub_msg(timeout=0.1))
-        except Empty: break
-
-    assert not replies_needed, f"missing replies for {replies_needed}"
-    assert replies[msg_id_fail]["content"]["status"] == "error"
-    assert replies[msg_id_abort]["content"]["status"] == "aborted"
-
-    # Filter iopub messages for the aborted request
-    abort_iopub = [m for m in all_iopub if parent_id(m) == msg_id_abort]
-    statuses = [m for m in abort_iopub if m["msg_type"] == "status"]
-    states = [m["content"]["execution_state"] for m in statuses]
-    assert "busy" in states, f"aborted missing busy, got {statuses}"
-    assert "idle" in states, f"aborted missing idle, got {statuses}"
+    outputs = await collect_iopub(kc, {mid_fail, mid_abort})
+    states = [m["content"]["execution_state"] for m in outputs[mid_abort] if m["msg_type"] == "status"]
+    assert "busy" in states, f"aborted missing busy, got {states}"
+    assert "idle" in states, f"aborted missing idle, got {states}"
 
 
-def test_iopub_idle_not_delayed_after_shell_reply(kc):
+async def test_iopub_idle_not_delayed_after_shell_reply(kc):
     "IOPub idle should arrive promptly after shell reply, not be delayed in queue."
     # Execute multiple times to increase chance of catching race condition
     for i in range(5):
-        msg_id = kc.execute(f"x = {i}")
+        reply = await kc.execute(f"x = {i}", reply=True, timeout=5)
         # Wait for shell reply
-        reply = kc.shell_reply(msg_id, timeout=5)
         assert reply["content"]["status"] == "ok"
+        msg_id = parent_id(reply)
         # After shell reply, idle should be available almost immediately
         # If IOPub isn't flushed, idle could be delayed by poll timeout (50ms+)
         # We allow 200ms which is generous but catches the bug
@@ -134,7 +106,7 @@ def test_iopub_idle_not_delayed_after_shell_reply(kc):
         deadline = start + 0.2  # 200ms timeout
         while time.monotonic() < deadline:
             try:
-                msg = kc.get_iopub_msg(timeout=0.05)
+                msg = await kc.get_iopub_msg(timeout=0.05)
                 if parent_id(msg) == msg_id and msg["msg_type"] == "status":
                     if msg["content"]["execution_state"] == "idle":
                         idle_found = True
@@ -144,34 +116,36 @@ def test_iopub_idle_not_delayed_after_shell_reply(kc):
         assert idle_found, f"iteration {i}: idle not received within 200ms of shell reply (elapsed={elapsed:.3f}s)"
 
 
-def test_iopub_idle_arrives_for_every_pipelined_request(kc):
+async def test_iopub_idle_arrives_for_every_pipelined_request(kc):
     "When pipelining requests, every request must get its own iopub idle."
-    msg_ids = [kc.execute(f"y = {i}") for i in range(10)]
-    collect_shell_replies(kc, set(msg_ids))
-    collect_iopub_outputs(kc, set(msg_ids))  # raises if any request is missing its idle
+    mids = [str(uuid4()) for _ in range(10)]
+    cs = [kc.execute(f"y = {i}", reply=True, timeout=10, msg_id=mid) for i, mid in enumerate(mids)]
+    await asyncio.gather(*cs)
+    await collect_iopub(kc, mids)  # raises if any request is missing its idle
 
 
 @pytest.mark.slow
-def test_rapid_fire_200_executes():
+async def test_rapid_fire_200_executes():
     "Fire 200 execute_requests as fast as possible, verify order, idles, and outputs."
-    with start_kernel() as (_, kc):
-        sleeper = kc.execute("import time; time.sleep(0.8)")
-        wait_for_status(kc, "busy")
-        burst_ids = {kc.shell_send("is_complete_request", code="1+1") for _ in range(130)}
-        replies = collect_shell_replies(kc, burst_ids | {sleeper}, timeout=20)
-        burst_replies = {msg_id: reply for msg_id, reply in replies.items() if msg_id in burst_ids}
-        assert all(reply["msg_type"] == "is_complete_reply" for reply in burst_replies.values())
-        assert replies[sleeper]["content"]["status"] == "ok"
+    async with mini_kernel() as (_, kc):
+        sleeper = kc.execute("import time; time.sleep(0.8)", reply=True, timeout=20)
+        await wait_status(kc, "busy")
+        bursts = [kc.cmd.is_complete(code="1+1", timeout=20) for _ in range(130)]
+        burst_replies, sleeper_reply = await asyncio.gather(asyncio.gather(*bursts), sleeper)
+        assert all(reply["msg_type"] == "is_complete_reply" for reply in burst_replies)
+        assert sleeper_reply["content"]["status"] == "ok"
 
         n = 200
         # Send all requests without waiting
-        msg_ids = [kc.execute(f"1+{i}") for i in range(n)]
-        replies = collect_shell_replies(kc, set(msg_ids), timeout=60)
-        iopub_by_id = collect_iopub_outputs(kc, set(msg_ids), timeout=60)
+        mids = [str(uuid4()) for _ in range(n)]
+        cs = [kc.execute(f"1+{i}", reply=True, timeout=60, msg_id=mid) for i, mid in enumerate(mids)]
+        reply_list = await asyncio.gather(*cs)
+        replies = dict(zip(mids, reply_list))
+        iopub_by_id = await collect_iopub(kc, mids, timeout=60)
 
         # Check replies are ok and in correct order (execution_count should increase)
         exec_counts = []
-        for i, mid in enumerate(msg_ids):
+        for i, mid in enumerate(mids):
             reply = replies[mid]
             assert reply["content"]["status"] == "ok", f"request {i} failed: {reply['content']}"
             exec_counts.append(reply["content"]["execution_count"])
@@ -184,7 +158,7 @@ def test_rapid_fire_200_executes():
         missing_busy = []
         missing_idle = []
         wrong_output = []
-        for i, mid in enumerate(msg_ids):
+        for i, mid in enumerate(mids):
             msgs = iopub_by_id[mid]
             statuses = [m for m in msgs if m["msg_type"] == "status"]
             states = [m["content"]["execution_state"] for m in statuses]
@@ -203,19 +177,29 @@ def test_rapid_fire_200_executes():
         assert not wrong_output, f"{len(wrong_output)} wrong outputs: {wrong_output[:10]}"
 
 
-def test_rapid_fire_with_output(kc):
+async def test_rapid_fire_with_output(kc):
     "Fire 50 execute_requests with print output, verify all replies and idles received."
     n = 50
     # Cells that produce output, like real notebooks
     codes = [f"print('cell {i}')\n{i}" for i in range(n)]
-    msg_ids = [kc.execute(code) for code in codes]
-    replies = collect_shell_replies(kc, set(msg_ids), timeout=30)
-    collect_iopub_outputs(kc, set(msg_ids), timeout=30)  # raises if any request is missing its idle
-    for i, mid in enumerate(msg_ids): assert replies[mid]["content"]["status"] == "ok", f"cell {i} failed"
+    mids = [str(uuid4()) for _ in range(n)]
+    cs = [kc.execute(code, reply=True, timeout=30, msg_id=mid) for code, mid in zip(codes, mids)]
+    reply_list = await asyncio.gather(*cs)
+    replies = dict(zip(mids, reply_list))
+    await collect_iopub(kc, mids, timeout=30)  # raises if any request is missing its idle
+    for i, mid in enumerate(mids): assert replies[mid]["content"]["status"] == "ok", f"cell {i} failed"
 
 
-def test_iopub_idle_not_delayed_by_poll_timeout(kc):
+# NOT MIGRATED: measures sub-20ms arrival-order jitter between raw shell and iopub messages by
+# polling both channels together in one tight loop. ConKernelClient's shell channel is owned
+# exclusively by its background reply-reader task (core.py `_reader`), so a test can no longer
+# poll `get_shell_msg` directly without racing that task; substituting the awaited reply future
+# for the raw shell poll adds asyncio task-scheduling overhead that isn't the poll-timeout
+# behavior this test is meant to catch, at a tolerance (20ms) tight enough to make that
+# substitution unsound.
+def test_iopub_idle_not_delayed_by_poll_timeout(sync_kc):
     "IOPub idle must arrive within 20ms of shell reply - not delayed by poll timeout."
+    kc = sync_kc
     max_delay_ms = 20  # max acceptable delay between shell reply and iopub idle
     failures = []
 

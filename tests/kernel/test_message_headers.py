@@ -1,5 +1,6 @@
-from ..kernel_utils import *
-
+from uuid import uuid4
+from conkernelclient import default_timeout
+from ..aclient import *
 
 def _version_tuple(value:str)->tuple[int, ...]: return tuple(int(part) if part.isdigit() else 0 for part in value.split("."))
 
@@ -15,20 +16,22 @@ def _assert_header(msg: dict, msg_type:str|None=None):
     assert _version_tuple(header["version"]) >= (5, 0)
 
 
-def test_message_headers():
-    with start_kernel() as (_, kc):
-        msg_id = kc.kernel_info()
-        reply = kc.shell_reply(msg_id)
+async def test_message_headers():
+    async with mini_kernel() as (_, kc):
+        # kc.cmd.kernel_info() doesn't expose its generated msg_id before the reply arrives (unlike
+        # execute()), so we can only confirm the reply carries a parent id, not compare it to an
+        # independently-known request id here.
+        reply = await kc.cmd.kernel_info(timeout=default_timeout)
         _assert_header(reply, "kernel_info_reply")
-        assert reply["parent_header"]["msg_id"] == msg_id
+        assert parent_id(reply)
 
-        msg_id = kc.execute("1+1", store_history=False)
-        reply = kc.shell_reply(msg_id)
+        mid = str(uuid4())
+        reply = await kc.execute("1+1", store_history=False, reply=True, timeout=default_timeout, msg_id=mid)
         _assert_header(reply, "execute_reply")
-        assert reply["parent_header"]["msg_id"] == msg_id
+        assert reply["parent_header"]["msg_id"] == mid
 
-        output_msgs = kc.iopub_drain(msg_id)
+        output_msgs = await kc.iopub_drain(mid)
         assert output_msgs
         for msg in output_msgs:
             _assert_header(msg)
-            assert msg["parent_header"]["msg_id"] == msg_id
+            assert msg["parent_header"]["msg_id"] == mid

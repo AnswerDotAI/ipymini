@@ -1,78 +1,69 @@
 import pytest
-from contextlib import contextmanager
-from ..kernel_utils import *
+from ..aclient import *
 
 timeout = 3
 
 
-@contextmanager
-def new_kernel():
-    with start_kernel() as (_km, kc): yield kc
+async def get_stack_frames(dap, thread_id): return (await dap.stackTrace(threadId=thread_id))["body"]["stackFrames"]
 
-
-def get_stack_frames(dap, thread_id): return dap.stackTrace(threadId=thread_id)["body"]["stackFrames"]
-
-def get_scopes(dap, frame_id): return dap.scopes(frameId=frame_id)["body"]["scopes"]
+async def get_scopes(dap, frame_id): return (await dap.scopes(frameId=frame_id))["body"]["scopes"]
 
 def get_scope_ref(scopes, name): return next(s for s in scopes if s["name"] == name)["variablesReference"]
 
-def get_scope_vars(dap, scopes, name):
+async def get_scope_vars(dap, scopes, name):
     ref = get_scope_ref(scopes, name)
-    return dap.variables(variablesReference=ref)["body"]["variables"]
+    return (await dap.variables(variablesReference=ref))["body"]["variables"]
 
 
-def ensure_configuration_done(kernel):
-    if getattr(kernel, "_debug_config_done", False): return
-    reply = kernel.dap.configurationDone()
+async def ensure_configuration_done(kc):
+    if getattr(kc, "_debug_config_done", False): return
+    reply = await kc.dap.configurationDone()
     assert reply.get("success"), f"configurationDone failed: {reply}"
-    setattr(kernel, "_debug_config_done", True)
+    kc._debug_config_done = True
 
 
-def continue_debugger(kernel, stopped: dict):
-    dap = kernel.dap
-    cont = getattr(dap, "continue")
-    body = stopped.get("content", {}).get("body", {})
-    thread_id = body.get("threadId")
-    if isinstance(thread_id, int): cont(threadId=thread_id)
-    else: cont()
+async def continue_debugger(kc, stopped):
+    thread_id = stopped.get("content", {}).get("body", {}).get("threadId")
+    if isinstance(thread_id, int): await kc.dap.continue_(threadId=thread_id)
+    else: await kc.dap.continue_()
 
 
 @pytest.fixture()
-def kernel():
-    with new_kernel() as kc: yield kc
+async def kernel():
+    async with mini_kernel() as (_, kc): yield kc
 
 
 @pytest.fixture()
-def debug_kernel(kernel):
-    reply = kernel.dap.initialize(**debug_init_args)
+async def debug_kernel(kernel):
+    reply = await kernel.dap.initialize(**debug_init_args)
     assert reply.get("success"), f"initialize failed: {reply}"
-    reply = kernel.dap.attach()
+    reply = await kernel.dap.attach()
     assert reply.get("success"), f"attach failed: {reply}"
     try: yield kernel
-    finally: kernel.dap.disconnect(restart=False, terminateDebuggee=True)
+    finally: await kernel.dap.disconnect(restart=False, terminateDebuggee=True)
 
 
-def test_debugger_features(debug_kernel):
-    dap = debug_kernel.dap
-    wait_for_debug_event(debug_kernel, "initialized")
+async def test_debugger_features(debug_kernel):
+    kc = debug_kernel
+    dap = kc.dap
+    await wait_debug_event(kc, "initialized")
 
-    msg_id = debug_kernel.kernel_info()
-    reply = debug_kernel.shell_reply(msg_id)
+    reply = await kc.cmd.kernel_info()
     features = reply["content"].get("supported_features", [])
     assert "debugger" in features, f"supported_features: {features}"
     assert reply["content"].get("debugger") is True, f"debugger flag missing: {reply['content']}"
 
-    reply = dap.evaluate(expression="'a' + 'b'", context="repl")
+    reply = await dap.evaluate(expression="'a' + 'b'", context="repl")
     assert reply.get("success"), f"evaluate failed: {reply}"
     assert reply["body"]["result"] == "ab", f"evaluate result: {reply['body']['result']}"
 
     var_name = "text"
     value = "Hello the world"
     code = f"{var_name}='{value}'\nprint({var_name})\n"
-    debug_kernel.execute(code)
-    debug_kernel.get_shell_msg(timeout=timeout)
-    dap.inspectVariables()
-    dap.richInspectVariables(variableName=var_name)
+    reply = await kc.execute(code, reply=True, timeout=timeout)
+    assert reply["content"]["status"] == "ok"
+    await dap.inspectVariables()
+    await dap.richInspectVariables(variableName=var_name)
 
     code = """
 def f(a, b):
@@ -84,69 +75,70 @@ def g():
 
 g()
 """
-    source = dap.dumpCell(code=code)["body"]["sourcePath"]
-    reply = dap.setBreakpoints(breakpoints=[dict(line=7)], source=dict(path=source), sourceModified=False)
+    source = (await dap.dumpCell(code=code))["body"]["sourcePath"]
+    reply = await dap.setBreakpoints(breakpoints=[dict(line=7)], source=dict(path=source), sourceModified=False)
     assert reply["success"], f"setBreakpoints failed: {reply}"
-    ensure_configuration_done(debug_kernel)
+    await ensure_configuration_done(kc)
 
-    debug_kernel.execute(code)
-    stopped = wait_for_stop(debug_kernel)
+    c = kc.execute(code, reply=True, timeout=30)
+    stopped = await wait_stop(kc)
     assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"].get("threadId", 1)
-    stepped = dap.stepIn(threadId=thread_id)
+    stepped = await dap.stepIn(threadId=thread_id)
     assert stepped.get("success"), f"stepIn failed: {stepped}"
-    stopped = wait_for_stop(debug_kernel)
+    stopped = await wait_stop(kc)
     thread_id = stopped["content"]["body"].get("threadId", thread_id)
-    frames = get_stack_frames(dap, thread_id)
+    frames = await get_stack_frames(dap, thread_id)
     assert frames and frames[0]["name"] == "f", f"frames: {frames}"
 
-    reply = dap.next(threadId=thread_id)
+    reply = await dap.next(threadId=thread_id)
     assert reply.get("success"), f"next failed: {reply}"
-    stopped = wait_for_stop(debug_kernel)
+    stopped = await wait_stop(kc)
     thread_id = stopped["content"]["body"].get("threadId", thread_id)
-    frames = get_stack_frames(dap, thread_id)
+    frames = await get_stack_frames(dap, thread_id)
     frame_id = frames[0]["id"]
-    scopes = get_scopes(dap, frame_id)
-    locals_ = get_scope_vars(dap, scopes, "Locals")
+    scopes = await get_scopes(dap, frame_id)
+    locals_ = await get_scope_vars(dap, scopes, "Locals")
     local_names = [v["name"] for v in locals_]
     assert "a" in local_names and "b" in local_names, f"locals: {locals_}"
 
-    reply = dap.richInspectVariables(variableName=locals_[0]["name"], frameId=frame_id)
+    reply = await dap.richInspectVariables(variableName=locals_[0]["name"], frameId=frame_id)
     assert reply.get("success"), f"richInspectVariables failed: {reply}"
 
-    reply = dap.copyToGlobals(srcVariableName="c", dstVariableName="c_copy", srcFrameId=frame_id)
+    reply = await dap.copyToGlobals(srcVariableName="c", dstVariableName="c_copy", srcFrameId=frame_id)
     assert reply.get("success"), f"copyToGlobals failed: {reply}"
-    globals_ = get_scope_vars(dap, scopes, "Globals")
+    globals_ = await get_scope_vars(dap, scopes, "Globals")
     assert any(v for v in globals_ if v["name"] == "c_copy"), f"globals: {globals_}"
 
     locals_ref = get_scope_ref(scopes, "Locals")
     globals_ref = get_scope_ref(scopes, "Globals")
-    locals_reply = dap.variables(variablesReference=locals_ref)
-    globals_reply = dap.variables(variablesReference=globals_ref)
+    locals_reply = await dap.variables(variablesReference=locals_ref)
+    globals_reply = await dap.variables(variablesReference=globals_ref)
     assert locals_reply["success"], f"locals reply: {locals_reply}"
     assert globals_reply["success"], f"globals reply: {globals_reply}"
-    reply = dap.stepOut(threadId=thread_id)
+    reply = await dap.stepOut(threadId=thread_id)
     assert reply.get("success"), f"stepOut failed: {reply}"
-    stopped = wait_for_stop(debug_kernel)
+    stopped = await wait_stop(kc)
     thread_id = stopped["content"]["body"].get("threadId", thread_id)
-    frames = get_stack_frames(dap, thread_id)
+    frames = await get_stack_frames(dap, thread_id)
     assert frames and frames[0]["name"] != "f", f"frames: {frames}"
 
-    continue_debugger(debug_kernel, stopped)
+    await continue_debugger(kc, stopped)
+    assert (await c)["content"]["status"] == "ok"
 
-    reply = dap.setExceptionBreakpoints(filters=["raised"])
+    reply = await dap.setExceptionBreakpoints(filters=["raised"])
     assert reply["success"], f"setExceptionBreakpoints failed: {reply}"
-    ensure_configuration_done(debug_kernel)
-    msg_id = debug_kernel.execute("raise ValueError('boom')")
-    stopped = wait_for_stop(debug_kernel)
+    await ensure_configuration_done(kc)
+    c = kc.execute("raise ValueError('boom')", reply=True, timeout=30)
+    stopped = await wait_stop(kc)
     reason = stopped["content"]["body"].get("reason")
     assert reason in {"exception", "breakpoint", "pause"}, f"stopped: {stopped}"
-    continue_debugger(debug_kernel, stopped)
-    reply = debug_kernel.shell_reply(msg_id)
+    await continue_debugger(kc, stopped)
+    reply = await c
     assert reply["content"]["status"] == "error", f"execute reply: {reply.get('content')}"
 
-    reply = dap.terminate(restart=False)
+    reply = await dap.terminate(restart=False)
     assert reply["success"], f"terminate failed: {reply}"
-    info = dap.debugInfo()
+    info = await dap.debugInfo()
     assert info["body"]["breakpoints"] == [], f"breakpoints not cleared: {info['body']['breakpoints']}"
     assert info["body"]["stoppedThreads"] == [], f"stoppedThreads not cleared: {info['body']['stoppedThreads']}"

@@ -1,13 +1,13 @@
-from ..kernel_utils import *
+from ..aclient import *
+from ..kernel_utils import iopub_msgs
 
-
-def test_comm_buffer_roundtrips():
-    with start_kernel() as (_, kc):
+async def test_comm_buffer_roundtrips():
+    async with mini_kernel() as (_, kc):
         code = (
             "from comm import create_comm\n"
             "c = create_comm(target_name='buf-test', buffers=[b'openbuf'])\n"
             "c.send(data={'x': 1}, buffers=[b'msgbuf'])\n")
-        _, reply, output_msgs = kc.exec_drain(code, store_history=False)
+        reply, output_msgs = await kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
         comm_msgs = iopub_msgs(output_msgs, "comm_msg")
         assert comm_msgs, "expected comm_msg on iopub"
@@ -27,21 +27,18 @@ def test_comm_buffer_roundtrips():
             "        received['msg'] = [bytes(b) for b in (m.get('buffers') or [])]\n"
             "    comm.on_msg(_on_msg)\n"
             "get_comm_manager().register_target('buf_target', _handler)\n")
-        _, reply, _ = kc.exec_drain(setup, store_history=False)
+        reply, _ = await kc.exec_drain(setup, store_history=False)
         assert reply["content"]["status"] == "ok"
 
         comm_id = "buf-1"
-        kc.cmd.comm_open(comm_id=comm_id, target_name="buf_target", data={}, buffers=[b"open"])
-        kc.cmd.comm_msg(comm_id=comm_id, data={}, buffers=[b"msg"])
+        kc.shell_request("comm_open", reply=False, comm_id=comm_id, target_name="buf_target", data={}, buffers=[b"open"])
+        kc.shell_request("comm_msg", reply=False, comm_id=comm_id, data={}, buffers=[b"msg"])
 
         code = (
             "import time\n"
             "deadline = time.monotonic() + 5\n"
             "while 'msg' not in received and time.monotonic() < deadline:\n"
-            "    time.sleep(0.05)\n"
-            "print(received.get('open'), received.get('msg'))\n")
-        _, reply, output_msgs = kc.exec_drain(code, store_history=False)
+            "    time.sleep(0.05)\n")
+        reply, _ = await kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        streams = "".join(m["content"]["text"] for m in iopub_streams(output_msgs))
-        assert "b'open'" in streams
-        assert "b'msg'" in streams
+        assert (r := await kc.eval_expr("received")) == dict(open=[b"open"], msg=[b"msg"]), r

@@ -36,6 +36,8 @@ Note: `tools/run_tests.sh` already runs `pytest -q`, so skip running it beforeha
 pytest -q -m slow
 ```
 
+The vanilla-client compat tests (`tests/compat/`) exercise the kernel through *unpatched* jupyter_client (the shape nbclassic/nbclient use). They run in the default suite: `tests/compat` sorts first in collection, so xdist's loadfile scheduler makes it a worker's first file, in a process that has never constructed a `ConKernelClient` (importing conkernelclient doesn't patch). A guard test fails loudly if that ordering assumption is ever broken.
+
 Run tests for a specific module:
 
 ```

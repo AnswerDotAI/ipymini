@@ -1,20 +1,12 @@
 import asyncio, os, signal, pytest
-from queue import Empty
-from jupyter_client import AsyncKernelClient
-from ..kernel_utils import *
+from uuid import uuid4
+from ..aclient import *
+from ..kernel_utils import iopub_msgs, kernel_pid
 
-
-async def _get_pubs(kc: AsyncKernelClient, timeout:float = 0.2)->list[dict]:
-    res = []
-    try:
-        while msg := await kc.get_iopub_msg(timeout=timeout): res.append(msg)
-    except Empty: pass
-    return res
-
-def _assert_interrupt(kc, msg_id:str, timeout:float = 2):
-    reply = kc.shell_reply(msg_id, timeout=timeout)
+async def _assert_interrupt(kc, c, timeout=2):
+    reply = await c
     assert reply["content"]["status"] == "error", f"interrupt reply: {reply.get('content')}"
-    outputs = kc.iopub_drain(msg_id)
+    outputs = await kc.iopub_drain(parent_id(reply), timeout=timeout)
     errors = iopub_msgs(outputs, "error")
     assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
     assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"interrupt iopub: {errors[-1].get('content')}"
@@ -22,55 +14,56 @@ def _assert_interrupt(kc, msg_id:str, timeout:float = 2):
 
 
 @pytest.mark.slow
-def test_interrupt_request_features():
-    with start_kernel() as (km, kc):
+async def test_interrupt_request_features():
+    async with mini_kernel() as (km, kc):
         for _ in range(2):
-            msg_id = kc.execute("import asyncio; await asyncio.sleep(5)")
-            wait_for_msg(kc.get_iopub_msg, lambda m: parent_id(m) == msg_id and m.get("msg_type") == "status"
-                and m["content"]["execution_state"] == "busy", timeout=1, poll=0.05)
+            mid = str(uuid4())
+            c = kc.execute("import asyncio; await asyncio.sleep(5)", reply=True, timeout=1.5, msg_id=mid)
+            await wait_iopub(kc, lambda m: parent_id(m) == mid and m.get("msg_type") == "status"
+                and m["content"]["execution_state"] == "busy", timeout=1)
             os.kill(kernel_pid(km), signal.SIGINT)
-            _assert_interrupt(kc, msg_id, timeout=1.5)
-            kc.exec_ok("41+1", timeout=1)
+            await _assert_interrupt(kc, c, timeout=1.5)
+            await kc.exec_ok("41+1", timeout=1)
 
-    with start_kernel() as (km, kc):
+    async with mini_kernel() as (km, kc):
         for use_control_channel in [False, True]:
-            msg_id = kc.execute("import time; time.sleep(1)")
-            wait_for_status(kc, "busy")
+            mid = str(uuid4())
+            c = kc.execute("import time; time.sleep(1)", reply=True, timeout=10, msg_id=mid)
+            await wait_status(kc, "busy")
 
             if use_control_channel:
-                assert kc.interrupt_request()["content"]["status"] == "ok"
-                assert kc.interrupt_request()["content"]["status"] == "ok"
-            else: km.interrupt_kernel()
+                assert (await kc.interrupt())["content"]["status"] == "ok"
+                assert (await kc.interrupt())["content"]["status"] == "ok"
+            else: await km.interrupt_kernel()
 
-            reply = _assert_interrupt(kc, msg_id, timeout=10)
+            reply = await _assert_interrupt(kc, c, timeout=10)
             assert reply["content"].get("ename") in {"KeyboardInterrupt", "InterruptedError"}, f"interrupt ename: {reply.get('content')}"
 
-    with start_kernel() as (_, kc):
-        msg_id = kc.execute("import time; time.sleep(5); print('finished')")
-        wait_for_status(kc, "busy")
-        kc.interrupt_request()
-        _assert_interrupt(kc, msg_id, timeout=2)
+    async with mini_kernel() as (_, kc):
+        mid = str(uuid4())
+        c = kc.execute("import time; time.sleep(5); print('finished')", reply=True, timeout=2, msg_id=mid)
+        await wait_status(kc, "busy")
+        await kc.interrupt()
+        await _assert_interrupt(kc, c, timeout=2)
 
-        msg_id = kc.execute("import asyncio; await asyncio.sleep(5)")
-        wait_for_status(kc, "busy")
-        kc.interrupt_request()
-        _assert_interrupt(kc, msg_id, timeout=2)
+        mid = str(uuid4())
+        c = kc.execute("import asyncio; await asyncio.sleep(5)", reply=True, timeout=2, msg_id=mid)
+        await wait_status(kc, "busy")
+        await kc.interrupt()
+        await _assert_interrupt(kc, c, timeout=2)
 
-        msg_id = kc.execute("while True: pass")
-        wait_for_status(kc, "busy")
-        kc.interrupt_request()
-        _assert_interrupt(kc, msg_id, timeout=2)
+        mid = str(uuid4())
+        c = kc.execute("while True: pass", reply=True, timeout=2, msg_id=mid)
+        await wait_status(kc, "busy")
+        await kc.interrupt()
+        await _assert_interrupt(kc, c, timeout=2)
 
-    async def _run():
-        async with start_kernel_async(ready_timeout=2) as (_km, kc):
-            cmd = kc.cmd
-            msg_id = cmd.execute_request(code="import time; time.sleep(1); print('finished')")
-            await asyncio.sleep(0.2)
-            await kc.interrupt_request_async(timeout=2)
-            await asyncio.sleep(0.2)
-            pubs = await _get_pubs(kc, timeout=0.2)
-            outs = [o for o in pubs if o.get("parent_header", {}).get("msg_id") == msg_id]
-            errors = [o for o in outs if o.get("msg_type") == "error"]
-            assert errors, f"expected error output after interrupt, got: {[o.get('msg_type') for o in outs]}"
-
-    asyncio.run(_run())
+    async with mini_kernel() as (_, kc):
+        mid = str(uuid4())
+        c = kc.execute("import time; time.sleep(1); print('finished')", reply=True, timeout=2, msg_id=mid)
+        await asyncio.sleep(0.2)
+        await kc.interrupt(timeout=2)
+        outputs = await kc.iopub_drain(mid, timeout=2)
+        errors = iopub_msgs(outputs, "error")
+        assert errors, f"expected error output after interrupt, got: {[o.get('msg_type') for o in outputs]}"
+        await c

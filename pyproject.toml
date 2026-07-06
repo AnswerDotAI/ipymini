@@ -22,6 +22,9 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "pytest>=7.4",
+  "pytest-asyncio>=1.0",
+  "pytest-xdist",
+  "conkernelclient>=0.0.13",
   "matplotlib>=3.8",
   "ipykernel>=6.29",
   "debugpy>=1.8",
@@ -29,6 +32,9 @@ test = [
 ]
 dev = [
   "pytest>=7.4",
+  "pytest-asyncio>=1.0",
+  "pytest-xdist",
+  "conkernelclient>=0.0.13",
   "matplotlib>=3.8",
   "ipykernel>=6.29",
   "debugpy>=1.8",
