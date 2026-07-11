@@ -10,6 +10,11 @@ async def _assert_interrupt(kc, c, timeout=2):
     errors = iopub_msgs(outputs, "error")
     assert errors, f"expected iopub error after interrupt_request, got: {[m.get('msg_type') for m in outputs]}"
     assert errors[-1]["content"].get("ename") == "KeyboardInterrupt", f"interrupt iopub: {errors[-1].get('content')}"
+    # Interrupted executes must still end with their own parented idle (iopub_drain stops on idle,
+    # but returns whatever it got on timeout - so assert it). Per-message idle consumers
+    # (e.g. Solveit's Message._msgidle_evt) hang after Stop if this ever regresses.
+    assert outputs[-1]["msg_type"] == "status" and outputs[-1]["content"]["execution_state"] == "idle", \
+        f"interrupted execute missing terminal idle: {[m.get('msg_type') for m in outputs]}"
     return reply
 
 
@@ -66,4 +71,5 @@ async def test_interrupt_request_features():
         outputs = await kc.iopub_drain(mid, timeout=2)
         errors = iopub_msgs(outputs, "error")
         assert errors, f"expected error output after interrupt, got: {[o.get('msg_type') for o in outputs]}"
+        assert outputs[-1]["content"].get("execution_state") == "idle", f"missing terminal idle: {[o.get('msg_type') for o in outputs]}"
         await c

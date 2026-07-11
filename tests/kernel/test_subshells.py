@@ -188,9 +188,33 @@ async def test_subshell_concurrency_and_control(kc):
     for msg_id, text in expected.items():
         streams = iopub_streams(outputs[msg_id])
         assert any(text in m["content"].get("text", "") for m in streams)
+        # Per-request status envelope: busy first, idle last, each parented to its own execute.
+        # Solveit's per-message idle event (Message._msgidle_evt) relies on exactly this under
+        # concurrent execution: idle for a request means all its outputs have been published.
+        assert outputs[msg_id][0]["msg_type"] == "status" and outputs[msg_id][0]["content"]["execution_state"] == "busy", outputs[msg_id][0]
+        assert outputs[msg_id][-1]["msg_type"] == "status" and outputs[msg_id][-1]["content"]["execution_state"] == "idle", outputs[msg_id][-1]
 
     await _adelete_subshell(kc, subshell_a)
     await _adelete_subshell(kc, subshell_b)
+
+
+async def test_interrupt_during_concurrent_subshell_execution(kc):
+    "Interrupt with executes in flight on parent and subshell: every request must still get its terminal idle (Solveit's Stop during parallel tool calls relies on this)."
+    subshell_id = await _acreate_subshell(kc)
+    try:
+        id_parent, c_parent = _asend_execute(kc, "import time; time.sleep(30)")
+        id_sub, c_sub = _asend_execute(kc, "import time; time.sleep(0.5); print('sub done')", subshell_id)
+        await wait_iopub(kc, lambda m: parent_id(m) == id_parent and m.get("msg_type") == "status"
+            and m["content"]["execution_state"] == "busy")
+        assert (await kc.interrupt())["content"]["status"] == "ok"
+        reply_parent, reply_sub = await asyncio.gather(c_parent, c_sub)
+        assert reply_parent["content"]["status"] == "error"
+        outputs = await collect_iopub(kc, {id_parent, id_sub})
+        for mid in (id_parent, id_sub):
+            last = outputs[mid][-1]
+            assert last["msg_type"] == "status" and last["content"]["execution_state"] == "idle", \
+                (mid, [m.get("msg_type") for m in outputs[mid]])
+    finally: await _adelete_subshell(kc, subshell_id)
 
 
 async def test_subshell_reads_shared_ns_during_parent_sleep(kc):
