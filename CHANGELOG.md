@@ -2,6 +2,17 @@
 
 <!-- do not remove -->
 
+## 0.1.15
+
+### New Features
+
+- Share subshell history, capture comm-callback output via `output_context`, and add `get_parent` for ipywidgets ([#39](https://github.com/AnswerDotAI/ipymini/issues/39))
+
+### Bugs Squashed
+
+- Fix subshell history namespace decoupling from parent shell ([#38](https://github.com/AnswerDotAI/ipymini/pull/38)), thanks to [@ncoop57](https://github.com/ncoop57)
+
+
 ## 0.1.14
 
 ### New Features
