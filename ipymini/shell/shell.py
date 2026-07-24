@@ -7,6 +7,7 @@ os.environ.setdefault("PYDEVD_USE_SYS_MONITORING", "0")
 
 import zmq
 from fastcore.basics import str2bool
+from fastcore.aio import enable_async_magics
 from IPython.core.async_helpers import _asyncio_runner
 from IPython.core.application import BaseIPythonApplication
 from IPython.core.completer import provisionalcompleter as _provisionalcompleter
@@ -98,6 +99,7 @@ class MiniShell:
             self.ipy = InteractiveShell(user_ns=user_ns)
             if InteractiveShell.initialized() and user_ns is InteractiveShell.instance().user_ns:
                 _share_history(self.ipy, InteractiveShell.instance())
+        enable_async_magics(self.ipy)  # line/cell magics may be async; pairs with unlock() for mid-cell comm replies
         use_jedi = _env_flag("IPYMINI_USE_JEDI")
         if use_jedi is not None: self.ipy.Completer.use_jedi = use_jedi
 

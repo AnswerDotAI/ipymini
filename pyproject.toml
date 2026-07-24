@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "comm>=0.2.3",
-  "fastcore>=1.5",
+  "fastcore>=2.1.6",
   "ipython>=8.18",
   "jupyter_client>=8.6",
   "jupyter_core>=5.5",

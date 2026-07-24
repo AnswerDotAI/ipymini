@@ -97,3 +97,17 @@ async def test_stop_on_error_features():
         results = await asyncio.gather(c_fail, c_dead, return_exceptions=True)
         assert results[0]["content"]["status"] == "error"
         assert isinstance(results[1], RuntimeError) and "boom" in str(results[1])
+
+
+async def test_async_line_magic():
+    "An `async def` line magic's coroutine result is awaited (fastcore.aio.enable_async_magics wiring)."
+    async with mini_kernel() as (_, kc):
+        setup = ("async def _amag(line): return f'async:{line}'\n"
+                 "get_ipython().register_magic_function(_amag, 'line', 'amag')")
+        reply, _ = await kc.exec_drain(setup)
+        assert reply["content"]["status"] == "ok"
+        reply, outputs = await kc.exec_drain("%amag hi", store_history=False)
+        assert reply["content"]["status"] == "ok"
+        results = iopub_msgs(outputs, "execute_result")
+        assert results, "expected execute_result"
+        assert results[-1]["content"]["data"]["text/plain"] == "'async:hi'"
