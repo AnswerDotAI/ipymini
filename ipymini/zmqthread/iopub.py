@@ -12,6 +12,7 @@ class IOPubThread(ServiceThread):
         super().__init__(name="iopub-thread", reraise=True)
         self.context = context
         self.addr = addr
+        self.bound_addr = None
         self.session = session
         self.sndhwm = sndhwm
         self.qmax = int(qmax)
@@ -31,6 +32,14 @@ class IOPubThread(ServiceThread):
             return
         self.q.put_nowait((msg_type, content, parent, metadata, ident, buffers))
 
+
+    def _send_welcome(self, sock, topic: bytes):
+        "Send `iopub_welcome` to a new subscriber (JEP 65), topic-prefixed so it reaches the matching subscription."
+        try: sub = topic.decode("utf-8")
+        except UnicodeDecodeError: return
+        try: self.session.send(sock, "iopub_welcome", content=dict(subscription=sub), ident=topic or None)
+        except Exception as exc: log.error("IOPub welcome send error: %s", exc, exc_info=exc)
+
     def _get_next(self):
         try: return self.q.get(timeout=0.05)
         except queue.Empty: return None
@@ -38,14 +47,19 @@ class IOPubThread(ServiceThread):
     def run_service(self):
         sock = None
         try:
-            sock = self.context.socket(zmq.PUB)
+            sock = self.context.socket(zmq.XPUB)
             sock.linger = 0
+            sock.setsockopt(zmq.XPUB_VERBOSE, 1)  # event per subscriber, not per topic: every client gets a welcome
             if self.sndhwm is not None:
                 try: sock.sndhwm = int(self.sndhwm)
                 except ValueError: pass
             sock.bind(self.addr)
+            self.bound_addr = sock.getsockopt(zmq.LAST_ENDPOINT).decode()
             self.started()
             while not self.scope.closed:
+                while sock.poll(0):
+                    frame = sock.recv()
+                    if frame[:1] == b"\x01": self._send_welcome(sock, frame[1:])
                 item = self._get_next()
                 if item is None: continue
                 msg_type, content, parent, metadata, ident, buffers = item

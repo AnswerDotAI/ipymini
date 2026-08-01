@@ -69,7 +69,7 @@ Stdin requests flush the captured streams, then send `input_request` through the
 
 ## IOPub
 
-`IOPubThread` owns the PUB socket and a FIFO queue. `kernel.iopub` is a small proxy (`IOPubCommand`) that turns attribute access into typed sends: `kernel.iopub.stream(parent, name=..., text=...)`, `.display_data(...)`, `.status(...)`, and so on all funnel through `iopub_send`. The queue is bounded (`IPYMINI_IOPUB_QMAX`, default 10000): when a cell floods output, non-status messages past the limit are dropped with a warning, but `status` messages are never dropped, so clients' busy/idle picture stays truthful.
+`IOPubThread` owns the iopub socket and a FIFO queue. The socket is XPUB rather than plain PUB, with `XPUB_VERBOSE` set: each new subscription event triggers an `iopub_welcome` message to that subscriber (JEP 65, as in ipykernel), so a client knows its subscription is live and nothing published afterwards can be missed. `XPUB_VERBOSE` matters because plain XPUB dedups subscription events per topic, which would leave second and later subscribers (reconnects included) without a welcome; the flip side is that a welcome is broadcast to every matching subscriber, so clients must tolerate welcomes at any time, not only at startup. `kernel.iopub` is a small proxy (`IOPubCommand`) that turns attribute access into typed sends: `kernel.iopub.stream(parent, name=..., text=...)`, `.display_data(...)`, `.status(...)`, and so on all funnel through `iopub_send`. The queue is bounded (`IPYMINI_IOPUB_QMAX`, default 10000): when a cell floods output, non-status messages past the limit are dropped with a warning, but `status` messages are never dropped, so clients' busy/idle picture stays truthful.
 
 ## Interrupts
 

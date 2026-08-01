@@ -69,8 +69,9 @@ def test_zmqthread_features():
     sub.linger = 0
     sub.setsockopt(zmq.SUBSCRIBE, b"")
     sub.connect(iopub_addr)
-    time.sleep(0.05)
     try:
+        _idents, msg = _poll_recv(sub, session)
+        assert msg["msg_type"] == "iopub_welcome"  # JEP 65: subscription is proven live; nothing after this can be missed
         iopub.send("status", {"execution_state": "idle"}, parent=None)
         _idents, msg = _poll_recv(sub, session)
         assert msg["msg_type"] == "status"
