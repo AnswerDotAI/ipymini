@@ -65,11 +65,11 @@ A subshell is strictly FIFO by default: one cell finishes before the next starts
 
 `MiniDisplayHook` keeps the last displayed result in contextvars too, so concurrent unlocked cells can't clobber each other's `Out` values mid-flight. `execute_input` always precedes any live output for a cell because it's published before execution begins.
 
-Stdin requests flush the captured streams, then send `input_request` through the stdin router thread and block on a `microio.RequestRegistry` waiter, matched back to the requester by parent msg_id with a client-identity fallback. Interrupts fail all pending waiters with `KeyboardInterrupt`; router shutdown fails them with a `RuntimeError` instead of leaving them hanging.
+Stdin requests flush the captured streams, then send `input_request` through the stdin router thread and block on a `microio.RequestRegistry` waiter, matched back to the requester by parent msg_id with a client-identity fallback. The router socket sets `ROUTER_MANDATORY` with a zero send timeout, so a send to a client whose stdin pipe is not up yet (or is congested) raises instead of silently dropping; such requests are retried every poll tick for as long as their waiter exists, which means a late-connecting or reconnecting client gets pending prompts redelivered. Interrupts fail all pending waiters with `KeyboardInterrupt`; router shutdown fails them with a `RuntimeError` instead of leaving them hanging.
 
 ## IOPub
 
-`IOPubThread` owns the iopub socket and a FIFO queue. The socket is XPUB rather than plain PUB, with `XPUB_VERBOSE` set: each new subscription event triggers an `iopub_welcome` message to that subscriber (JEP 65, as in ipykernel), so a client knows its subscription is live and nothing published afterwards can be missed. `XPUB_VERBOSE` matters because plain XPUB dedups subscription events per topic, which would leave second and later subscribers (reconnects included) without a welcome; the flip side is that a welcome is broadcast to every matching subscriber, so clients must tolerate welcomes at any time, not only at startup. `kernel.iopub` is a small proxy (`IOPubCommand`) that turns attribute access into typed sends: `kernel.iopub.stream(parent, name=..., text=...)`, `.display_data(...)`, `.status(...)`, and so on all funnel through `iopub_send`. The queue is bounded (`IPYMINI_IOPUB_QMAX`, default 10000): when a cell floods output, non-status messages past the limit are dropped with a warning, but `status` messages are never dropped, so clients' busy/idle picture stays truthful.
+`IOPubThread` owns the iopub socket and a FIFO queue. The socket is XPUB rather than plain PUB (`IPYMINI_IOPUB_XPUB=0` reverts it, emulating a pre-JEP-65 kernel for client fallback testing), with `XPUB_VERBOSE` set: each new subscription event triggers an `iopub_welcome` message to that subscriber (JEP 65, as in ipykernel), so a client knows its subscription is live and nothing published afterwards can be missed. `XPUB_VERBOSE` matters because plain XPUB dedups subscription events per topic, which would leave second and later subscribers (reconnects included) without a welcome; the flip side is that a welcome is broadcast to every matching subscriber, so clients must tolerate welcomes at any time, not only at startup. `kernel.iopub` is a small proxy (`IOPubCommand`) that turns attribute access into typed sends: `kernel.iopub.stream(parent, name=..., text=...)`, `.display_data(...)`, `.status(...)`, and so on all funnel through `iopub_send`. The queue is bounded (`IPYMINI_IOPUB_QMAX`, default 10000): when a cell floods output, non-status messages past the limit are dropped with a warning, but `status` messages are never dropped. That guarantee covers the kernel's own send queue only: below it, libzmq silently drops per slow subscriber once the socket's `SNDHWM` fills (default 1000; `IPYMINI_IOPUB_SNDHWM` raises it), statuses included, and no sender-side setting can fix that without letting one wedged client grow kernel memory without bound (PUB-family sends never block, so the app queue cannot see subscriber backpressure). A subscriber that wants a lossless hop sets `RCVHWM=0` on its SUB and keeps draining, as jupygate does; ipykernel leaves its `SNDHWM` at the same default.
 
 ## Interrupts
 
@@ -103,6 +103,7 @@ IPython configuration works the standard way: a minimal `InteractiveShellApp` su
 - `IPYMINI_USE_JEDI=0|1`: override IPython's jedi setting.
 - `IPYMINI_CELL_NAME`: override the debug cell filename.
 - `IPYMINI_IOPUB_QMAX` / `IPYMINI_IOPUB_SNDHWM`: IOPub queue bound (default 10000) and socket send high-water mark.
+- `IPYMINI_IOPUB_XPUB=0`: plain PUB iopub with no welcomes, emulating a pre-JEP-65 kernel (for testing clients' fallback paths).
 - `IPYMINI_DEBUG` / `IPYMINI_DEBUG_MSGS`: verbose kernel logging / per-message trace logging (see `ipymini/debug/README.md`).
 
 ## Tests
@@ -144,8 +145,8 @@ Notes:
 
 ### Writing tests
 
-- Prefer protocol-level tests using `KernelManager` and helpers in `tests/kernel_utils.py`.
-- Use `KernelHarness` (fixture in `tests/conftest.py`) for minimal, readable protocol-script tests.
+- Prefer protocol-level tests through `tests/aclient.py`: `mini_kernel()` yields `(km, kc)` with a `ConKernelClient`, and `conkernelclient.ops` supplies the request helpers (`exec_drain`, the `cmd`/`ctl`/`dap` proxies, `shell_request`, `iopub_drain`).
+- The vanilla jupyter_client harness in `tests/kernel_utils.py` (`vanilla_kernel`, `vanilla_kernel_async`, and its `KernelClient` helpers) is only for tests whose subject is the unpatched client shape: `tests/compat`, and raw-transport fixtures like the router-handover and raw-channel-timing tests.
 - Avoid large sleeps and long timeouts; use monotonic timeouts and explicit status waits.
 - For blocking debugger behavior, always use a separate process.
 

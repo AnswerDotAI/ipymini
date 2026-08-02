@@ -8,13 +8,14 @@ log = logging.getLogger("ipymini.zmqthread")
 class IOPubThread(ServiceThread):
     "IOPub sender thread using a sync PUB socket with a bounded queue."
 
-    def __init__(self, context: zmq.Context, addr: str, session, qmax: int = 10000, sndhwm: int | None = None):
+    def __init__(self, context: zmq.Context, addr: str, session, qmax: int = 10000, sndhwm: int | None = None, xpub: bool = True):
         super().__init__(name="iopub-thread", reraise=True)
         self.context = context
         self.addr = addr
         self.bound_addr = None
         self.session = session
         self.sndhwm = sndhwm
+        self.xpub = xpub
         self.qmax = int(qmax)
         self.q = queue.Queue()
         self.enqueued = 0
@@ -47,9 +48,9 @@ class IOPubThread(ServiceThread):
     def run_service(self):
         sock = None
         try:
-            sock = self.context.socket(zmq.XPUB)
+            sock = self.context.socket(zmq.XPUB if self.xpub else zmq.PUB)
             sock.linger = 0
-            sock.setsockopt(zmq.XPUB_VERBOSE, 1)  # event per subscriber, not per topic: every client gets a welcome
+            if self.xpub: sock.setsockopt(zmq.XPUB_VERBOSE, 1)  # event per subscriber, not per topic: every client gets a welcome
             if self.sndhwm is not None:
                 try: sock.sndhwm = int(self.sndhwm)
                 except ValueError: pass
@@ -57,10 +58,11 @@ class IOPubThread(ServiceThread):
             self.bound_addr = sock.getsockopt(zmq.LAST_ENDPOINT).decode()
             self.started()
             while not self.scope.closed:
-                while sock.poll(0):
+                item = self._get_next()
+                if self.scope.closed: break
+                while self.xpub and sock.poll(0):
                     frame = sock.recv()
                     if frame[:1] == b"\x01": self._send_welcome(sock, frame[1:])
-                item = self._get_next()
                 if item is None: continue
                 msg_type, content, parent, metadata, ident, buffers = item
                 try:

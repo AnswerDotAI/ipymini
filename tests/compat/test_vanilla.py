@@ -16,7 +16,7 @@ import pytest
 from queue import Empty
 from jupyter_client.session import Session
 
-from ..kernel_utils import start_kernel, start_kernel_async, wait_for_status, iopub_streams, default_timeout
+from ..kernel_utils import vanilla_kernel, vanilla_kernel_async, wait_for_status, iopub_streams, default_timeout
 
 pytestmark = pytest.mark.compat
 
@@ -31,7 +31,7 @@ def test_session_is_unpatched():
 
 @pytest.fixture(scope="module")
 def kc():
-    with start_kernel() as (_, kc): yield kc
+    with vanilla_kernel() as (_, kc): yield kc
 
 
 def test_execute_roundtrip(kc):
@@ -75,7 +75,7 @@ def test_stdin_roundtrip(kc):
 
 
 def test_shutdown_clean():
-    with start_kernel() as (km, kc):
+    with vanilla_kernel() as (km, kc):
         _, reply, _ = kc.exec_drain("1+1")
         assert reply["content"]["status"] == "ok"
     assert not km.is_alive()
@@ -89,7 +89,7 @@ async def _shell_reply(kc, mid, timeout=10):
 
 
 async def test_async_client_execute_and_iopub():
-    async with start_kernel_async() as (_, kc):
+    async with vanilla_kernel_async() as (_, kc):
         mid = kc.execute("print('hi'); 42")
         reply = await _shell_reply(kc, mid)
         assert reply["content"]["status"] == "ok"
@@ -104,7 +104,7 @@ async def test_async_client_execute_and_iopub():
 
 
 async def test_async_client_interrupt():
-    async with start_kernel_async() as (_, kc):
+    async with vanilla_kernel_async() as (_, kc):
         mid = kc.execute("import time; time.sleep(30)")
         while True:  # interrupt only once actually busy, else it lands on an idle kernel and no-ops
             msg = await kc.get_iopub_msg(timeout=10)

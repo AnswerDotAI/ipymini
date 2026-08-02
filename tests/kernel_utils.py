@@ -11,7 +11,7 @@ default_timeout = 10
 root = Path(__file__).resolve().parents[1]
 
 __all__ = ["default_timeout", "root", "build_env", "load_connection", "kernel_pid", "assert_pid_gone",
-    "ensure_separate_process", "start_kernel", "start_kernel_async", "wait_for_msg", "iter_timeout",
+    "ensure_separate_process", "vanilla_kernel", "vanilla_kernel_async", "wait_for_msg", "iter_timeout",
     "parent_id", "wait_for_status", "iopub_msgs", "iopub_streams"]
 
 
@@ -74,10 +74,12 @@ def ensure_separate_process(km: KernelManager):
 
 
 
+# The vanilla jupyter_client harness below (starters and KernelClient helpers) exists for tests/compat and
+# raw-transport fixtures, where the unpatched client IS the subject. Everything else uses tests/aclient.py.
 @delegates(KernelManager.start_kernel, but="env")
 @contextmanager
-def start_kernel(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
-    "Start kernel."
+def vanilla_kernel(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
+    "Start a kernel with an *unpatched* jupyter_client client: for tests whose subject is the vanilla client shape (tests/compat, raw-transport fixtures)."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="ipymini")
@@ -93,8 +95,8 @@ def start_kernel(extra_env: dict|None=None, ready_timeout: float|None=None, **kw
 
 
 @asynccontextmanager
-async def start_kernel_async(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
-    "Async context manager for AsyncKernelClient tests."
+async def vanilla_kernel_async(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
+    "Async twin of `vanilla_kernel`."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="ipymini")
@@ -114,12 +116,6 @@ async def start_kernel_async(extra_env: dict|None=None, ready_timeout: float|Non
 def shell_reply(self: KernelClient, msg_id:str, timeout:float = default_timeout)->dict:
     "Return shell reply matching `msg_id`."
     return wait_for_msg(self.get_shell_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for shell reply")
-
-
-@patch
-def control_reply(self: KernelClient, msg_id:str, timeout:float = default_timeout)->dict:
-    "Return control reply matching `msg_id`."
-    return wait_for_msg(self.control_channel.get_msg, lambda m: parent_id(m) == msg_id, timeout, err="timeout waiting for control reply")
 
 
 @patch
@@ -171,61 +167,6 @@ async def interrupt_request_async(self: AsyncKernelClient, timeout:float = 2)->d
     raise AssertionError("timeout waiting for interrupt_reply")
 
 
-class _ReqProxy:
-    def __init__(self, kc: KernelClient, channel:str, suffix:str):
-        self.kc = kc
-        self.channel = channel
-        self.suffix = suffix
-
-    def __getattr__(self, name:str):
-        msg_type = f"{name}{self.suffix}"
-        reply_fn = self.kc.control_reply if self.channel == "control" else self.kc.shell_reply
-        channel = self.kc.control_channel if self.channel == "control" else self.kc.shell_channel
-
-        def _call(*, timeout:float = default_timeout, **content):
-            msg = self.kc.session.msg(msg_type, content)
-            channel.send(msg)
-            return reply_fn(msg["header"]["msg_id"], timeout=timeout)
-
-        return _call
-
-
-@patch(as_prop=True)
-def ctl(self: KernelClient)->_ReqProxy:
-    if (proxy := getattr(self, "ctl_cache", None)) is None: self.ctl_cache = proxy = _ReqProxy(self, "control", "_request")
-    return proxy
-
-
-class ShellCommand:
-    def __init__(self, kc: KernelClient):
-        "Shell command proxy for `kc`."
-        self.kc = kc
-
-    def __getattr__(self, name:str):
-        if name.startswith('_'): raise AttributeError(name)
-        def _call(*, subshell_id:str|None=None, buffers: list[bytes]|None=None, content: dict|None=None, **kwargs):
-            return self.kc.shell_send(name, content, subshell_id=subshell_id, buffers=buffers, **kwargs)
-
-        return _call
-
-
-@patch(as_prop=True)
-def cmd(self: KernelClient)->ShellCommand:
-    if (proxy := getattr(self, "cmd_cache", None)) is None: self.cmd_cache = proxy = ShellCommand(self)
-    return proxy
-
-
-@patch
-def shell_send(self: KernelClient, msg_type:str, content: dict|None=None, subshell_id:str|None=None,
-    buffers: list[bytes]|None=None, **kwargs)->str:
-    "Send shell message with optional subshell header, buffers, and kwargs content."
-    if content is None: content = {}
-    if kwargs: content = dict(content) | kwargs
-    msg = self.session.msg(msg_type, content)
-    if subshell_id is not None: msg["header"]["subshell_id"] = subshell_id
-    if buffers: self.session.send(self.shell_channel.socket, msg, buffers=buffers)
-    else: self.shell_channel.send(msg)
-    return msg["header"]["msg_id"]
 
 
 

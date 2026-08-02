@@ -3,7 +3,7 @@ import asyncio, time, pytest
 from uuid import uuid4
 from queue import Empty
 from ..aclient import *
-from ..kernel_utils import start_kernel
+from ..kernel_utils import vanilla_kernel
 
 @pytest.fixture(scope="module")
 async def kc():
@@ -14,7 +14,7 @@ async def kc():
 @pytest.fixture(scope="module")
 def sync_kc():
     "A sync-client kernel for the raw-channel-timing test below that can't move to ConKernelClient (see its comment)."
-    with start_kernel() as (_, kc): yield kc
+    with vanilla_kernel() as (_, kc): yield kc
 
 
 async def _states(kc, mid):

@@ -2,7 +2,7 @@ import time, zmq
 from jupyter_client.session import Session
 
 from ..aclient import *
-from ..kernel_utils import start_kernel, iter_timeout, iopub_msgs
+from ..kernel_utils import vanilla_kernel, iter_timeout, iopub_msgs
 
 def _shell_addr(conn: dict)->str:
     transport = conn["transport"]
@@ -25,7 +25,7 @@ def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout:float)->dict|N
 
 def test_router_handover_same_identity():
     "Raw ZMQ DEALER-socket identity handover: transport-level, not kernel semantics, so left on the sync harness."
-    with start_kernel() as (km, kc):
+    with vanilla_kernel() as (km, kc):
         kc.stop_channels()
         ctx = zmq.Context()
         sock1 = ctx.socket(zmq.DEALER)

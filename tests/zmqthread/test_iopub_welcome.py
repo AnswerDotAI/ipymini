@@ -14,11 +14,11 @@ def _recv_msg(sock, session):
 
 
 @contextmanager
-def _iopub():
+def _iopub(xpub=True):
     "A started IOPubThread plus a connect() helper; every socket is closed on exit even when an assertion fails."
     ctx = zmq.Context()
     session = Session(key=b"abc")
-    iopub = IOPubThread(ctx, "tcp://127.0.0.1:0", session, qmax=100)
+    iopub = IOPubThread(ctx, "tcp://127.0.0.1:0", session, qmax=100, xpub=xpub)
     iopub.start()
     iopub.wait_started(5)
     subs = []
@@ -61,3 +61,26 @@ def test_welcome_then_normal_traffic():
         iopub.send("stream", dict(name="stdout", text="hi"), parent=None)
         got = [_recv_msg(sub, session)["header"]["msg_type"] for _ in range(2)]
         assert got == ["status", "stream"]
+
+
+def test_plain_pub_mode_sends_no_welcome():
+    "With xpub=False (IPYMINI_IOPUB_XPUB=0) the socket is plain PUB, emulating a pre-JEP-65 kernel: no welcome, just traffic."
+    with _iopub(xpub=False) as (session, iopub, connect):
+        sub = connect()
+        for _ in range(100):
+            iopub.send("status", dict(execution_state="busy"), parent=None)
+            if sub.poll(50): break
+        assert _recv_msg(sub, session)["header"]["msg_type"] == "status"
+
+
+def test_welcome_first_even_with_inflight_traffic():
+    "A subscriber joining while traffic is being enqueued still sees its welcome first (warm-connect ordering, JEP 65)."
+    import time
+    with _iopub() as (session, iopub, connect):
+        for _ in range(20):
+            sub = connect()
+            time.sleep(0.005)  # let the subscription register while the send loop is parked on its queue
+            iopub.send("status", dict(execution_state="busy"), parent=None)
+            assert _recv_msg(sub, session)["header"]["msg_type"] == "iopub_welcome"
+            while sub.poll(100): _recv_msg(sub, session)  # drain the status (and any broadcast welcomes) before the next round
+            sub.close()

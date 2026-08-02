@@ -23,6 +23,7 @@ class StdinRouterThread(ServiceThread):
         self.pending = {}
         self.pending_by_ident = {}
         self.socket = None
+        self.unsent = []  # input_requests awaiting a reachable peer; retried each tick while their waiter lives
 
     def request_input(self, prompt, password, parent, ident, timeout=None) -> str:
         "Send input_request and wait for input_reply; honors `timeout`."
@@ -39,6 +40,8 @@ class StdinRouterThread(ServiceThread):
             sock = self.context.socket(zmq.ROUTER)
             sock.linger = 0
             if hasattr(zmq, "ROUTER_HANDOVER"): sock.router_handover = 1
+            sock.router_mandatory = 1  # unroutable input_request raises EHOSTUNREACH instead of silently dropping
+            sock.sndtimeo = 0       # a congested peer raises EAGAIN instead of blocking the router thread
             sock.bind(self.addr)
             self.socket = sock
             self.started()
@@ -59,16 +62,26 @@ class StdinRouterThread(ServiceThread):
             if sock is not None: sock.close(0)
 
     def _drain_requests(self, sock: zmq.Socket):
+        "Send queued and previously-undeliverable input_requests, keeping those whose peer cannot take them yet."
         while True:
-            try: prompt, password, parent, ident, reply = self.requests.get_nowait()
-            except queue.Empty: return
-            if reply.key not in self.waiters: continue
-            msg = self.session.send(sock, "input_request", {"prompt": prompt, "password": password}, parent=parent, ident=ident)
-            msg_id = nested_idx(msg, "header", "msg_id")
-            key = tuple(ident or [])
-            with self.pending_lock:
-                if msg_id: self.pending[msg_id] = (key, reply)
-                self.pending_by_ident[key] = reply
+            try: self.unsent.append(self.requests.get_nowait())
+            except queue.Empty: break
+        self.unsent = [req for req in self.unsent if not self._send_request(sock, req)]
+
+    def _send_request(self, sock: zmq.Socket, req) -> bool:
+        "Try to send one input_request; False when the peer is unroutable or congested, so the caller retries next tick."
+        prompt, password, parent, ident, reply = req
+        if reply.key not in self.waiters: return True
+        try: msg = self.session.send(sock, "input_request", {"prompt": prompt, "password": password}, parent=parent, ident=ident)
+        except zmq.ZMQError as err:
+            if err.errno in (zmq.EHOSTUNREACH, zmq.EAGAIN): return False
+            raise
+        msg_id = nested_idx(msg, "header", "msg_id")
+        key = tuple(ident or [])
+        with self.pending_lock:
+            if msg_id: self.pending[msg_id] = (key, reply)
+            self.pending_by_ident[key] = reply
+        return True
 
     def _resolve_input_reply(self, idents, msg: dict):
         parent = msg.get("parent_header", {})

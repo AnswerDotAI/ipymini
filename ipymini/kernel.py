@@ -646,7 +646,7 @@ class MiniKernel:
         try: iopub_sndhwm = int(iopub_sndhwm) if iopub_sndhwm else None
         except ValueError: iopub_sndhwm = None
         self.iopub_thread = IOPubThread(self.context, self.connection.addr(self.connection.iopub_port), self.session,
-            qmax=iopub_qmax, sndhwm=iopub_sndhwm)
+            qmax=iopub_qmax, sndhwm=iopub_sndhwm, xpub=os.environ.get("IPYMINI_IOPUB_XPUB", "1") != "0")
         self.stdin_router = StdinRouterThread(self.context, self.connection.addr(self.connection.stdin_port), self.session)
 
         self.hb = HeartbeatThread(self.context, self.connection.addr(self.connection.hb_port))

@@ -188,3 +188,32 @@ def test_zmqthread_features():
         stdin.stop()
         stdin.join(timeout=1)
         dealer.close(0)
+
+    # input_request sent before the client's stdin pipe is up is redelivered when it connects, not silently dropped
+    stdin = StdinRouterThread(ctx, f"tcp://127.0.0.1:{_free_port()}", session)
+    stdin.start()
+    stdin.wait_started(5)
+    result = {}
+
+    def wait_input():
+        try: result["value"] = stdin.request_input("Name: ", False, parent={}, ident=[b"late"], timeout=5)
+        except Exception as err: result["err"] = err
+
+    thread = threading.Thread(target=wait_input)
+    thread.start()
+    time.sleep(0.2)  # the send happens now, with no connected peer to route to
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.linger = 0
+    dealer.rcvtimeo = 2000
+    dealer.setsockopt(zmq.IDENTITY, b"late")
+    dealer.connect(stdin.addr)
+    try:
+        _idents, msg = session.recv(dealer, mode=0)
+        assert msg["msg_type"] == "input_request"
+        session.send(dealer, "input_reply", {"value": "Ada"}, parent=msg)
+        thread.join(timeout=2)
+        assert result.get("value") == "Ada", result
+    finally:
+        stdin.stop()
+        stdin.join(timeout=1)
+        dealer.close(0)

@@ -15,6 +15,8 @@ Jupyter kernels typically need:
 
 The key invariant is: each ZMQ socket is owned by exactly one thread; other threads communicate with it via queues.
 
+A second invariant: no ZMQ call in these threads may block without bound, because zmq's failure mode for misuse is blocking or silent dropping, and a blocked socket thread is indistinguishable from a hung kernel. Each socket satisfies it in a role-specific way: every socket is `linger=0` and closed with `close(0)`; every loop polls with a short timeout and re-checks its stop scope; PUB/XPUB sends drop at the high-water mark by design (the bounded queue in `IOPubThread` reports drops); shell/control ROUTER replies to a vanished client are deliberately dropped (there is no one to tell); the heartbeat REP is lockstep so its send cannot block; and the stdin ROUTER sets `ROUTER_MANDATORY` with a zero send timeout so an undeliverable `input_request` raises and is retried rather than silently lost. A new socket added here must state how it satisfies this invariant.
+
 ## Install
 
 ```bash
@@ -54,7 +56,7 @@ router.join(timeout=1)
 
 ### IOPubThread
 
-Runs a PUB socket in a dedicated thread and sends messages via `Session.send` from inside that thread.
+Runs an XPUB socket in a dedicated thread and sends messages via `Session.send` from inside that thread. Its bounded queue drops non-`status` messages past `qmax`, never `status` - but that guarantee covers this queue only. Below it, libzmq drops silently per slow subscriber once `sndhwm` fills (default 1000), statuses included; PUB-family sends never block, so this thread cannot see subscriber backpressure, and an unbounded `sndhwm` would let one wedged client grow kernel memory without bound. A subscriber wanting a lossless hop sets `RCVHWM=0` on its SUB and keeps draining.
 
 ```python
 from ipymini_zmqthread import IOPubThread

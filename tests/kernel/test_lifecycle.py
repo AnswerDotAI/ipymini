@@ -1,20 +1,8 @@
 import json, os, signal, threading, time, pytest
-from jupyter_client import KernelManager
 from microio import CloseScope
 from ipymini.kernel import KernelState, MiniKernel
-from ..kernel_utils import *
-
-
-def _raw_kernel():
-    env = build_env()
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
-    km.start_kernel(env=env)
-    ensure_separate_process(km)
-    kc = km.client()
-    kc.start_channels()
-    kc.wait_for_ready(timeout=default_timeout)
-    return km, kc, kernel_pid(km)
+from ..aclient import *
+from ..kernel_utils import kernel_pid, assert_pid_gone, default_timeout
 
 
 def _wait_kernel_process(km, timeout:float = 5):
@@ -22,14 +10,12 @@ def _wait_kernel_process(km, timeout:float = 5):
     if proc is not None: proc.wait(timeout=timeout)
 
 
-def _shutdown_request(kc):
-    msg = kc.session.msg("shutdown_request", {"restart": False})
-    kc.control_channel.send(msg)
-    reply = kc.control_reply(msg["header"]["msg_id"], timeout=default_timeout)
+async def _shutdown_request(kc):
+    reply = await kc.ctl.shutdown(restart=False)
     assert reply["content"]["status"] == "ok"
 
 
-def test_shutdown_reaps_kernel_process():
+async def test_shutdown_reaps_kernel_process():
     kernel = MiniKernel.__new__(MiniKernel)
     kernel.state_lock = threading.Lock()
     kernel.state = KernelState.RUNNING
@@ -65,110 +51,94 @@ def test_shutdown_reaps_kernel_process():
     assert reply == {"status": "ok", "restart": False}
     assert start_stop is False
 
-    km, kc, pid = _raw_kernel()
-    try:
+    async with mini_kernel() as (km, kc):
+        pid = kernel_pid(km)
         assert pid and pid != os.getpid()
         start = time.perf_counter()
-        _shutdown_request(kc)
+        await _shutdown_request(kc)
         _wait_kernel_process(km)
         assert time.perf_counter() - start < 1.9
         assert_pid_gone(pid)
-    finally:
-        kc.stop_channels()
-        try: km.shutdown_kernel(now=True)
-        except Exception: pass
 
 
-def test_graceful_shutdown_exits_while_busy_or_waiting_for_input():
+async def test_graceful_shutdown_exits_while_busy_or_waiting_for_input():
     for code, wait in [("import time; time.sleep(1000)", "busy"), ("input('name: ')", "stdin")]:
-        km, kc, pid = _raw_kernel()
-        try:
+        async with mini_kernel() as (km, kc):
+            pid = kernel_pid(km)
             kc.execute(code, allow_stdin=wait == "stdin")
-            if wait == "stdin": kc.get_stdin_msg(timeout=default_timeout)
-            else: wait_for_status(kc, "busy")
-            _shutdown_request(kc)
+            if wait == "stdin": await kc.get_stdin_msg(timeout=default_timeout)
+            else: await wait_status(kc, "busy")
+            await _shutdown_request(kc)
             _wait_kernel_process(km)
             assert_pid_gone(pid)
-        finally:
-            kc.stop_channels()
-            try: km.shutdown_kernel(now=True)
-            except Exception: pass
 
 
-def test_graceful_shutdown_exits_with_busy_subshell():
-    km, kc, pid = _raw_kernel()
-    try:
-        subshell_id = kc.ctl.create_subshell()["content"]["subshell_id"]
-        kc.cmd.execute_request(code="while True: pass", subshell_id=subshell_id)
-        wait_for_status(kc, "busy")
-        _shutdown_request(kc)
+async def test_graceful_shutdown_exits_with_busy_subshell():
+    async with mini_kernel() as (km, kc):
+        pid = kernel_pid(km)
+        subshell_id = (await kc.ctl.create_subshell())["content"]["subshell_id"]
+        kc.execute("while True: pass", subsh_id=subshell_id)
+        await wait_status(kc, "busy")
+        await _shutdown_request(kc)
         _wait_kernel_process(km)
         assert_pid_gone(pid)
-    finally:
-        kc.stop_channels()
-        try: km.shutdown_kernel(now=True)
-        except Exception: pass
 
 
 @pytest.mark.skipif(os.name == "nt", reason="process-group teardown is POSIX-only")
-def test_sigterm_kills_user_resources():
-    km, kc, pid = _raw_kernel()
-    child_pid = None
-    try:
-        code = (
-            "import subprocess, sys, threading, time\n"
-            "threading.Thread(target=lambda: time.sleep(10000), daemon=False).start()\n"
-            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10000)'])\n"
-            "print(p.pid)\n")
-        _msg_id, reply, outputs = kc.exec_drain(code)
-        assert reply["content"]["status"] == "ok"
-        streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
-        child_pid = int(streams.strip().splitlines()[-1])
-        os.kill(child_pid, 0)
-        os.kill(pid, signal.SIGTERM)
-        _wait_kernel_process(km)
-        assert_pid_gone(pid)
-        assert_pid_gone(child_pid)
-    finally:
-        kc.stop_channels()
-        try: km.shutdown_kernel(now=True)
-        except Exception: pass
-        if child_pid is not None:
-            try: os.kill(child_pid, 9)
-            except OSError: pass
+async def test_sigterm_kills_user_resources():
+    async with mini_kernel() as (km, kc):
+        pid = kernel_pid(km)
+        child_pid = None
+        try:
+            code = (
+                "import subprocess, sys, threading, time\n"
+                "threading.Thread(target=lambda: time.sleep(10000), daemon=False).start()\n"
+                "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10000)'])\n"
+                "print(p.pid)\n")
+            reply, outputs = await kc.exec_drain(code)
+            assert reply["content"]["status"] == "ok"
+            streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
+            child_pid = int(streams.strip().splitlines()[-1])
+            os.kill(child_pid, 0)
+            os.kill(pid, signal.SIGTERM)
+            _wait_kernel_process(km)
+            assert_pid_gone(pid)
+            assert_pid_gone(child_pid)
+        finally:
+            if child_pid is not None:
+                try: os.kill(child_pid, 9)
+                except OSError: pass
 
 
 @pytest.mark.slow
-def test_graceful_shutdown_kills_nested_ipymini_kernel():
+async def test_graceful_shutdown_kills_nested_ipymini_kernel():
     "A nested ipymini KernelManager should not survive when the outer kernel stops."
-    km, kc, pid = _raw_kernel()
-    nested = None
-    try:
-        code = (
-            "import json, os\n"
-            "from jupyter_client import KernelManager\n"
-            "nested_km = KernelManager(kernel_name='ipymini')\n"
-            "nested_km.start_kernel()\n"
-            "nested_kc = nested_km.client()\n"
-            "nested_kc.start_channels()\n"
-            "nested_kc.wait_for_ready(timeout=10)\n"
-            "nested_pid = nested_km.provisioner.pid\n"
-            "print(json.dumps(dict(pid=nested_pid, pgid=os.getpgid(nested_pid), outer_pid=os.getpid(), outer_pgid=os.getpgrp())))\n")
-        _msg_id, reply, outputs = kc.exec_drain(code, timeout=15)
-        assert reply["content"]["status"] == "ok", reply["content"]
-        streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
-        nested = json.loads(streams.strip().splitlines()[-1])
-        assert nested["pid"] != pid
-        assert nested["pgid"] != nested["outer_pgid"]
+    async with mini_kernel() as (km, kc):
+        pid = kernel_pid(km)
+        nested = None
+        try:
+            code = (
+                "import json, os\n"
+                "from jupyter_client import KernelManager\n"
+                "nested_km = KernelManager(kernel_name='ipymini')\n"
+                "nested_km.start_kernel()\n"
+                "nested_kc = nested_km.client()\n"
+                "nested_kc.start_channels()\n"
+                "nested_kc.wait_for_ready(timeout=10)\n"
+                "nested_pid = nested_km.provisioner.pid\n"
+                "print(json.dumps(dict(pid=nested_pid, pgid=os.getpgid(nested_pid), outer_pid=os.getpid(), outer_pgid=os.getpgrp())))\n")
+            reply, outputs = await kc.exec_drain(code, timeout=15)
+            assert reply["content"]["status"] == "ok", reply["content"]
+            streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
+            nested = json.loads(streams.strip().splitlines()[-1])
+            assert nested["pid"] != pid
+            assert nested["pgid"] != nested["outer_pgid"]
 
-        _shutdown_request(kc)
-        _wait_kernel_process(km)
-        assert_pid_gone(pid)
-        assert_pid_gone(nested["pid"], timeout=1)
-    finally:
-        kc.stop_channels()
-        try: km.shutdown_kernel(now=True)
-        except Exception: pass
-        if nested is not None:
-            try: os.killpg(nested["pgid"], signal.SIGKILL)
-            except OSError: pass
+            await _shutdown_request(kc)
+            _wait_kernel_process(km)
+            assert_pid_gone(pid)
+            assert_pid_gone(nested["pid"], timeout=1)
+        finally:
+            if nested is not None:
+                try: os.killpg(nested["pgid"], signal.SIGKILL)
+                except OSError: pass
