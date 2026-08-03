@@ -3,7 +3,7 @@ import socket, threading, time
 import zmq
 from jupyter_client.session import Session
 
-from ipymini.zmqthread import StdinRouterThread
+from kernmini.zmqthread import StdinRouterThread
 
 
 def _free_port() -> int:

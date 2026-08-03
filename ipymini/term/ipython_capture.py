@@ -4,7 +4,7 @@ from typing import Callable
 
 from .display import MiniDisplayHook, MiniDisplayPublisher
 from .io import thread_local_io
-from .streams import MiniStream, coalesce_streams
+from kernmini.streams import MiniStream, coalesce_streams
 
 log = logging.getLogger("ipymini.term")
 

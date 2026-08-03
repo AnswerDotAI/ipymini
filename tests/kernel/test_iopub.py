@@ -41,7 +41,7 @@ async def test_iopub_display_and_ordering():
 
 
 async def test_iopub_status_not_dropped_when_output_queue_is_full():
-    async with mini_kernel(extra_env={"IPYMINI_IOPUB_QMAX": "1"}) as (_, kc):
+    async with mini_kernel(extra_env={"KERNMINI_IOPUB_QMAX": "1"}) as (_, kc):
         reply, outputs = await kc.exec_drain("for i in range(200): print(i)", store_history=False, timeout=default_timeout)
         assert reply["content"]["status"] == "ok"
         states = [m["content"]["execution_state"] for m in iopub_msgs(outputs, "status")]

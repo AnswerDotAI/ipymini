@@ -1,6 +1,6 @@
 # Developer Guide
 
-This guide is for contributors working on ipymini. It explains how the kernel works and why it's built the way it is, then covers testing, style, and release mechanics. The user-facing story (install, kernelspec, running manually) is in `README.md`; per-package internals get more detail in the READMEs inside `ipymini/shell/`, `ipymini/term/`, `ipymini/zmqthread/`, and `ipymini/debug/`.
+This guide is for contributors working on ipymini. It explains how the kernel works and why it's built the way it is, then covers testing, style, and release mechanics. The user-facing story (install, kernelspec, running manually) is in `README.md`; per-package internals get more detail in the READMEs inside `ipymini/shell/`, `ipymini/term/`, and `ipymini/debug/` (the protocol core is the sibling `kernmini` package).
 
 ## Project goals
 
@@ -15,7 +15,7 @@ ipymini was written with `ipykernel`, `xeus-python`, and the Jupyter specs (mess
 
 The internals differ in a few deliberate ways:
 
-- **No traitlets or tornado.** Configuration is constructor arguments and env vars; `jupyter_client.Session` is reused only for wire-format signing and (de)serialization. IPython config files still work through a real `InteractiveShellApp` (see Config below).
+- **No traitlets or tornado.** Configuration is constructor arguments and env vars; wire-format signing and (de)serialization is `kernmini.session.MiniSession`, a trimmed jupyter_client copy. IPython config files still work through a real `InteractiveShellApp` (see Config below).
 - **Shell and control are async ROUTER loops in their own threads.** ipykernel runs shell handlers on the main event loop with a separate control thread; ipymini gives each channel an `AsyncRouterThread` whose loop runs concurrent send and receive coroutines over a `zmq.asyncio` socket, with actual execution handed off to subshell threads.
 - **Per-subshell IPython instances.** ipykernel implements JEP 91 subshells as threads sharing the one `InteractiveShell`. ipymini gives every subshell its own `InteractiveShell` (wrapped in `MiniShell`), sharing the parent's `user_ns` and in-memory history. That buys isolation (per-subshell execution state, cancel scopes, sys.stdout bindings) at the cost of per-subshell execution counts, so `In[n]`/`Out[n]` may not match prompt `n` when several subshells store history, and concurrent subshells at the same count overwrite each other's `Out[n]`.
 - **Contextvars for parent and output routing.** ipykernel tracks one mutable "current parent" per channel; anything printed while a message is being handled is attributed to it. ipymini stores the parent header and idents in `ContextVar`s set around each message, and patches `threading.Thread.start` and `ThreadPoolExecutor.submit` to copy the context, so output from concurrent cells, asyncio tasks, user-spawned threads, and comm callbacks all route to the message that caused them. This is what makes the concurrency features below safe.
@@ -25,14 +25,11 @@ The internals differ in a few deliberate ways:
 
 ## Source layout
 
-- `ipymini/kernel.py`: the protocol layer. `MiniKernel` (sockets, threads, dispatch, lifecycle), `Subshell`/`SubshellManager` (execution workers), connection info, interrupt/shutdown handling.
-- `ipymini/shell/`: the IPython layer. `MiniShell` wraps `InteractiveShell`: execute, complete, inspect, history, debug bridging, comm wiring (`shell/comms.py`).
-- `ipymini/term/`: IO capture. Thread-local stdout/stderr/input/getpass/get_ipython, stream buffering, display hooks.
-- `ipymini/zmqthread/`: one file per socket personality: async router (shell/control), IOPub publisher, stdin router, heartbeat.
-- `ipymini/debug/`: DAP debugger over debugpy, cell-filename hashing, debug env flags and logging.
-- `ipymini/concur.py`: the `unlock()` and `subshell()` user-facing helpers.
-- `ipymini/comms.py`, `ipymini/bridge.py`: thin re-export shims.
-- `ipymini/__main__.py`: CLI entry (`run`, and `install` for the kernelspec).
+- `ipymini/kernel.py`: thin wiring: the IPython `shell_factory` (`MiniShell` itself), ipymini's `kernel_info`, and `run_kernel`. The protocol layer -- `MiniKernel`, `Subshell`/`SubshellManager`, connection info, sockets, interrupt/shutdown, the zmqthread socket cast, `unlock()`/`subshell()`, debug env flags, and cell-filename hashing -- lives in the `kernmini` package, extracted from here; its DEV.md documents the shell contract that `MiniShell` implements.
+- `ipymini/shell/`: the IPython layer. `MiniShell` wraps `InteractiveShell`: execute, complete, inspect, history, debug bridging, comm wiring (`shell/comms.py`), and the kernmini contract members (`execution_count`, `bind_kernel`).
+- `ipymini/term/`: IO capture. Thread-local stdout/stderr/input/getpass/get_ipython, display hooks (stream buffering itself is `kernmini.streams`).
+- `ipymini/debug/`: the DAP debugger over debugpy (generic debug infra moved to `kernmini.debug`).
+- `ipymini/__main__.py`: CLI entry (`run`, and `install` for the kernelspec, via `kernmini.kernelspec`).
 - `tests/`: protocol and behavioral tests, organized by module; `tests/compat/` exercises the kernel through unpatched jupyter_client.
 
 ## The kernel object graph
@@ -99,12 +96,14 @@ IPython configuration works the standard way: a minimal `InteractiveShellApp` su
 
 ## Optional env flags
 
-- `IPYMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
+- `KERNMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
 - `IPYMINI_USE_JEDI=0|1`: override IPython's jedi setting.
-- `IPYMINI_CELL_NAME`: override the debug cell filename.
-- `IPYMINI_IOPUB_QMAX` / `IPYMINI_IOPUB_SNDHWM`: IOPub queue bound (default 10000) and socket send high-water mark.
-- `IPYMINI_IOPUB_XPUB=0`: plain PUB iopub with no welcomes, emulating a pre-JEP-65 kernel (for testing clients' fallback paths).
-- `IPYMINI_DEBUG` / `IPYMINI_DEBUG_MSGS`: verbose kernel logging / per-message trace logging (see `ipymini/debug/README.md`).
+- `KERNMINI_CELL_NAME`: override the debug cell filename.
+- `KERNMINI_IOPUB_QMAX` / `KERNMINI_IOPUB_SNDHWM`: IOPub queue bound (default 10000) and socket send high-water mark.
+- `KERNMINI_IOPUB_XPUB=0`: plain PUB iopub with no welcomes, emulating a pre-JEP-65 kernel (for testing clients' fallback paths).
+- `KERNMINI_DEBUG` / `KERNMINI_DEBUG_MSGS`: verbose kernel logging / per-message trace logging.
+
+The `KERNMINI_*` flags moved to the extracted core with the code that reads them (previously `IPYMINI_*`; renamed in the extraction, a breaking release); `IPYMINI_*` flags configure the IPython layer.
 
 ## Tests
 

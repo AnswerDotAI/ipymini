@@ -1,10 +1,12 @@
 import asyncio, pytest, zmq
-from ipymini.kernel import Subshell
+from kernmini.kernel import Subshell
+from ipymini.shell import MiniShell
 
 
 class _DummyKernel:
     def __init__(self):
         self.context = zmq.Context.instance()
+        self.shell_factory = MiniShell
         self.stop_on_error_timeout = 0.0
 
     def queue_shell_reply(self, *args, **kwargs): pass

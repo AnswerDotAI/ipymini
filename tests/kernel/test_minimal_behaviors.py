@@ -61,7 +61,7 @@ def test_router_handover_same_identity():
 
 async def test_execute_reply_after_keyboardinterrupt_during_send():
     async with mini_kernel() as (_, kc):
-        patch = """import ipymini.kernel as _k
+        patch = """import kernmini.kernel as _k
 if not hasattr(_k, "_orig_send_reply"):
     _k._orig_send_reply = _k.Subshell.send_reply
 _k._interrupt_reply_once = True

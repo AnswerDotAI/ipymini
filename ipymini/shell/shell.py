@@ -1,4 +1,5 @@
 import asyncio, json, logging, os, sys, threading, traceback
+from importlib.metadata import PackageNotFoundError, version
 from contextlib import contextmanager, nullcontext
 from typing import Callable
 
@@ -17,10 +18,12 @@ from IPython.core.shellapp import InteractiveShellApp
 
 from microio import ScopeGroup
 
-from ipymini.debug import Debugger, debug_cell_filename
+from kernmini.debug import debug_cell_filename
+from ipymini.debug import Debugger
+from .comms import set_kernel
 from ipymini.term import IPythonCapture
 
-_debug = os.environ.get("IPYMINI_DEBUG", "").lower() in ("1", "true", "yes")
+_debug = os.environ.get("KERNMINI_DEBUG", "").lower() in ("1", "true", "yes")
 _real_stderr = sys.__stderr__  # Use original stderr, not wrapped version
 
 
@@ -225,6 +228,24 @@ class MiniShell:
         result_meta = self.ipy.displayhook.last_metadata or {}
         snapshot = self.capture.snapshot(result=self.ipy.displayhook.last, result_metadata=result_meta, execution_count=exec_count)
         return dict(**snapshot, error=error, user_expressions=user_expr, payload=payload)
+
+    @property
+    def execution_count(self) -> int: return self.ipy.execution_count
+
+    def kernel_info(self) -> dict:
+        "ipymini's contribution to kernel_info_reply: implementation identity and Python language_info."
+        try: impl_version = version("ipymini")
+        except PackageNotFoundError: impl_version = "0.0.0+local"
+        pyver = ".".join(str(x) for x in sys.version_info[:3])
+        return dict(implementation="ipymini", implementation_version=impl_version, banner="ipymini",
+            language_info=dict(name="python", version=pyver, mimetype="text/x-python", file_extension=".py",
+                pygments_lexer="python", codemirror_mode={"name": "ipython", "version": 3}, nbconvert_exporter="python"))
+
+    def bind_kernel(self, kernel):
+        "Attach the running kernel: `get_ipython().kernel` works (ipywidgets expects it), and the global comm layer publishes through it."
+        self.ipy.kernel = kernel
+        set_kernel(kernel)
+
 
     def set_stream_sender(self, sender: Callable[[str, str], None] | None): self.capture.set_stream_sender(sender)
 

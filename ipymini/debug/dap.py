@@ -6,8 +6,8 @@ from fastcore.basics import nested_idx
 from IPython.core import getipython as _getipython_mod
 from microio import RequestRegistry, ServiceThread
 
-from .cells import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
-from ipymini.zmqthread.polling import poll_in
+from kernmini.debug import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
+from kernmini.zmqthread.polling import poll_in
 
 log = logging.getLogger("ipymini.debug")
 

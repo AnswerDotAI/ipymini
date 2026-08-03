@@ -1,6 +1,6 @@
-import argparse, shutil, sys, tempfile
+import argparse, sys
 from pathlib import Path
-from jupyter_client.kernelspec import install_kernel_spec
+from kernmini import install_kernelspec_dir
 from .kernel import run_kernel
 
 
@@ -25,10 +25,7 @@ def _install_kernelspec(argv: list[str]):
     prefix = args.prefix or (sys.prefix if args.sys_prefix else None)
 
     kernel_dir = Path(__file__).resolve().parents[1] / "share" / "jupyter" / "kernels" / "ipymini"
-    with tempfile.TemporaryDirectory() as tmpdir:
-        dest = Path(tmpdir) / "ipymini"
-        shutil.copytree(kernel_dir, dest)
-        install_kernel_spec(str(dest), kernel_name="ipymini", user=bool(args.user), prefix=prefix, replace=True)
+    install_kernelspec_dir(kernel_dir, "ipymini", user=bool(args.user), prefix=prefix)
 
 
 def main():

@@ -1,6 +1,6 @@
 import json, os, signal, threading, time, pytest
 from microio import CloseScope
-from ipymini.kernel import KernelState, MiniKernel
+from kernmini.kernel import KernelState, MiniKernel
 from ..aclient import *
 from ..kernel_utils import kernel_pid, assert_pid_gone, default_timeout
 
