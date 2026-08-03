@@ -103,7 +103,7 @@ async def test_async_line_magic():
     "An `async def` line magic's coroutine result is awaited (fastcore.aio.enable_async_magics wiring)."
     async with mini_kernel() as (_, kc):
         setup = ("async def _amag(line): return f'async:{line}'\n"
-                 "get_ipython().register_magic_function(_amag, 'line', 'amag')")
+            "get_ipython().register_magic_function(_amag, 'line', 'amag')")
         reply, _ = await kc.exec_drain(setup)
         assert reply["content"]["status"] == "ok"
         reply, outputs = await kc.exec_drain("%amag hi", store_history=False)
