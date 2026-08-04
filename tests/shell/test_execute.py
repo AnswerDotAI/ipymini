@@ -65,6 +65,10 @@ def test_shell_features(minishell):
     assert rep.get("found") is True
     assert isinstance(rep.get("data"), dict)
 
+    rep = minishell.inspect("no_such_name_xyz", cursor_pos=5)
+    assert rep.get("status") == "ok"        # not-found is a normal reply, not an internal error (matches ipykernel)
+    assert rep.get("found") is False
+
     rep = minishell.is_complete("for i in range(2):\n")
     assert rep.get("status") in ("incomplete", "complete", "invalid")
     if rep.get("status") == "incomplete": assert rep.get("indent") == " " * 4

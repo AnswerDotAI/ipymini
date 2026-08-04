@@ -276,7 +276,8 @@ class MiniShell:
 
         name = token_at_cursor(code, cursor_pos)
         if not name: return dict(status="ok", found=False, data={}, metadata={})
-        bundle = self.ipy.object_inspect_mime(name, detail_level=detail_level)
+        try: bundle = self.ipy.object_inspect_mime(name, detail_level=detail_level)
+        except KeyError: return dict(status="ok", found=False, data={}, metadata={})  # unknown name: a normal reply, as ipykernel
         if not self.ipy.enable_html_pager: bundle.pop("text/html", None)
         return dict(status="ok", found=True, data=bundle, metadata={})
 
