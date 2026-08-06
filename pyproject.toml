@@ -26,18 +26,6 @@ dev = [
   "ipykernel>=6.29",
   "debugpy>=1.8",
   "murmurhash2",
-]
-dev = [
-  "jupyter_client>=8.6",
-  "pytest>=7.4",
-  "pytest-asyncio>=1.0",
-  "pytest-xdist",
-  "pytest-timeout",
-  "conkernelclient>=0.0.17",
-  "matplotlib>=3.8",
-  "ipykernel>=6.29",
-  "debugpy>=1.8",
-  "murmurhash2",
   "fastship",
   "build",
   "twine",
