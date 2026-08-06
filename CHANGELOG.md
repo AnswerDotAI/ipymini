@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.18
+
+### New Features
+
+- Defer debugpy imports in debug/dap.py to their call sites so the module no longer imports debugpy at load time ([#44](https://github.com/AnswerDotAI/ipymini/issues/44))
+
+
 ## 0.1.17
 
 ### New Features
