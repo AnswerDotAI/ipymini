@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.1.17
+
+### New Features
+
+- Extract protocol core to kernmini: ipymini keeps IPython layer, shell contract, DAP debugger; `IPYMINI_`* env flags renamed `KERNMINI_`* ([#43](https://github.com/AnswerDotAI/ipymini/issues/43))
+- retry undeliverable stdin `input_requests`, add `IPYMINI_IOPUB_XPUB` toggle, and migrate tests to ConKernelClient ([#42](https://github.com/AnswerDotAI/ipymini/issues/42))
+- iopub: use XPUB with `XPUB_VERBOSE` to send JEP 65 `iopub_welcome` to every new subscriber ([#41](https://github.com/AnswerDotAI/ipymini/issues/41))
+
 
 ## 0.1.15
 
