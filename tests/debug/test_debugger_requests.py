@@ -121,10 +121,9 @@ def test_debugger_request_features(monkeypatch):
     assert fake.closed is True
     assert dbg.started is False
 
-    import ipymini.debug.dap as dap_mod
-
+    import debugpy
     calls = []
-    monkeypatch.setattr(dap_mod.debugpy, "trace_this_thread", lambda enabled: calls.append(enabled))
+    monkeypatch.setattr(debugpy, "trace_this_thread", lambda enabled: calls.append(enabled))
     dbg = Debugger()
     dbg.started = True
     dbg.traced_threads.clear()

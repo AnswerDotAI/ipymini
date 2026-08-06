@@ -1,7 +1,7 @@
 import json, logging, os, queue, socket, sys, threading
 from typing import Callable
 
-import debugpy, zmq
+import zmq
 from fastcore.basics import nested_idx
 from IPython.core import getipython as _getipython_mod
 from microio import RequestRegistry, ServiceThread
@@ -125,6 +125,7 @@ class MiniDebugpyClient:
 
     def _reader_loop(self, service: DebugpyReaderThread):
         if self.endpoint is None: return
+        import debugpy
         debugpy.trace_this_thread(False)
         sock = self.context.socket(zmq.STREAM)
         sock.linger = 0
@@ -229,6 +230,7 @@ class Debugger:
             self.adapter_started = True
             return
         port = self._get_free_port()
+        import debugpy
         debugpy.listen((self.host, port))
         self.client.connect(self.host, port)
         self.port = port
@@ -313,6 +315,7 @@ class Debugger:
         if not self.started: return
         thread_id = threading.get_ident()
         if thread_id in self.traced_threads: return
+        import debugpy
         debugpy.trace_this_thread(True)
         self.traced_threads.add(thread_id)
 
