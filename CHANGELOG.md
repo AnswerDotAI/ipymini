@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.19
+
+### Bugs Squashed
+
+- emit stderr for tracebacks shown during a cell that did not fail it (nested `run_cell`, %tb, showtraceback) ([#45](https://github.com/AnswerDotAI/ipymini/issues/45))
+
+
 ## 0.1.18
 
 ### New Features
