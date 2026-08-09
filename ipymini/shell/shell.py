@@ -219,6 +219,8 @@ class MiniShell:
         error = None
         err = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
         if err is not None: error = dict(ename=type(err).__name__, evalue=str(err), traceback=self.ipy._last_traceback or [])
+        elif self.ipy._last_traceback:  # a nested run_cell (or %tb) showed a traceback the reply won't carry: emit, don't drop
+            self.capture.stderr.write(self.ipy.InteractiveTB.stb2text(self.ipy._last_traceback) + "\n")
 
         if user_expressions is None: user_expressions = {}
         user_expressions = _maybe_json(user_expressions) or {}

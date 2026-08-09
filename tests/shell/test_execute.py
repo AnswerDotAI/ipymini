@@ -146,3 +146,20 @@ def test_shell_features(minishell):
                     err = res.get("error") or {}
                     assert err.get("ename") in ("KeyboardInterrupt", "CancelledError", "Exception")
             _run(_go())
+
+
+def test_nested_traceback_not_dropped(minishell):
+    "A traceback shown during the cell without failing it (nested run_cell, or a caught-and-shown exception) must reach stderr, not vanish."
+    async def _go(code):
+        with minishell.execution_context(allow_stdin=False, silent=False):
+            return await minishell.execute(code, silent=False, store_history=False)
+
+    res = _run(_go("try: 1/0\nexcept: get_ipython().showtraceback()\n"))
+    assert res.get("error") is None
+    stderr_text = "".join(m.get("text","") for m in res.get("streams", []) if m.get("name") == "stderr")
+    assert "ZeroDivisionError" in stderr_text
+
+    res = _run(_go("r = get_ipython().run_cell('1/0')\n"))
+    assert res.get("error") is None
+    stderr_text = "".join(m.get("text","") for m in res.get("streams", []) if m.get("name") == "stderr")
+    assert "ZeroDivisionError" in stderr_text
