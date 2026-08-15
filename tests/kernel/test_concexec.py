@@ -62,7 +62,7 @@ loop = asyncio.get_running_loop()
 ev = asyncio.Event()
 with get_ipython().kernel.subshell():
     print('subshell ready', flush=True)
-    await asyncio.wait_for(ev.wait(), 5)
+    await asyncio.wait_for(ev.wait(), 30)  # a bound, not a sleep: under parallel-worker load the old 5s could genuinely elapse
     hijacked = 'hijack_flag' in globals()
 assert not hijacked, 'another session was hijacked into the subshell'
 """

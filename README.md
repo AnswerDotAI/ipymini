@@ -111,7 +111,8 @@ km.start_kernel(env={"MY_FLAG": "1"}, cwd="/path/to/workdir")
 ```
 
 Optional env flags:
-- `IPYMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
+- `KERNMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
+- `KERNMINI_HOLD_TIMEOUT`: seconds before a parked `hold` execute completes as an error (default 3600; see kernmini's DEV.md).
 
 On POSIX, ipymini isolates the kernel into its own process group and terminates that group as the last shutdown step, so user-created child processes are cleaned up with the kernel. Nested ipymini kernels started by `KernelManager` watch their parent pid and shut themselves down when that parent exits. Direct `SIGTERM` to the kernel uses the same cleanup path. Windows does not provide this process-group cleanup guarantee; after normal cleanup the kernel process exits with `os._exit()`.
 
