@@ -21,8 +21,8 @@ async def test_thread_stdout_stays_with_launch_cell():
             "print('CELL1-LINE', flush=True)\n")
         code_next = "thread_go.set(); bg.join(timeout=5); print('CELL2-LINE', flush=True)"
 
-        c_launch = kc.execute(code_launch, reply=True, timeout=10, store_history=False)
-        c_next = kc.execute(code_next, reply=True, timeout=10, store_history=False)
+        c_launch = kc.reply(code_launch, timeout=10, store_history=False)
+        c_next = kc.reply(code_next, timeout=10, store_history=False)
         reply_launch, reply_next = await asyncio.gather(c_launch, c_next)
         mid_launch, mid_next = parent_id(reply_launch), parent_id(reply_next)
 
@@ -52,8 +52,8 @@ async def test_thread_stdout_stays_with_launch_cell():
             "print('CELL1-SUB-LINE', flush=True)\n")
         code_next = "thread_go.set(); bg.join(timeout=5); print('CELL2-SUB-LINE', flush=True)"
 
-        c_launch = kc.execute(code_launch, reply=True, timeout=10, store_history=False)
-        c_next = kc.execute(code_next, reply=True, timeout=10, store_history=False)
+        c_launch = kc.reply(code_launch, timeout=10, store_history=False)
+        c_next = kc.reply(code_next, timeout=10, store_history=False)
         reply_launch, reply_next = await asyncio.gather(c_launch, c_next)
         mid_launch, mid_next = parent_id(reply_launch), parent_id(reply_next)
 

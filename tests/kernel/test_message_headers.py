@@ -26,7 +26,7 @@ async def test_message_headers():
         assert parent_id(reply)
 
         mid = str(uuid4())
-        reply = await kc.execute("1+1", store_history=False, reply=True, timeout=default_timeout, msg_id=mid)
+        reply = await kc.reply("1+1", store_history=False, timeout=default_timeout, msg_id=mid)
         _assert_header(reply, "execute_reply")
         assert reply["parent_header"]["msg_id"] == mid
 

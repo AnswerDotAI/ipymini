@@ -26,12 +26,12 @@ async def test_comm_callback_reply_reaches_iopub():
     async with mini_kernel() as (_, kc):
         assert (await kc.exec_drain(_replier, store_history=False))[0]["content"]["status"] == "ok"
         cid = "rep-1"
-        open_id = kc.shell_request("comm_open", reply=False, comm_id=cid, target_name="replier", data={"n": 7})
+        open_id = kc.comm_open("replier", cid, data={"n": 7})
         ack = await wait_iopub(kc, lambda m: m["msg_type"] == "comm_msg" and m["content"].get("comm_id") == cid and "ack" in m["content"].get("data", {}),
             timeout=10, err="open-callback reply never reached iopub")
         assert ack["content"]["data"] == {"ack": 7}
         assert parent_id(ack) == open_id, "reply parent should be the inbound comm_open"
-        msg_id = kc.shell_request("comm_msg", reply=False, comm_id=cid, data={"hi": 1})
+        msg_id = kc.comm_msg(cid, data={"hi": 1})
         echo = await wait_iopub(kc, lambda m: m["msg_type"] == "comm_msg" and m["content"].get("comm_id") == cid and "echo" in m["content"].get("data", {}),
             timeout=10, err="on_msg-callback reply never reached iopub")
         assert echo["content"]["data"] == {"echo": {"hi": 1}}
@@ -50,13 +50,13 @@ async def test_inbound_comm_not_echoed():
     async with mini_kernel() as (_, kc):
         assert (await kc.exec_drain(_silent, store_history=False))[0]["content"]["status"] == "ok"
         cid = "sil-1"
-        kc.shell_request("comm_open", reply=False, comm_id=cid, target_name="silent", data={})
-        kc.shell_request("comm_msg", reply=False, comm_id=cid, data={"x": 1})
+        kc.comm_open("silent", cid)
+        kc.comm_msg(cid, data={"x": 1})
         bid = str(uuid4())
-        barrier = kc.execute("assert seen == [{'x': 1}], seen", reply=True, timeout=10, msg_id=bid)  # runs after the comms (FIFO)
+        barrier = kc.reply("assert seen == [{'x': 1}], seen", timeout=10, msg_id=bid)  # runs after the comms (FIFO)
         echoed = []
         for rem in iter_timeout(10):
-            try: m = await kc.get_iopub_msg(timeout=rem)
+            try: m = await kc.jmsgq.get("iopub", timeout=rem)
             except Empty: continue
             if m["msg_type"] in ("comm_open", "comm_msg") and m["content"].get("comm_id") == cid: echoed.append(m["msg_type"])
             if parent_id(m) == bid and m["msg_type"] == "status" and m["content"].get("execution_state") == "idle": break
@@ -77,11 +77,11 @@ async def test_comm_callback_output_reaches_iopub():
     async with mini_kernel() as (_, kc):
         assert (await kc.exec_drain(_printer, store_history=False))[0]["content"]["status"] == "ok"
         cid = "pr-1"
-        open_id = kc.shell_request("comm_open", reply=False, comm_id=cid, target_name="printer", data={})
+        open_id = kc.comm_open("printer", cid)
         s1 = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "open-print" in m["content"].get("text", ""),
             err="comm_open callback stdout never reached iopub")
         assert parent_id(s1) == open_id, "stream parent should be the inbound comm_open"
-        mid = kc.shell_request("comm_msg", reply=False, comm_id=cid, data={"x": 9})
+        mid = kc.comm_msg(cid, data={"x": 9})
         s2 = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "msg-print" in m["content"].get("text", ""),
             err="comm_msg callback stdout never reached iopub")
         assert parent_id(s2) == mid, "stream parent should be the inbound comm_msg"

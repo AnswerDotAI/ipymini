@@ -77,7 +77,7 @@ async def test_graceful_shutdown_exits_with_busy_subshell():
     async with mini_kernel() as (km, kc):
         pid = kernel_pid(km)
         subshell_id = (await kc.ctl.create_subshell())["content"]["subshell_id"]
-        kc.execute("while True: pass", subsh_id=subshell_id)
+        kc.execute("while True: pass", subshell_id=subshell_id)
         await wait_status(kc, "busy")
         await _shutdown_request(kc)
         _wait_kernel_process(km)

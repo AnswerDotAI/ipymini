@@ -5,7 +5,8 @@ from queue import Empty
 from jupyter_client import AsyncKernelClient, KernelClient, KernelManager
 from fastcore.basics import nested_idx, patch
 from fastcore.meta import delegates
-from conkernelclient.ops import parent_id, iter_timeout, iopub_msgs, iopub_streams  # importing is side-effect free (no Session patch)
+from jupywire.ops import parent_id, iopub_msgs
+from conkernelclient.ops import iter_timeout, iopub_streams  # importing is side-effect free (no Session patch)
 
 default_timeout = 10
 root = Path(__file__).resolve().parents[1]

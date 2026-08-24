@@ -78,8 +78,8 @@ async def test_error_reply_status_features(kc):
     # First execute raises, setting abort state; default fail_pending=False lets us
     # observe the queued cell's real kernel-issued "aborted" reply and its busy/idle pair
     mid_fail, mid_abort = str(uuid4()), str(uuid4())
-    c_fail = kc.execute("import time; time.sleep(0.2); raise ValueError('boom')", reply=True, timeout=10, msg_id=mid_fail)
-    c_abort = kc.execute("print('should abort')", reply=True, timeout=10, msg_id=mid_abort)
+    c_fail = kc.reply("import time; time.sleep(0.2); raise ValueError('boom')", timeout=10, msg_id=mid_fail)
+    c_abort = kc.reply("print('should abort')", timeout=10, msg_id=mid_abort)
     reply_fail, reply_abort = await asyncio.gather(c_fail, c_abort)
     assert reply_fail["content"]["status"] == "error"
     assert reply_abort["content"]["status"] == "aborted"
@@ -94,7 +94,7 @@ async def test_iopub_idle_not_delayed_after_shell_reply(kc):
     "IOPub idle should arrive promptly after shell reply, not be delayed in queue."
     # Execute multiple times to increase chance of catching race condition
     for i in range(5):
-        reply = await kc.execute(f"x = {i}", reply=True, timeout=5)
+        reply = await kc.reply(f"x = {i}", timeout=5)
         # Wait for shell reply
         assert reply["content"]["status"] == "ok"
         msg_id = parent_id(reply)
@@ -106,7 +106,7 @@ async def test_iopub_idle_not_delayed_after_shell_reply(kc):
         deadline = start + 0.2  # 200ms timeout
         while time.monotonic() < deadline:
             try:
-                msg = await kc.get_iopub_msg(timeout=0.05)
+                msg = await kc.jmsgq.get("iopub", timeout=0.05)
                 if parent_id(msg) == msg_id and msg["msg_type"] == "status":
                     if msg["content"]["execution_state"] == "idle":
                         idle_found = True
@@ -119,7 +119,7 @@ async def test_iopub_idle_not_delayed_after_shell_reply(kc):
 async def test_iopub_idle_arrives_for_every_pipelined_request(kc):
     "When pipelining requests, every request must get its own iopub idle."
     mids = [str(uuid4()) for _ in range(10)]
-    cs = [kc.execute(f"y = {i}", reply=True, timeout=10, msg_id=mid) for i, mid in enumerate(mids)]
+    cs = [kc.reply(f"y = {i}", timeout=10, msg_id=mid) for i, mid in enumerate(mids)]
     await asyncio.gather(*cs)
     await collect_iopub(kc, mids)  # raises if any request is missing its idle
 
@@ -128,7 +128,7 @@ async def test_iopub_idle_arrives_for_every_pipelined_request(kc):
 async def test_rapid_fire_200_executes():
     "Fire 200 execute_requests as fast as possible, verify order, idles, and outputs."
     async with mini_kernel() as (_, kc):
-        sleeper = kc.execute("import time; time.sleep(0.8)", reply=True, timeout=20)
+        sleeper = kc.reply("import time; time.sleep(0.8)", timeout=20)
         await wait_status(kc, "busy")
         bursts = [kc.cmd.is_complete(code="1+1", timeout=20) for _ in range(130)]
         burst_replies, sleeper_reply = await asyncio.gather(asyncio.gather(*bursts), sleeper)
@@ -138,7 +138,7 @@ async def test_rapid_fire_200_executes():
         n = 200
         # Send all requests without waiting
         mids = [str(uuid4()) for _ in range(n)]
-        cs = [kc.execute(f"1+{i}", reply=True, timeout=60, msg_id=mid) for i, mid in enumerate(mids)]
+        cs = [kc.reply(f"1+{i}", timeout=60, msg_id=mid) for i, mid in enumerate(mids)]
         reply_list = await asyncio.gather(*cs)
         replies = dict(zip(mids, reply_list))
         iopub_by_id = await collect_iopub(kc, mids, timeout=60)
@@ -183,7 +183,7 @@ async def test_rapid_fire_with_output(kc):
     # Cells that produce output, like real notebooks
     codes = [f"print('cell {i}')\n{i}" for i in range(n)]
     mids = [str(uuid4()) for _ in range(n)]
-    cs = [kc.execute(code, reply=True, timeout=30, msg_id=mid) for code, mid in zip(codes, mids)]
+    cs = [kc.reply(code, timeout=30, msg_id=mid) for code, mid in zip(codes, mids)]
     reply_list = await asyncio.gather(*cs)
     replies = dict(zip(mids, reply_list))
     await collect_iopub(kc, mids, timeout=30)  # raises if any request is missing its idle

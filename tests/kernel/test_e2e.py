@@ -19,7 +19,7 @@ async def _break_and_continue(kc, code, line):
     await kc.dap.setBreakpoints(breakpoints=[dict(line=line)], source=dict(path=source), sourceModified=False)
     await kc.dap.debugInfo()
     await kc.dap.configurationDone()
-    c = kc.execute(code, reply=True, timeout=30)
+    c = kc.reply(code, timeout=30)
     stopped = await wait_stop(kc)
     assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     await kc.dap.continue_(threadId=stopped["content"]["body"]["threadId"])

@@ -31,8 +31,8 @@ async def test_comm_buffer_roundtrips():
         assert reply["content"]["status"] == "ok"
 
         comm_id = "buf-1"
-        kc.shell_request("comm_open", reply=False, comm_id=comm_id, target_name="buf_target", data={}, buffers=[b"open"])
-        kc.shell_request("comm_msg", reply=False, comm_id=comm_id, data={}, buffers=[b"msg"])
+        kc.comm_open("buf_target", comm_id, buffers=[b"open"])
+        kc.comm_msg(comm_id, buffers=[b"msg"])
 
         code = (
             "import time\n"

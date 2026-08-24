@@ -9,8 +9,8 @@ timeout = 3
 async def test_input_features():
     async with mini_kernel() as (_, kc):
         mid = str(uuid4())
-        c = kc.execute("print('before'); print(input('prompt> '))", allow_stdin=True, reply=True, timeout=timeout, msg_id=mid)
-        stdin_msg = await kc.get_stdin_msg(timeout=timeout)
+        c = kc.reply("print('before'); print(input('prompt> '))", allow_stdin=True, timeout=timeout, msg_id=mid)
+        stdin_msg = await kc.jmsgq.get("stdin", timeout=timeout)
         assert stdin_msg["msg_type"] == "input_request"
         assert stdin_msg["content"]["prompt"] == "prompt> "
         assert not stdin_msg["content"]["password"]
@@ -30,10 +30,10 @@ async def test_input_features():
         assert ("stdout", text + "\n") in streams
 
         mid = str(uuid4())
-        c = kc.execute("input('prompt> ')", allow_stdin=False, reply=True, timeout=timeout, msg_id=mid)
+        c = kc.reply("input('prompt> ')", allow_stdin=False, timeout=timeout, msg_id=mid)
 
         try:
-            await kc.get_stdin_msg(timeout=1)
+            await kc.jmsgq.get("stdin", timeout=1)
             assert False, "expected no stdin message"
         except Empty: pass
 
@@ -43,8 +43,8 @@ async def test_input_features():
         await collect_iopub(kc, {mid})
 
         mid = str(uuid4())
-        c = kc.execute("user_input = input('Enter something: ')", allow_stdin=True, store_history=False, reply=True, timeout=timeout, msg_id=mid)
-        stdin_msg = await kc.get_stdin_msg(timeout=timeout)
+        c = kc.reply("user_input = input('Enter something: ')", allow_stdin=True, store_history=False, timeout=timeout, msg_id=mid)
+        stdin_msg = await kc.jmsgq.get("stdin", timeout=timeout)
         await input_reply(kc, "bbb")
         await input_reply(kc, "bbb")
         reply_msg = await c
@@ -52,16 +52,16 @@ async def test_input_features():
         await collect_iopub(kc, {mid})
 
         mid2 = str(uuid4())
-        c2 = kc.execute("user_input = input('Again: ')", allow_stdin=True, store_history=False, reply=True, timeout=timeout, msg_id=mid2)
-        _stdin_msg2 = await kc.get_stdin_msg(timeout=timeout)
+        c2 = kc.reply("user_input = input('Again: ')", allow_stdin=True, store_history=False, timeout=timeout, msg_id=mid2)
+        _stdin_msg2 = await kc.jmsgq.get("stdin", timeout=timeout)
         await input_reply(kc, "ccc")
         reply_msg2 = await c2
         assert reply_msg2["content"]["status"] == "ok"
         await collect_iopub(kc, {mid2})
 
         mid = str(uuid4())
-        c = kc.execute("input('prompt> ')", allow_stdin=True, reply=True, timeout=timeout, msg_id=mid)
-        stdin_msg = await kc.get_stdin_msg(timeout=timeout)
+        c = kc.reply("input('prompt> ')", allow_stdin=True, timeout=timeout, msg_id=mid)
+        stdin_msg = await kc.jmsgq.get("stdin", timeout=timeout)
         assert stdin_msg["msg_type"] == "input_request"
 
         await kc.interrupt(timeout=timeout)

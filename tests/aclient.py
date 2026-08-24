@@ -15,7 +15,8 @@ from contextlib import asynccontextmanager
 from queue import Empty
 
 from conkernelclient import *
-from conkernelclient.ops import parent_id, iter_timeout, iopub_msgs, iopub_streams
+from jupywire.ops import parent_id, iopub_msgs
+from conkernelclient.ops import iter_timeout, iopub_streams
 
 from .kernel_utils import build_env, ensure_separate_process
 
@@ -34,6 +35,7 @@ async def mini_kernel(extra_env=None, **kw):
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     async with run_kernel(kernel_name="ipymini", env=env, **kw) as (km, kc):
         ensure_separate_process(km)
+        JmsgQueues(kc)
         yield km, kc
 
 
@@ -42,6 +44,7 @@ async def clone(kc):
     "A second ConKernelClient session to the same kernel (its own Session, so its own msg ids)."
     k2 = ConKernelClient()
     k2.load_connection_info(kc.get_connection_info())
+    JmsgQueues(k2)
     await k2.start_channels()
     try: yield k2
     finally: k2.stop_channels()
@@ -50,7 +53,7 @@ async def clone(kc):
 async def wait_iopub(kc, pred, timeout=10, err="iopub message not received"):
     "Return the first iopub message matching `pred`, discarding others."
     for rem in iter_timeout(timeout):
-        try: msg = await kc.get_iopub_msg(timeout=rem)
+        try: msg = await kc.jmsgq.get("iopub", timeout=rem)
         except Empty: continue
         if pred(msg): return msg
     raise AssertionError(err)
@@ -73,7 +76,7 @@ async def collect_iopub(kc, msg_ids, timeout=10):
     idle = set()
     for rem in iter_timeout(timeout):
         if len(idle) >= len(msg_ids): break
-        try: msg = await kc.get_iopub_msg(timeout=rem)
+        try: msg = await kc.jmsgq.get("iopub", timeout=rem)
         except Empty: continue
         if (mid := parent_id(msg)) not in outputs: continue
         outputs[mid].append(msg)

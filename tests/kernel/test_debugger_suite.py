@@ -60,7 +60,7 @@ async def test_debugger_features(debug_kernel):
     var_name = "text"
     value = "Hello the world"
     code = f"{var_name}='{value}'\nprint({var_name})\n"
-    reply = await kc.execute(code, reply=True, timeout=timeout)
+    reply = await kc.reply(code, timeout=timeout)
     assert reply["content"]["status"] == "ok"
     await dap.inspectVariables()
     await dap.richInspectVariables(variableName=var_name)
@@ -80,7 +80,7 @@ g()
     assert reply["success"], f"setBreakpoints failed: {reply}"
     await ensure_configuration_done(kc)
 
-    c = kc.execute(code, reply=True, timeout=30)
+    c = kc.reply(code, timeout=30)
     stopped = await wait_stop(kc)
     assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
     thread_id = stopped["content"]["body"].get("threadId", 1)
@@ -129,7 +129,7 @@ g()
     reply = await dap.setExceptionBreakpoints(filters=["raised"])
     assert reply["success"], f"setExceptionBreakpoints failed: {reply}"
     await ensure_configuration_done(kc)
-    c = kc.execute("raise ValueError('boom')", reply=True, timeout=30)
+    c = kc.reply("raise ValueError('boom')", timeout=30)
     stopped = await wait_stop(kc)
     reason = stopped["content"]["body"].get("reason")
     assert reason in {"exception", "breakpoint", "pause"}, f"stopped: {stopped}"

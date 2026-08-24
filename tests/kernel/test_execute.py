@@ -66,21 +66,21 @@ async def test_stop_on_error_features():
         fail = "import time\n" "time.sleep(0.2)\n" "raise ValueError('boom')"
         # default fail_pending=False: the kernel aborts the queued cells (wire stop_on_error=True)
         # and their real kernel-issued "aborted" replies come back to each await
-        c_fail = kc.execute(fail, reply=True, timeout=10)
-        c_hello = kc.execute("print('Hello')", reply=True, timeout=10)
-        c_world = kc.execute("print('world')", reply=True, timeout=10)
+        c_fail = kc.reply(fail, timeout=10)
+        c_hello = kc.reply("print('Hello')", timeout=10)
+        c_world = kc.reply("print('world')", timeout=10)
         reply_fail, reply_hello, reply_world = await asyncio.gather(c_fail, c_hello, c_world)
         assert reply_fail["content"]["status"] == "error"
         assert reply_hello["content"]["status"] == "aborted"
         assert reply_world["content"]["status"] == "aborted"
 
-        c_fail = kc.execute(fail, reply=True, timeout=10, stop_on_error=False)
-        c_ok = kc.execute("1+1", reply=True, timeout=10)
+        c_fail = kc.reply(fail, timeout=10, stop_on_error=False)
+        c_ok = kc.reply("1+1", timeout=10)
         reply_fail, reply_ok = await asyncio.gather(c_fail, c_ok)
         assert reply_fail["content"]["status"] == "error"
         assert reply_ok["content"]["status"] == "ok"
 
-        c_fail = kc.execute(fail, reply=True, timeout=10)
+        c_fail = kc.reply(fail, timeout=10)
         c_info = kc.shell_request("kernel_info_request")
         c_comm = kc.shell_request("comm_info_request")
         c_inspect = kc.cmd.inspect(code="print", cursor_pos=5)
@@ -90,13 +90,6 @@ async def test_stop_on_error_features():
         assert reply_comm["content"]["status"] == "ok"
         assert reply_inspect["content"]["status"] == "ok"
 
-        # fail_pending=None follows stop_on_error: the erroring request fails the other pending
-        # reply client-side with a RuntimeError naming the root cause (solveit's pipelining behavior)
-        c_fail = kc.execute(fail, reply=True, timeout=10, fail_pending=None)
-        c_dead = kc.execute("print('never seen')", reply=True, timeout=10)
-        results = await asyncio.gather(c_fail, c_dead, return_exceptions=True)
-        assert results[0]["content"]["status"] == "error"
-        assert isinstance(results[1], RuntimeError) and "boom" in str(results[1])
 
 
 async def test_async_line_magic():

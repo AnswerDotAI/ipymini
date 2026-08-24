@@ -73,7 +73,7 @@ def _send_reply(self, msg_type, content, parent, idents):
     return _k._orig_send_reply(self, msg_type, content, parent, idents)
 _k.Subshell.send_reply = _send_reply
 """
-        reply = await kc.execute(patch, reply=True, timeout=10)
+        reply = await kc.reply(patch, timeout=10)
         assert reply["content"]["status"] == "ok", f"patch reply: {reply.get('content')}"
 
         reply, outputs = await kc.exec_drain("1+1", timeout=10)

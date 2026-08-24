@@ -39,12 +39,12 @@ async def _adelete_subshell(kc, subshell_id:str):
 def _asend_execute(kc, code:str, subshell_id:str|None=None, **content):
     "Send an execute now; return (msg_id, coroutine-for-reply)."
     mid = str(uuid4())
-    return mid, kc.execute(code, subsh_id=subshell_id, reply=True, timeout=timeout, msg_id=mid, **content)
+    return mid, kc.reply(code, subshell_id=subshell_id, timeout=timeout, msg_id=mid, **content)
 
 
 async def _aexecute(kc, code:str, subshell_id:str|None=None, **content):
     "Execute (stop_on_error=False matches the wire content the sync cmd proxy sent); return (reply, outputs)."
-    reply = await kc.execute(code, subsh_id=subshell_id, reply=True, timeout=timeout, stop_on_error=False, **content)
+    reply = await kc.reply(code, subshell_id=subshell_id, timeout=timeout, stop_on_error=False, **content)
     return reply, await kc.iopub_drain(parent_id(reply))
 
 
@@ -121,7 +121,7 @@ async def test_subshell_asyncio_create_task(kc):
         "    print('ok')\n"
         "asyncio.create_task(f())\n"
         "time.sleep(0.05)\n")
-    reply = await kc.execute(code, subsh_id=subshell_id, reply=True, timeout=timeout)
+    reply = await kc.reply(code, subshell_id=subshell_id, timeout=timeout)
     assert reply["content"]["status"] == "ok"
     mid = parent_id(reply)
     await wait_iopub(kc, lambda m: parent_id(m) == mid and m.get("msg_type") == "stream" and "ok" in m.get("content", {}).get("text", ""),
@@ -219,10 +219,10 @@ async def test_interrupt_during_concurrent_subshell_execution(kc):
 
 async def test_subshell_reads_shared_ns_during_parent_sleep(kc):
     subshell_id = await _acreate_subshell(kc)
-    c_parent = kc.execute("x = 123; import time; time.sleep(1.0); print('done')", reply=True, timeout=3)
+    c_parent = kc.reply("x = 123; import time; time.sleep(1.0); print('done')", timeout=3)
     await asyncio.sleep(0.1)
 
-    c_sub = kc.execute("print(x)", subsh_id=subshell_id, reply=True, timeout=0.8)
+    c_sub = kc.reply("print(x)", subshell_id=subshell_id, timeout=0.8)
     try: reply_sub = await c_sub
     except TimeoutError: raise AssertionError("subshell reply did not arrive while parent was busy")
 
@@ -306,8 +306,8 @@ async def test_subshell_stop_on_error_isolated(kc):
 async def test_delete_busy_subshell_interrupts_before_removing(kc):
     await aflush(kc)
     subshell_id = await _acreate_subshell(kc)
-    c = kc.execute("try:\n    while True: pass\nfinally:\n    import time; time.sleep(0.2)",
-        subsh_id=subshell_id, reply=True, timeout=timeout, stop_on_error=False)
+    c = kc.reply("try:\n    while True: pass\nfinally:\n    import time; time.sleep(0.2)",
+        subshell_id=subshell_id, timeout=timeout, stop_on_error=False)
     await wait_status(kc, "busy")
     dc = asyncio.create_task(kc.ctl.delete_subshell(subshell_id=subshell_id))
     await asyncio.sleep(0.12)
