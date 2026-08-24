@@ -51,6 +51,35 @@ async def test_unlock_trades_away_dependency_ordering(kc):
     assert r2["content"]["ename"] == "NameError", r2["content"]
 
 
+# The interrupt window: an interrupted cell reports KeyboardInterrupt, and stays "dying" until it
+# reports. An execute arriving inside that window (possible after unlock()) is stopped with it,
+# with the same label; the old bug let it through, and its arrival mislabeled the dying cell's
+# reply as CancelledError. The shield-sleep holds the window open long enough for the second
+# execute to land inside it.
+_unlocked_interrupt = """import asyncio
+from ipymini import unlock
+unlock()
+print('hanging', flush=True)
+try: await asyncio.Event().wait()
+except asyncio.CancelledError:
+    await asyncio.shield(asyncio.sleep(1))
+    raise
+"""
+
+
+async def test_interrupt_window_covers_interleaved_execute(kc):
+    mid1 = str(uuid4())
+    c1 = kc.reply(_unlocked_interrupt, timeout=10, msg_id=mid1)
+    await wait_iopub(kc, lambda m: parent_id(m) == mid1 and m["msg_type"] == "stream" and "hanging" in m["content"]["text"],
+        timeout=10, err="cell never started its await")
+    await kc.interrupt()
+    c2 = kc.reply("1+1", timeout=10)
+    r1, r2 = await asyncio.gather(c1, c2)
+    assert r1["content"]["ename"] == "KeyboardInterrupt", r1["content"]
+    assert r2["content"]["ename"] == "KeyboardInterrupt", r2["content"]
+    await kc.exec_ok("1+1", timeout=5)
+
+
 # Mimics solveit's load_dialog with a subshell instead of unlock(): the caller cell opens
 # subshell() then awaits; untagged executes from the *same client session* are routed to the
 # subshell and run (in order, on their own lane) while the caller is busy. Routing happens at
