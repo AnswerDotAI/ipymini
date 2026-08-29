@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "comm>=0.2.3",
-  "fastcore>=2.2.17",
+  "fastcore>=2.2.16",
   "ipython>=8.18",
   "kernmini>=0.1.6",
 ]
