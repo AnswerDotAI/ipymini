@@ -1,4 +1,4 @@
-"DAP debugger integration for ipymini (debugpy-backed); generic debug infra lives in kernmini.debug."
+"DAP debugger integration for ipymini (debugpy-backed)."
 
 from .dap import Debugger
 

@@ -5,16 +5,10 @@ from ipymini.debug.dap import Debugger
 
 class _FakeClient:
     def __init__(self):
-        self.next_seq = 1
         self.sent_async = []
         self.sent = []
         self.connected = []
         self.closed = False
-
-    def next_internal_seq(self) -> int:
-        seq = self.next_seq
-        self.next_seq += 1
-        return seq
 
     def connect(self, host: str, port: int): self.connected.append((host, port))
 
@@ -22,10 +16,7 @@ class _FakeClient:
 
     def send_request_async(self, request: dict):
         self.sent_async.append(request)
-        seq = request.get("seq")
-        if not isinstance(seq, int) or seq <= 0:
-            seq = self.next_internal_seq()
-            request["seq"] = seq
+        seq = request.get("seq", 1)
         waiter = queue.Queue()
         waiter.put(dict(type="response", request_seq=seq, success=True, body={}))
         return seq, waiter
@@ -66,6 +57,7 @@ def test_debugger_request_features(monkeypatch):
     dbg.just_my_code = False
     dbg.filter_internal_frames = True
     dbg._remove_cleanup_transforms = lambda: None
+    dbg.initialized.set()
 
     req = dict(type="request", command="attach", seq=10, arguments={})
     reply, events = dbg.process_request(req)
@@ -87,8 +79,6 @@ def test_debugger_request_features(monkeypatch):
     dbg = Debugger()
     def _ensure_started(): raise AssertionError("debugger should not start")
     dbg._ensure_started = _ensure_started
-    reply = dbg.process_request_json("{")
-    assert reply["response"]["success"] is False
     reply = dbg.process_request(dict(type="request", seq=1))
     assert reply[0]["success"] is False
 

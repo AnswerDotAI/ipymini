@@ -176,5 +176,3 @@ async def interrupt_request_async(self: AsyncKernelClient, timeout:float = 2)->d
 def wait_for_status(kc, state:str, timeout:float|None=None)->dict:
     pred = lambda m: m.get("msg_type") == "status" and nested_idx(m, "content", "execution_state") == state
     return wait_for_msg(kc.get_iopub_msg, pred, timeout, err=f"timeout waiting for status: {state}")
-
-

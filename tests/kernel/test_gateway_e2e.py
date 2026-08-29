@@ -7,7 +7,7 @@ code that itself imports zmq and jupyter_client, the self-hosting scenario that
 historically hung. Both assert that every tracked request reaches iopub idle, and the
 gateway run additionally that no cell errors (hide/export cells are skipped on load).
 """
-import asyncio, json
+import asyncio, importlib.util, json, re
 from pathlib import Path
 
 import pytest
@@ -47,9 +47,14 @@ async def test_uncollected_messages_dont_stall_iopub(kc):
 async def test_gateway_notebook_cells(kc):
     "Run every code cell of the real gateway notebook in the kernel, with uncollected sends interleaved."
     pp = Path(__file__).resolve().parents[2]
-    nb = json.loads((pp/"meta"/"00_gateway.ipynb").read_text())
+    nbpath = pp/"meta"/"00_gateway.ipynb"
+    if not nbpath.exists(): pytest.skip("gateway notebook not present (meta/ is unversioned)")
+    nb = json.loads(nbpath.read_text())
     cells = [s for c in nb["cells"] if c["cell_type"] == "code"
         and (s := "".join(c["source"]).strip()) and not s.startswith(("#|hide", "#| hide"))]
+    missing = sorted({m for s in cells for m in re.findall(r"^\s*(?:from|import)\s+(\w+)", s, flags=re.M)
+        if importlib.util.find_spec(m) is None})
+    if missing: pytest.skip(f"gateway notebook imports unavailable here ({missing}); run in the full workspace env")
 
     await aflush(kc)
     tracked = {}
@@ -60,7 +65,7 @@ async def test_gateway_notebook_cells(kc):
         await asyncio.sleep(0.01)
     outputs = await collect_iopub(kc, list(tracked), timeout=120)
 
-    errs = [(tracked[mid][:60], m["content"].get("ename")) for mid, msgs in outputs.items()
+    errs = [(tracked[mid][:60], m["content"].get("ename"), m["content"].get("evalue")) for mid, msgs in outputs.items()
         for m in msgs if m["msg_type"] == "error"]
     assert not errs, f'{len(errs)} gateway cells errored: {errs}'
     await aflush(kc, timeout=0.5)

@@ -1,12 +1,11 @@
 import asyncio, json, logging, os, sys, threading, traceback
 from importlib.metadata import PackageNotFoundError, version
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from typing import Callable
 
 # Ensure debugpy avoids sys.monitoring mode, which can stall kernel threads.
 os.environ.setdefault("PYDEVD_USE_SYS_MONITORING", "0")
 
-import zmq
 from fastcore.basics import str2bool
 from fastcore.aio import enable_async_magics
 from IPython.core.async_helpers import _asyncio_runner
@@ -16,11 +15,10 @@ from IPython.core.completer import rectify_completions as _rectify_completions
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.shellapp import InteractiveShellApp
 
-from microio import ScopeGroup
 
-from kernmini.debug import debug_cell_filename
+from ..debug.cells import debug_cell_filename
 from ipymini.debug import Debugger
-from .comms import set_kernel
+from .comms import get_comm_manager, set_kernel
 from ipymini.term import IPythonCapture
 
 _debug = os.environ.get("KERNMINI_DEBUG", "").lower() in ("1", "true", "yes")
@@ -91,8 +89,7 @@ def _share_history(shell, parent):
 
 class MiniShell:
     def __init__(self, request_input: Callable[[str, bool], str], debug_event_callback: Callable[[dict], None] | None = None,
-        zmq_context: zmq.Context | None = None, *, user_ns: dict | None = None, use_singleton: bool = True, exec_scopes=None,
-        sync_execution_context=None):
+        *, user_ns: dict | None = None, use_singleton: bool = True):
         "Initialize IPython shell, IO capture, and debugger hooks."
         from IPython.core import page
 
@@ -111,8 +108,7 @@ class MiniShell:
         self.ipy.compile.get_code_name = _code_name
         self.request_input = request_input
         self.capture = IPythonCapture(self.ipy, request_input=request_input)
-        self.exec_scopes = exec_scopes or ScopeGroup()
-        self.sync_execution_context = sync_execution_context or nullcontext
+        self._sync_thread_id = None
 
         self.ipy.set_hook("show_in_pager", page.as_hook(self._show_in_pager), 99)
         self.ipy._last_traceback = None
@@ -130,8 +126,14 @@ class MiniShell:
         self.ipy.set_next_input = _set_next_input
         _init_ipython_app(self.ipy)
         kernel_modules = [module.__file__ for module in sys.modules.values() if getattr(module, "__file__", None)]
-        self.debugger = Debugger(debug_event_callback, zmq_context=zmq_context, kernel_modules=kernel_modules,
+        self.debugger = Debugger(debug_event_callback, kernel_modules=kernel_modules,
             debug_just_my_code=False, filter_internal_frames=True)
+
+    @contextmanager
+    def _sync_execution(self):
+        self._sync_thread_id = threading.get_ident()
+        try: yield
+        finally: self._sync_thread_id = None
 
     @contextmanager
     def execution_context(self, *, allow_stdin: bool, silent: bool):
@@ -175,17 +177,14 @@ class MiniShell:
             coro = shell.run_cell_async(code, store_history=store_history, silent=silent,
                 transformed_cell=transformed, preprocessing_exc_tuple=exc_tuple)
             _dbg("_run_cell: awaiting async task")
-            try:
-                try:
-                    with self.exec_scopes.scope() as scope: res = await coro
-                    if scope.cancelled_caught: raise KeyboardInterrupt
-                except asyncio.CancelledError as exc: raise KeyboardInterrupt() from exc
+            try: res = await coro
+            except asyncio.CancelledError as exc: raise KeyboardInterrupt() from exc
             finally:
                 shell.events.trigger("post_execute")
                 if not silent: shell.events.trigger("post_run_cell", res)
             _dbg("_run_cell: async task done")
             return res
-        with self.sync_execution_context(): return shell.run_cell(code, store_history=store_history, silent=silent)
+        with self._sync_execution(): return shell.run_cell(code, store_history=store_history, silent=silent)
 
     def _exc_to_error(self, exc: BaseException) -> dict:
         tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
@@ -248,12 +247,28 @@ class MiniShell:
         self.ipy.kernel = kernel
         set_kernel(kernel)
 
+    @property
+    def comm_manager(self): return get_comm_manager()
+
+    def comm_info(self, target_name=None):
+        comms = {cid: {"target_name": comm.target_name} for cid, comm in self.comm_manager.comms.items()
+            if target_name is None or comm.target_name == target_name}
+        return {"status": "ok", "comms": comms}
+
+    def message(self, msg_type, content, buffers):
+        msg = dict(header=dict(msg_type=msg_type), content=content, buffers=buffers)
+        getattr(self.comm_manager, msg_type)(None, None, msg)
+
 
     def set_stream_sender(self, sender: Callable[[str, str], None] | None): self.capture.set_stream_sender(sender)
 
     def set_display_sender(self, sender: Callable[[dict], None] | None):
         "Set live display sender; None to buffer display events."
         self.capture.set_display_sender(sender)
+
+    def set_input_sender(self, sender: Callable[[str, bool], str]):
+        self.request_input = sender
+        self.capture.set_input_sender(sender)
 
     def complete(self, code: str, cursor_pos: int | None = None) -> dict:
         "Return completion matches for `code` at `cursor_pos`."
@@ -301,6 +316,7 @@ class MiniShell:
         else: hist = []
         return {"status": "ok", "history": list(hist)}
 
-    def debug_request(self, request_json: str) -> dict:
-        "Handle a debug_request DAP message in JSON."
-        return self.debugger.process_request_json(request_json)
+    def debug_request(self, request: dict) -> dict:
+        "Handle a debug_request DAP message."
+        response, events = self.debugger.process_request(request)
+        return {"response": response, "events": events}

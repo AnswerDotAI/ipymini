@@ -1,187 +1,102 @@
-# Developer Guide
+# Developer guide
 
-This guide is for contributors working on ipymini. It explains how the kernel works and why it's built the way it is, then covers testing, style, and release mechanics. The user-facing story (install, kernelspec, running manually) is in `README.md`; per-package internals get more detail in the READMEs inside `ipymini/shell/`, `ipymini/term/`, and `ipymini/debug/` (the protocol core is the sibling `kernmini` package).
+ipymini supplies Python language semantics to the Rust [kernmini](https://github.com/AnswerDotAI/kernmini) engine. IPython handles execution, history, completion, inspection, display, magics, configuration, and debugging. Kernmini handles Jupyter transport, messages, queues, output, stdin, interrupts, subshells, and lifecycle.
+
+The user-facing installation and kernelspec instructions are in `README.md`. Kernmini's `DEV.md` documents the language boundary and protocol engine.
 
 ## Project goals
 
-- A full Jupyter kernel in pure Python, with a small, readable, testable codebase.
-- Strong IPython parity: use IPython's own machinery (execution, history, completion, inspection, display) rather than re-implementing Python semantics.
-- Match ipykernel behavior where it matters: message shapes, IOPub ordering, history, interrupts, stop-on-error, debugger.
-- Avoid incidental complexity: no traitlets, no tornado. Plain classes, dataclasses, and asyncio.
-
-## What comes from ipykernel, and what's different
-
-ipymini was written with `ipykernel`, `xeus-python`, and the Jupyter specs (messaging protocol, JEP 91 subshells, DAP) open in the next window, and the protocol surface deliberately matches ipykernel: the busy/execute_input/output/idle IOPub ordering, reply shapes and error/abort semantics, `stop_on_error` handling with an ipykernel-style timeout, comm integration through the standalone `comm` package, cell filenames hashed the same way so debugger frontends map breakpoints, and the same background-thread cast (heartbeat echo, IOPub sender, stdin handling, control separated from shell so interrupts work mid-cell). Where a client could tell the difference, the tests generally pin the ipykernel behavior.
-
-The internals differ in a few deliberate ways:
-
-- **No traitlets or tornado.** Configuration is constructor arguments and env vars; wire-format signing and (de)serialization is `kernmini.session.MiniSession`, a trimmed jupyter_client copy. IPython config files still work through a real `InteractiveShellApp` (see Config below).
-- **Shell and control are async ROUTER loops in their own threads.** ipykernel runs shell handlers on the main event loop with a separate control thread; ipymini gives each channel an `AsyncRouterThread` whose loop runs concurrent send and receive coroutines over a `zmq.asyncio` socket, with actual execution handed off to subshell threads.
-- **Per-subshell IPython instances.** ipykernel implements JEP 91 subshells as threads sharing the one `InteractiveShell`. ipymini gives every subshell its own `InteractiveShell` (wrapped in `MiniShell`), sharing the parent's `user_ns` and in-memory history. That buys isolation (per-subshell execution state, cancel scopes, sys.stdout bindings) at the cost of per-subshell execution counts, so `In[n]`/`Out[n]` may not match prompt `n` when several subshells store history, and concurrent subshells at the same count overwrite each other's `Out[n]`.
-- **Contextvars for parent and output routing.** ipykernel tracks one mutable "current parent" per channel; anything printed while a message is being handled is attributed to it. ipymini stores the parent header and idents in `ContextVar`s set around each message, and patches `threading.Thread.start` and `ThreadPoolExecutor.submit` to copy the context, so output from concurrent cells, asyncio tasks, user-spawned threads, and comm callbacks all route to the message that caused them. This is what makes the concurrency features below safe.
-- **microio for thread/loop plumbing.** The cross-thread primitives (supervised service threads, mailboxes, cancel scopes, request registries) live in the sibling `microio` package rather than ad hoc queues and flags. Its README is short and worth reading once; the summary is: startup failures raise in the starter, stop is durable state rather than a flag a loop might miss, blocked waiters get failed rather than stranded, and cancellation works from any thread (including signal handlers) without leaking into unrelated code.
-- **In-cell concurrency opt-ins.** `unlock()` and `subshell()` (below) have no ipykernel equivalent.
-- **Process lifecycle.** On POSIX the kernel isolates itself into its own process group at startup and terminates that group as the very last shutdown step, so user-created child processes die with the kernel. Kernels launched by `KernelManager` also watch `JPY_PARENT_PID` (via `watchpid`) and shut down when their launcher exits. `SIGUSR1` dumps all thread stacks via `faulthandler` for stuck-kernel diagnosis. Windows skips the process-group teardown and exits with `os._exit()` after normal cleanup.
+- Keep the Jupyter engine in Rust and Python semantics in IPython.
+- Use IPython machinery instead of reproducing Python behavior.
+- Match ipykernel where clients can tell: message content, output ordering, history, inspection, completion, comms, debugging, and interrupts.
+- Avoid traitlets and Tornado in the kernel host. IPython configuration remains supported through `InteractiveShellApp`.
 
 ## Source layout
 
-- `ipymini/kernel.py`: thin wiring: the IPython `shell_factory` (`MiniShell` itself), ipymini's `kernel_info`, and `run_kernel`. The protocol layer -- `MiniKernel`, `Subshell`/`SubshellManager`, connection info, sockets, interrupt/shutdown, the zmqthread socket cast, `unlock()`/`subshell()`, debug env flags, and cell-filename hashing -- lives in the `kernmini` package, extracted from here; its DEV.md documents the shell contract that `MiniShell` implements.
-- `ipymini/shell/`: the IPython layer. `MiniShell` wraps `InteractiveShell`: execute, complete, inspect, history, debug bridging, comm wiring (`shell/comms.py`), and the kernmini contract members (`execution_count`, `bind_kernel`).
-- `ipymini/term/`: IO capture. Thread-local stdout/stderr/input/getpass/get_ipython, display hooks (stream buffering itself is `kernmini.streams`).
-- `ipymini/debug/`: the DAP debugger over debugpy (generic debug infra moved to `kernmini.debug`).
-- `ipymini/__main__.py`: CLI entry (`run`, and `install` for the kernelspec, via `kernmini.kernelspec`).
-- `tests/`: protocol and behavioral tests, organized by module; `tests/compat/` exercises the kernel through unpatched jupyter_client.
+- `ipymini/kernel.py`: a shell factory passed to the synchronous Rust-backed `kernmini.run_kernel`.
+- `ipymini/shell/`: the IPython language adapter: execution, completion, inspection, history, comm binding, and debugging.
+- `ipymini/term/`: Python stdout/stderr, input, display, and `get_ipython()` capture.
+- `ipymini/debug/`: DAP/debugpy integration and ipykernel-compatible cell filenames.
+- `ipymini/__main__.py`: CLI entry and kernelspec installation.
+- `tests/`: protocol and behavioral integration tests, including unmodified jupyter_client clients.
 
-## The kernel object graph
+## Startup and sessions
 
-`MiniKernel` owns the ZMQ context, the `Session`, and the socket threads. It creates a `SubshellManager`, which creates the parent `Subshell` immediately and child subshells on demand; all subshells share one `user_ns` dict. Each `Subshell` builds a `MiniShell`, which owns the `InteractiveShell` (`shell.ipy`): the IPython singleton for the parent, non-singleton instances for children. `Subshell` also sets `ipy.kernel = kernel`, so `get_ipython().kernel` works everywhere (ipywidgets and friends expect it), and `MiniKernel.get_parent()` exists for the same reason. `MiniKernel.shell` is a shortcut to the parent subshell's `MiniShell`.
+`ipymini.kernel.run_kernel` creates a closure around one shared namespace and passes it to kernmini. The first factory call creates the parent `InteractiveShell` singleton. Child calls create independent `InteractiveShell` instances sharing that namespace and the parent's in-memory history.
 
-The parent subshell runs its asyncio loop in the **main thread** (that's what `MiniKernel.start` blocks on), which is what lets SIGINT interrupt running user code without killing the kernel. Child subshells run their loops in daemon threads. Every subshell's loop persists across cells, so `asyncio.create_task(...)` in one cell keeps running while later cells execute.
+The parent shell runs on a persistent loopmini loop in the Python main thread. Each child runs on its own OS thread and persistent loopmini loop. Kernmini's Tokio runtime drives protocol and control work independently, so a synchronous Python cell cannot block the kernel engine or another subshell.
 
-## Life of an execute_request
+The executable requests process-group ownership. On POSIX this isolates the kernel and lets kernmini terminate user-created child processes during shutdown. Kernmini also watches the original parent PID. Embedded callers can disable process-group ownership, but the ipymini executable does not.
 
-The shell router thread receives and verifies the message (HMAC via `Session`; duplicate signatures are silently dropped as replays) and calls `handle_shell_msg`, still on the router thread. Routing picks a subshell: the JEP 91 `subshell_id` header if present, else an active `subshell()` route override for that client session, else the parent. `Subshell.submit` then queues it: execute_requests go into the subshell's `microio.ActorCore` mailbox -- a `PriorityMailbox`, highest execute-metadata `priority` first and FIFO within a level (see kernmini's DEV.md "Priority and holds" for the `priority` and `hold` extensions) -- which hands them out one at a time (the "cell baton"), while every other message type is posted straight onto the subshell's loop so completion and inspection stay responsive during a long-running cell.
+## Life of an execute request
 
-When the mailbox releases the message, `_handle_message` sets the shared parent-header/idents `ContextVar`s for the duration of handling, and `_handle_execute` takes over: send `status: busy`, emit `execute_input` (unless silent), stash the release callback and subshell into the contextvars that power `unlock()`/`subshell()`, and enter the shell's `execution_context`. That context resets per-request capture state, sets "live output" flags, and pushes the thread-local IO bindings: this subshell's IPython instance, its stdout/stderr capture streams, and its `request_input` callback become what `sys.stdout`, `get_ipython()`, and `input()` resolve to for code running in this execution context.
+The Rust engine validates and queues the request, publishes `busy` and `execute_input`, then calls `MiniShell.execute` with an execution-scoped context. The PyO3 adapter installs live stream, display, and input senders on each shell and stores the current Rust `ExecutionContext` in a Python ContextVar.
 
-`MiniShell.execute` then runs the cell through IPython. Async-capable cells are awaited via `run_cell_async` inside a `microio.CancelScope` registered with the subshell's `ScopeGroup`, which is how interrupts cancel them; sync cells run under a context that marks the subshell as synchronously executing so an interrupt knows to inject `KeyboardInterrupt` instead. While the cell runs, `print` output flows `_ThreadLocalStream -> MiniStream` (line-buffered) into the subshell's stream sender, which publishes IOPub `stream` messages parented by the contextvar; display calls flow through `MiniDisplayPublisher` the same way. When no live sender is configured (unit tests driving a bare `MiniShell`), the same events buffer and come back in the result snapshot instead.
+`MiniShell.execute` runs the cell through IPython's `run_cell_async`. Its execution context resets capture state and binds this shell's IPython instance, stdout, stderr, input, and display hooks. The result is returned as a MIME bundle, error, user expressions, and payload; kernmini publishes the corresponding Jupyter events and reply before `idle`.
 
-Afterwards, errors become IOPub `error` messages (a cancelled async cell is translated to `KeyboardInterrupt` for ipykernel parity), a final displayhook value becomes `execute_result`, and the reply (status, execution_count, user_expressions, payload) is enqueued on the router's outbox, which its send coroutine drains concurrently with new inbound traffic. On error with `stop_on_error`, already-queued executes are drained and answered with aborted replies; if `KERNMINI_STOP_ON_ERROR_TIMEOUT` is set, late-arriving executes keep aborting until it expires (the fence and window ride the mailbox's arrival-order gate, since the priority heap has no stable positions). Finally `status: idle`.
+Synchronous Python records its thread ID while running. Async cells remain ordinary loopmini tasks. Kernmini uses those two facts to inject `KeyboardInterrupt` into synchronous Python or cancel an async task without allowing SIGINT to escape the host loop.
 
-## In-cell concurrency: unlock() and subshell()
+## Output, input, and context
 
-A subshell is strictly FIFO by default: one cell finishes before the next starts. Two helpers, importable as `from ipymini import unlock, subshell` or reachable as `get_ipython().kernel.unlock()` / `.subshell()`, let a running cell opt out of that.
+`term/io.py` installs process-wide dispatchers for `sys.stdout`, `sys.stderr`, `input`, `getpass`, and `get_ipython`. Their targets come from execution ContextVars. `threading.Thread.start` and `ThreadPoolExecutor.submit` copy the current context, so output from user-created threads remains attributed to the cell that created them.
 
-`unlock()` releases the cell baton early: queued execute_requests start running on the same subshell's loop while the current cell continues. It returns `False` outside an ipymini cell and is irreversible for the remainder of the cell. The typical use is a cell that awaits something long-lived (a server, a watch loop, a long download) while the user keeps working. Since both cells share one event loop, this interleaves awaits rather than running CPU work in parallel, and the contextvar routing keeps each cell's output attached to its own request.
+`MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; bare-shell unit tests can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` do the same for rich display and final expression values.
 
-`subshell()` is a context manager that creates a temporary subshell and routes execute_requests arriving from the same client session into it while the body runs, then tears it down. Unlike `unlock()`, later cells run on a separate thread with their own IPython instance (sharing `user_ns`), so a sync cell in the subshell genuinely runs concurrently with the awaiting body. This gives frontends with no JEP 91 support (they never set the `subshell_id` header) working background cells. Only one route override can be active at a time, and requests from other client sessions are unaffected.
+The adapter's input callback crosses into Rust, which sends `input_request` to the correct client and blocks only the calling Python thread until `input_reply`. An interrupt completes the request with `KeyboardInterrupt`.
 
-## Output, stdin, and get_ipython routing (term/)
+## Concurrent execution
 
-`term/io.py` installs process-global hooks once: `sys.stdout`/`sys.stderr` are replaced with streams that resolve their target per execution context, `input()`/`getpass()` become dispatchers that forward to the kernel's stdin machinery (raising `StdinNotImplementedError` when `allow_stdin` is false), and `get_ipython` (the builtin, the IPython module attribute, and the `user_ns` binding) resolves to whichever subshell's shell is bound in the current context. The reach of "current context" is the point: `threading.Thread.start` is patched to capture `contextvars.copy_context()` at spawn time and run the thread body inside it, and `ThreadPoolExecutor.submit` does the same per work item, so a `print` from a thread the user started three cells ago still routes to the cell that spawned it.
+Each language session executes one cell at a time. Completion, inspection, history, comms, debugging, and control requests remain responsive while it runs.
 
-`MiniDisplayHook` keeps the last displayed result in contextvars too, so concurrent unlocked cells can't clobber each other's `Out` values mid-flight. `execute_input` always precedes any live output for a cell because it's published before execution begins.
+`unlock()` releases the cell's queue baton while the current await continues. Later cells run on the same event loop, and ContextVars keep their output separate.
 
-Stdin requests flush the captured streams, then send `input_request` through the stdin router thread and block on a `microio.RequestRegistry` waiter, matched back to the requester by parent msg_id with a client-identity fallback. The router socket sets `ROUTER_MANDATORY` with a zero send timeout, so a send to a client whose stdin pipe is not up yet (or is congested) raises instead of silently dropping; such requests are retried every poll tick for as long as their waiter exists, which means a late-connecting or reconnecting client gets pending prompts redelivered. Interrupts fail all pending waiters with `KeyboardInterrupt`; router shutdown fails them with a `RuntimeError` instead of leaving them hanging.
+`subshell()` temporarily routes subsequent execute requests from the same client session to a child shell. The child has its own thread and IPython instance but shares the namespace. This allows genuinely concurrent synchronous work without requiring frontend JEP 91 support.
 
-## IOPub
+Both helpers are available through `from ipymini import unlock, subshell` and `get_ipython().kernel`.
 
-`IOPubThread` owns the iopub socket and a FIFO queue. The socket is XPUB rather than plain PUB (`KERNMINI_IOPUB_XPUB=0` reverts it, emulating a pre-JEP-65 kernel for client fallback testing), with `XPUB_VERBOSE` set: each new subscription event triggers an `iopub_welcome` message to that subscriber (JEP 65, as in ipykernel), so a client knows its subscription is live and nothing published afterwards can be missed. `XPUB_VERBOSE` matters because plain XPUB dedups subscription events per topic, which would leave second and later subscribers (reconnects included) without a welcome; the flip side is that a welcome is broadcast to every matching subscriber, so clients must tolerate welcomes at any time, not only at startup. `kernel.iopub` is a small proxy (`IOPubCommand`) that turns attribute access into typed sends: `kernel.iopub.stream(parent, name=..., text=...)`, `.display_data(...)`, `.status(...)`, and so on all funnel through `iopub_send`. The queue is bounded (`IPYMINI_IOPUB_QMAX`, default 10000): when a cell floods output, non-status messages past the limit are dropped with a warning, but `status` messages are never dropped. That guarantee covers the kernel's own send queue only: below it, libzmq silently drops per slow subscriber once the socket's `SNDHWM` fills (default 1000; `IPYMINI_IOPUB_SNDHWM` raises it), statuses included, and no sender-side setting can fix that without letting one wedged client grow kernel memory without bound (PUB-family sends never block, so the app queue cannot see subscriber backpressure). A subscriber that wants a lossless hop sets `RCVHWM=0` on its SUB and keeps draining, as jupygate does; ipykernel leaves its `SNDHWM` at the same default.
-
-## Interrupts
-
-`interrupt_request` arrives on the control router. The kernel sends SIGINT (to its process group when it's the leader, so user subprocesses feel it too), asks every subshell to interrupt, and cancels pending stdin waits. The SIGINT handler in the main thread interrupts child subshells, then the parent: if the parent is awaiting an async cell, its cancel scope is cancelled (with `latch=True`, closing the race where the interrupt lands just as a new scope opens); if it's inside a sync cell on the main thread, plain `KeyboardInterrupt` is raised. Child subshells cancel async cells through their scope group and inject `KeyboardInterrupt` into sync ones via `PyThreadState_SetAsyncExc`. Cancelled tasks surface to the client as `KeyboardInterrupt`, matching ipykernel.
+Kernmini also recognizes `priority` and `hold` execute metadata. These are Answer.AI extensions; normal Jupyter clients are unaffected.
 
 ## Comms
 
-Inbound `comm_open`/`comm_msg`/`comm_close` are dispatched to the `comm` package's `CommManager` (also exposed as `kernel.comm_manager` for ipywidgets-style discovery), inside an output context so a callback's prints and displays route to the inbound message; inbound comm traffic is not echoed back on IOPub. Outbound comms (`comm.create_comm(...).send(...)` and callback replies) publish through `IpyminiComm.publish_msg`, parented to `kernel.current_parent()`: the contextvar parent when inside a cell, comm handler, or thread spawned from one, else the kernel's last parent. `shell/comms.py` binds the process-global comm layer to the kernel via `set_kernel` at kernel init. `comm_info_request` is answered from the manager's live comm table.
+`MiniShell.comm_info` and `MiniShell.message` adapt the standalone `comm` package to kernmini's language boundary; kernmini contains no IPython-specific comm code. `shell/comms.py` binds outgoing messages to kernmini's small Python kernel proxy. Inbound comm messages run under an output context, so callback output has the inbound message as its parent. Outbound comm messages publish through the current Rust execution context, including from threads spawned by a cell.
 
-## History, inspect, completion
+## Completion, inspection, history, and configuration
 
-All three delegate to IPython: `HistoryManager` tail/range/search for `history_request`, `object_inspect_mime` for `inspect_request`, the `Completer` (with rectified completions and `_jupyter_types_experimental` metadata) for `complete_request`, and the input transformer's `check_complete` for `is_complete_request`. `IPYMINI_USE_JEDI` overrides IPython's jedi setting. Child subshells re-point their in-memory history at the parent's, so `In`/`Out` in the shared namespace stay linked to the parent `HistoryManager` (with the execution-count caveat noted above).
+These delegate directly to IPython: `HistoryManager`, `object_inspect_mime`, the IPython completer, and the input transformer's completeness checker. `IPYMINI_USE_JEDI` overrides the completer's Jedi setting.
 
-## Debugger
+A small `InteractiveShellApp` loads `ipython_kernel_config.py`, configured extensions, and `profile_default/startup/*.py` during first shell construction. `tests/kernel/test_ipython_startup_integration.py` covers both paths.
 
-`debug_request` on control is bridged through `MiniShell.debug_request` to `debug/dap.py`: a DAP handler in front of debugpy, connected over a private ZMQ pair, with the reader as a supervised `ServiceThread` so pending requests fail loudly if it dies. Cell code is written to temp files named by a murmur2 hash of the source (`IPYMINI_CELL_NAME` overrides), the same scheme ipykernel uses, so debugger frontends can map cells to breakpoints. Debug events are published on IOPub against the current parent. `kernel_info` advertises both `"debugger"` and `"kernel subshells"` in `supported_features`.
+## Debugging
 
-## Startup and shutdown
+`debug/dap.py` implements Python-specific Jupyter DAP requests in front of debugpy. Kernmini's Rust `DapClient` owns byte-framed TCP, request correlation, timeouts, events, and connection failure. ipymini owns debugpy startup, Python tracing, cell sources, variable inspection, and IPython integration.
 
-`run_kernel` restores the default SIGINT handler, makes the process a group leader (POSIX), and starts the kernel. `MiniKernel.start` brings services up in order, and `microio.ServiceGroup.wait_started` means a socket that fails to bind raises here rather than leaving a half-alive kernel: first the IOPub/stdin/heartbeat threads, then signal handlers, the parent-pid watcher, the SIGUSR1 stack-dump hook, then the shell and control routers, and finally the parent subshell's loop on the main thread, where it blocks until shutdown. A crashed critical thread triggers a failed shutdown via the installed thread excepthook.
+`debug/cells.py` hashes cell source with the same Murmur2 algorithm and seed as ipykernel, allowing debugger frontends to map notebook cells to temporary Python files. `KERNMINI_CELL_NAME` overrides that filename.
 
-`shutdown_request` (either channel) is idempotent: the first one records the restart flag and starts a waiter thread that confirms the reply actually went out on the wire before calling `request_stop`, so the client always sees `shutdown_reply`. `request_stop` closes the stop scope, fails pending stdin waiters, interrupts running cells, and stops the parent loop; the finalizer then stops routers, heartbeat, subshells, and the stdin/IOPub threads (join timeouts checked, not assumed), restores signal handlers, and, as the very last act on POSIX, SIGTERMs then SIGKILLs its own process group. Control requests that arrive while stopping get a `KernelStopping` error reply instead of silence.
+## Environment variables
 
-## Config and extensions
-
-IPython configuration works the standard way: a minimal `InteractiveShellApp` subclass loads `ipython_kernel_config.py`, configured extensions, and `profile_default/startup/*.py` into the shell at first construction. `tests/test_ipython_startup_integration.py` exercises both paths. `InteractiveShell.display_page` picks whether pager output becomes `display_data` (True) or reply payloads (False).
-
-## Optional env flags
-
-- `KERNMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
-- `IPYMINI_USE_JEDI=0|1`: override IPython's jedi setting.
-- `KERNMINI_CELL_NAME`: override the debug cell filename.
-- `KERNMINI_IOPUB_QMAX` / `KERNMINI_IOPUB_SNDHWM`: IOPub queue bound (default 10000) and socket send high-water mark.
-- `KERNMINI_IOPUB_XPUB=0`: plain PUB iopub with no welcomes, emulating a pre-JEP-65 kernel (for testing clients' fallback paths).
-- `KERNMINI_DEBUG` / `KERNMINI_DEBUG_MSGS`: verbose kernel logging / per-message trace logging.
-
-The `KERNMINI_*` flags moved to the extracted core with the code that reads them (previously `IPYMINI_*`; renamed in the extraction, a breaking release); `IPYMINI_*` flags configure the IPython layer.
+- `IPYMINI_USE_JEDI=0|1`: override IPython's Jedi setting.
+- `KERNMINI_CELL_NAME`: override the debugger cell filename.
+- `KERNMINI_HOLD_TIMEOUT`: held-execution backstop in seconds, default 3600.
+- `KERNMINI_IOPUB_QMAX`: Rust IOPub queue capacity, default 10000.
 
 ## Tests
 
 Run non-slow tests:
 
-```
+```bash
 pytest -q
 ```
 
-Run everything (including slow tests):
+Run the full suite once, including slow lifecycle stories:
 
-```
+```bash
 tools/run_tests.sh
 ```
 
-Note: `tools/run_tests.sh` already runs `pytest -q`, so skip running it beforehand or you'll run tests twice. To run only slow tests, use:
+The vanilla-client compatibility tests use unmodified jupyter_client. Most protocol stories use `ConKernelClient` through `tests/aclient.py`; use the raw `tests/kernel_utils.py` harness only when the client or transport shape is the subject.
 
-```
-pytest -q -m slow
-```
+Prefer narrative protocol tests over unit tests of private machinery. Avoid sleeps where a protocol event can provide synchronization.
 
-The vanilla-client compat tests (`tests/compat/`) exercise the kernel through *unpatched* jupyter_client (the shape nbclassic/nbclient use). They run in the default suite: `tests/compat` sorts first in collection, so xdist's loadfile scheduler makes it a worker's first file, in a process that has never constructed a `ConKernelClient` (importing conkernelclient doesn't patch). A guard test fails loudly if that ordering assumption is ever broken.
+## Style and releases
 
-Run tests for a specific module:
-
-```
-pytest tests/debug/      # debug module tests
-pytest tests/shell/      # shell module tests
-pytest tests/term/       # term module tests
-pytest tests/zmqthread/  # zmqthread module tests
-pytest tests/kernel/     # kernel integration tests
-```
-
-Notes:
-- Tests start the kernel in a separate process (via `KernelManager`).
-- Ensure `JUPYTER_PATH` includes `share/jupyter` from this repo for tests.
-- Debug tests require `debugpy` (declared in test extras).
-
-### Writing tests
-
-- Prefer protocol-level tests through `tests/aclient.py`: `mini_kernel()` yields `(km, kc)` with a `ConKernelClient`, and `conkernelclient.ops` supplies the request helpers (`exec_drain`, the `cmd`/`ctl`/`dap` proxies, `shell_request`, `iopub_drain`).
-- The vanilla jupyter_client harness in `tests/kernel_utils.py` (`vanilla_kernel`, `vanilla_kernel_async`, and its `KernelClient` helpers) is only for tests whose subject is the unpatched client shape: `tests/compat`, and raw-transport fixtures like the router-handover and raw-channel-timing tests.
-- Avoid large sleeps and long timeouts; use monotonic timeouts and explicit status waits.
-- For blocking debugger behavior, always use a separate process.
-
-## Style guide (fastai)
-
-We follow the fastai style guide (`style.md`):
-- Favor brevity; one-liners for single statements (including `if/for/try/with`).
-- Avoid vertical whitespace; wrap at ~140 chars.
-- No semicolons for chaining statements.
-- Dicts with 3+ identifier keys use `dict(...)`.
-- Avoid type annotations on LHS variables (dataclasses excepted).
-
-Run `chkstyle` before committing - it will look for clear style violations.
-
-## PR process
-
-Use the repo script (GitHub CLI required):
-
-```
-tools/pr.sh "Message" [label] [body|body-file]
-```
-
-Notes:
-- The script creates a branch, commits tracked changes, opens a PR, and merges.
-- Ensure the working tree is clean and all intended files are staged.
-
-## Releases
-
-- Normal releases use fastship:
-
-```
-ship-gh
-ship-pypi
-ship-bump
-```
-
-## Code reference
-
-NB: `meta/` is not commited to git -- it is used for code reviews, timing details, etc.
+Use fastai Python style and run `chkstyle` after Python edits. Release through the repository's fastship workflow.

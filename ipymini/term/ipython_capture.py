@@ -4,7 +4,7 @@ from typing import Callable
 
 from .display import MiniDisplayHook, MiniDisplayPublisher
 from .io import thread_local_io
-from kernmini.streams import MiniStream, coalesce_streams
+from .streams import MiniStream, coalesce_streams
 
 log = logging.getLogger("ipymini.term")
 
@@ -33,6 +33,8 @@ class IPythonCapture:
     def set_display_sender(self, sender: Callable[[dict], None] | None):
         self.display_sender = sender
         if hasattr(self.shell.display_pub, "set_sender"): self.shell.display_pub.set_sender(sender)
+
+    def set_input_sender(self, sender: Callable[[str, bool], str]): self.request_input = sender
 
     def reset(self):
         self.shell.display_pub.events.clear()

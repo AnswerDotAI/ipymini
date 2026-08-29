@@ -1,6 +1,6 @@
 # ipymini
 
-`ipymini` is a **Python-only** Jupyter kernel for Python with a small(ish), readable(ish) codebase and strong IPython parity.
+`ipymini` is a Jupyter kernel for Python with a Rust protocol engine, a small(ish), readable(ish) codebase, and strong IPython parity.
 
 This was almost entirely implemented by AI, and no human currently fully understands all the generated code, so please be very careful, because we don't actually know what this code does. The AI closely referenced the `ipykernel`, `xeus`, `xeus-python`, and `jupyter_kernel_test` projects during development. So all credit for this project belongs to the authors of those packages, and to authors of the excellent documentation and specifications referred to (e.g DAP spec; JEPs; etc) - but of course all blame for mistakes is entirely our/AI's fault.
 
@@ -10,7 +10,7 @@ Having said all that, we have been working on this and testing it for ~6 months 
 
 ## What we’ve aimed to do
 
-- Implement a full Jupyter kernel in pure Python.
+- Keep the Jupyter engine in Rust and Python language semantics in IPython.
 - Match `ipykernel` behavior where it matters (IOPub ordering, message shapes, history, inspect, etc.).
 - Use IPython instead of re‑implementing Python semantics.
 - Expand protocol‑level tests (IOPub, interrupts, completions, etc.) to approach upstream parity.
@@ -20,13 +20,6 @@ Having said all that, we have been working on this and testing it for ~6 months 
 ## Requirements
 
 - Python 3.11+
-- `jupyter_client`, `jupyter_core`, `ipython`, `pyzmq`
-
-If you need system ZMQ libs on macOS:
-
-```
-brew install libzmq
-```
 
 ---
 
@@ -111,8 +104,10 @@ km.start_kernel(env={"MY_FLAG": "1"}, cwd="/path/to/workdir")
 ```
 
 Optional env flags:
-- `KERNMINI_STOP_ON_ERROR_TIMEOUT`: seconds to keep aborting queued executes after an error (default 0.0).
-- `KERNMINI_HOLD_TIMEOUT`: seconds before a parked `hold` execute completes as an error (default 3600; see kernmini's DEV.md).
+- `KERNMINI_IOPUB_QMAX`: maximum number of queued IOPub events (default 10000).
+- `KERNMINI_HOLD_TIMEOUT`: maximum time in seconds for an unreleased held execution (default 3600).
+- `KERNMINI_CELL_NAME`: override the temporary debugger filename for a cell.
+- `IPYMINI_USE_JEDI`: enable or disable IPython's Jedi completer.
 
 On POSIX, ipymini isolates the kernel into its own process group and terminates that group as the last shutdown step, so user-created child processes are cleaned up with the kernel. Nested ipymini kernels started by `KernelManager` watch their parent pid and shut themselves down when that parent exits. Direct `SIGTERM` to the kernel uses the same cleanup path. Windows does not provide this process-group cleanup guarantee; after normal cleanup the kernel process exits with `os._exit()`.
 
@@ -121,4 +116,3 @@ On POSIX, ipymini isolates the kernel into its own process group and terminates 
 ## Developer guide
 
 See `DEV.md`.
-

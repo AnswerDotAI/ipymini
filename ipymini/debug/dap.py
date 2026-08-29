@@ -1,202 +1,21 @@
-import json, logging, os, queue, socket, sys, threading
-from typing import Callable
+import logging, os, socket, sys, threading
 
-import zmq
 from fastcore.basics import nested_idx
 from IPython.core import getipython as _getipython_mod
-from microio import RequestRegistry, ServiceThread
+from kernmini._native import DapClient
 
-from kernmini.debug import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
-from kernmini.zmqthread.polling import poll_in
+from .cells import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
 
 log = logging.getLogger("ipymini.debug")
 
 
-class DebugpyReaderThread(ServiceThread):
-    def __init__(self, client: "MiniDebugpyClient"):
-        super().__init__(name="debugpy-reader")
-        self.client = client
-
-    def run_service(self):
-        try: self.client._reader_loop(self)
-        except Exception as exc:
-            log.exception("debugpy reader thread failed")
-            self.client._fail_pending(exc)
-            raise
-
-
-class DebugpyMessageQueue:
-    HEADER = "Content-Length: "
-    HEADER_LENGTH = 16
-    SEPARATOR = "\r\n\r\n"
-    SEPARATOR_LENGTH = 4
-
-    def __init__(self, event_callback, response_callback):
-        "Initialize a parser for debugpy TCP frames."
-        self.tcp_buffer = ""
-        self._reset_tcp_pos()
-        self.event_callback = event_callback
-        self.response_callback = response_callback
-
-    def _reset_tcp_pos(self):
-        self.header_pos = -1
-        self.separator_pos = -1
-        self.message_size = 0
-        self.message_pos = -1
-
-    def _put_message(self, raw_msg: str):
-        msg = json.loads(raw_msg)
-        if msg.get("type") == "event": self.event_callback(msg)
-        else: self.response_callback(msg)
-
-    def put_tcp_frame(self, frame: str):
-        "Append TCP frame data and emit complete debugpy messages."
-        self.tcp_buffer += frame
-        while True:
-            if self.header_pos == -1: self.header_pos = self.tcp_buffer.find(DebugpyMessageQueue.HEADER)
-            if self.header_pos == -1: return
-
-            if self.separator_pos == -1:
-                hint = self.header_pos + DebugpyMessageQueue.HEADER_LENGTH
-                self.separator_pos = self.tcp_buffer.find(DebugpyMessageQueue.SEPARATOR, hint)
-            if self.separator_pos == -1: return
-
-            if self.message_pos == -1:
-                size_pos = self.header_pos + DebugpyMessageQueue.HEADER_LENGTH
-                self.message_pos = self.separator_pos + DebugpyMessageQueue.SEPARATOR_LENGTH
-                self.message_size = int(self.tcp_buffer[size_pos : self.separator_pos])
-
-            if len(self.tcp_buffer) - self.message_pos < self.message_size: return
-
-            self._put_message(self.tcp_buffer[self.message_pos : self.message_pos + self.message_size])
-
-            if len(self.tcp_buffer) - self.message_pos == self.message_size:
-                self.tcp_buffer = ""
-                self._reset_tcp_pos()
-                return
-
-            self.tcp_buffer = self.tcp_buffer[self.message_pos + self.message_size :]
-            self._reset_tcp_pos()
-
-
-class MiniDebugpyClient:
-    def __init__(self, context: zmq.Context, event_callback: Callable[[dict], None] | None):
-        "Initialize debugpy client state for a ZMQ connection."
-        self.context = context
-        self.next_seq = 1
-        self.event_callback = event_callback
-        self.pending = RequestRegistry()
-        self.reader_thread = None
-        self.initialized = threading.Event()
-        self.outgoing = queue.Queue()
-        self.routing_id = None
-        self.endpoint = None
-        self.message_queue = DebugpyMessageQueue(self._handle_event, self._handle_response)
-
-    def connect(self, host: str, port: int):
-        "Connect to debugpy adapter at `host:port` and start reader."
-        self.endpoint = f"tcp://{host}:{port}"
-        self._start_reader()
-
-    def _start_reader(self):
-        if self.reader_thread and self.reader_thread.is_alive(): return
-        self.reader_thread = DebugpyReaderThread(self)
-        self.reader_thread.start()
-        self.reader_thread.wait_started(timeout=1)
-
-    def close(self):
-        "Stop reader thread and close debugpy socket."
-        self.initialized.clear()
-        if self.reader_thread:
-            self.reader_thread.stop("debugpy client closed")
-            self.reader_thread.join_or_log(timeout=1)
-            if not self.reader_thread.is_alive(): self.reader_thread = None
-        self._fail_pending(RuntimeError("debugpy client closed"))
-
-    def _handle_event(self, msg: dict):
-        if msg.get("event") == "initialized": self.initialized.set()
-        if self.event_callback: self.event_callback(msg)
-
-    def _handle_response(self, msg: dict):
-        req_seq = msg.get("request_seq")
-        if isinstance(req_seq, int): self.pending.resolve(req_seq, msg)
-
-    def _fail_pending(self, exc: Exception): self.pending.fail_all(exc)
-
-    def _reader_loop(self, service: DebugpyReaderThread):
-        if self.endpoint is None: return
-        import debugpy
-        debugpy.trace_this_thread(False)
-        sock = self.context.socket(zmq.STREAM)
-        sock.linger = 0
-        sock.connect(self.endpoint)
-        self.routing_id = sock.getsockopt(zmq.ROUTING_ID)
-        service.started()
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
-        try:
-            while not service.scope.closed:
-                self._drain_outgoing(sock)
-                if poll_in(poller, sock, 50):
-                    frames = sock.recv_multipart()
-                    if len(frames) < 2: continue
-                    data = frames[1]
-                    if not data: continue
-                    text = data.decode("utf-8", errors="replace")
-                    self.message_queue.put_tcp_frame(text)
-        finally:
-            self.routing_id = None
-            sock.close(0)
-
-    def _drain_outgoing(self, sock: zmq.Socket):
-        if self.routing_id is None: return
-        while True:
-            try: msg = self.outgoing.get_nowait()
-            except queue.Empty: break
-            payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-            header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
-            sock.send_multipart([self.routing_id, header + payload])
-
-    def send_request(self, msg: dict, timeout: float = 10.0) -> dict:
-        "Send a debugpy request and wait for a response."
-        req_seq = self._request_seq(msg)
-        return self.pending.request(req_seq, lambda _reply: self.outgoing.put(msg), timeout=timeout)
-
-    def _request_seq(self, msg: dict)->int:
-        "Ensure `msg` has a positive integer sequence number."
-        req_seq = msg.get("seq")
-        if not isinstance(req_seq, int) or req_seq <= 0:
-            req_seq = self.next_internal_seq()
-            msg["seq"] = req_seq
-        return req_seq
-
-    def send_request_async(self, msg: dict) -> tuple[int, queue.Queue]:
-        "Send a request and return `(seq, waiter)` without waiting."
-        req_seq = self._request_seq(msg)
-        waiter = self.pending.register(req_seq)
-        self.outgoing.put(msg)
-        return req_seq, waiter
-
-    def wait_for_response(self, req_seq: int, waiter: queue.Queue, timeout: float = 10.0) -> dict:
-        "Wait for a response on `waiter` until `timeout`."
-        return self.pending.wait(req_seq, waiter, timeout=timeout)
-
-    def wait_initialized(self, timeout: float = 5.0) -> bool: return self.initialized.wait(timeout=timeout)
-
-    def next_internal_seq(self) -> int:
-        "Return the next internal sequence number."
-        seq = self.next_seq
-        self.next_seq += 1
-        return seq
-
-
 class Debugger:
-    def __init__(self, event_callback=None, *, zmq_context=None, kernel_modules=None, debug_just_my_code=False, filter_internal_frames=True):
+    def __init__(self, event_callback=None, *, kernel_modules=None, debug_just_my_code=False, filter_internal_frames=True):
         "Initialize DAP handler and debugpy client state."
         self.events = []
         self.event_callback = event_callback
-        context = zmq_context or zmq.Context.instance()
-        self.client = MiniDebugpyClient(context, self._handle_event)
+        self.client = DapClient(self._handle_event)
+        self.initialized = threading.Event()
         self.started = False
         self.adapter_started = False
         self.host = "127.0.0.1"
@@ -238,7 +57,8 @@ class Debugger:
         self.adapter_started = True
 
     def _handle_event(self, msg: dict):
-        if msg.get("event") == "stopped":
+        if msg.get("event") == "initialized": self.initialized.set()
+        elif msg.get("event") == "stopped":
             thread_id = nested_idx(msg, "body", "threadId")
             if isinstance(thread_id, int): self.stopped_threads.add(thread_id)
         elif msg.get("event") == "continued":
@@ -258,7 +78,6 @@ class Debugger:
         handler = self.simple_handlers.get(command)
         if handler is not None and command in self.no_start_commands: return handler(request), self.events
         self._ensure_started()
-        if "seq" in request: self.client.next_seq = max(self.client.next_seq, int(request["seq"]) + 1)
         if handler is not None: return handler(request), self.events
 
         if command == "attach":
@@ -269,7 +88,7 @@ class Debugger:
             if self.filter_internal_frames and self.kernel_modules: arguments["rules"] = [{"path": path, "include": False} for path in self.kernel_modules]
             request["arguments"] = arguments
             req_seq, waiter = self.client.send_request_async(request)
-            if self.client.wait_initialized(timeout=10.0):
+            if self.initialized.wait(timeout=10.0):
                 config = self._request_payload("configurationDone")
                 try: self.client.send_request(config, timeout=10.0)
                 except TimeoutError: log.warning("debugpy configurationDone timed out")
@@ -290,19 +109,9 @@ class Debugger:
         if command == "disconnect" and (self.adapter_started or self.started): self._reset_session()
         return response or {}, self.events
 
-    def process_request_json(self, request_json: str) -> dict:
-        try: request = json.loads(request_json)
-        except json.JSONDecodeError:
-            request = dict(type="request", command="<invalid>")
-            return {"response": self._fail(request, "invalid debug request JSON"), "events": []}
-        if not isinstance(request, dict):
-            request = dict(type="request", command="<invalid>")
-            return {"response": self._fail(request, "invalid debug request"), "events": []}
-        response, events = self.process_request(request)
-        return {"response": response, "events": events}
-
     def _reset_session(self):
         self.client.close()
+        self.initialized.clear()
         self.started = False
         self.adapter_started = False
         self.breakpoint_list = {}
@@ -340,9 +149,10 @@ class Debugger:
 
     def _request_payload(self, command: str, arguments: dict | None = None, seq: int | None = None) -> dict:
         "Build a DAP request payload for `command`."
-        if seq is None: seq = self.client.next_internal_seq()
         if arguments is None: arguments = {}
-        return dict(type="request", command=command, seq=seq, arguments=arguments)
+        request = dict(type="request", command=command, arguments=arguments)
+        if seq is not None: request["seq"] = seq
+        return request
 
     def _response(self, request: dict, success: bool, body: dict | None = None, message: str | None = None) -> dict:
         "Build a DAP response dict for `request`."

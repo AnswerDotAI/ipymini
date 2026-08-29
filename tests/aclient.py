@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from queue import Empty
 
 from conkernelclient import *
+from conkernelclient import reconnect as _reconnect
 from jupywire.ops import parent_id, iopub_msgs
 from conkernelclient.ops import iter_timeout, iopub_streams
 
@@ -48,6 +49,13 @@ async def clone(kc):
     await k2.start_channels()
     try: yield k2
     finally: k2.stop_channels()
+
+
+async def reconnect(km, kc=None):
+    "Restart a managed kernel and attach the test message queues to its new client."
+    kc = await _reconnect(km, kc)
+    JmsgQueues(kc)
+    return kc
 
 
 async def wait_iopub(kc, pred, timeout=10, err="iopub message not received"):
