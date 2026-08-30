@@ -23,7 +23,7 @@ async def _states(kc, mid):
 
 
 async def test_error_reply_status_features(kc):
-    "Empty string subshell_id should route to parent subshell (treat as None)."
+    "Empty IDs use the parent shell, while missing named subshells are created on first use."
     await aflush(kc)
     # Send execute with empty subshell_id - should work, not error
     reply = await kc.shell_request("execute_request", code="1+1", subshell_id="")
@@ -32,17 +32,16 @@ async def test_error_reply_status_features(kc):
     assert "busy" in states, "should have busy status"
     assert "idle" in states, "should have idle status"
 
-    reply = await kc.shell_request("execute_request", code="1+1", subshell_id="nonexistent-subshell-123")
-    assert reply["content"]["status"] == "error"
-    assert reply["content"]["ename"] == "SubshellNotFound"
-    # Must have busy/idle on iopub to prevent frontend spinner
+    sid1,sid2 = "nonexistent-subshell-123","bad-subshell"
+    reply = await kc.shell_request("execute_request", code="1+1", subshell_id=sid1)
+    assert reply["content"]["status"] == "ok"
     states = await _states(kc, parent_id(reply))
-    assert "busy" in states, f"missing busy status, got {states}"
-    assert "idle" in states, f"missing idle status, got {states}"
+    assert "busy" in states and "idle" in states
 
-    reply = await kc.cmd.complete(code="pri", cursor_pos=3, subshell_id="bad-subshell")
-    assert reply["content"]["status"] == "error"
-    assert reply["content"]["ename"] == "SubshellNotFound"
+    reply = await kc.cmd.complete(code="pri", cursor_pos=3, subshell_id=sid2)
+    assert reply["content"]["status"] == "ok"
+    assert {sid1,sid2} <= set((await kc.ctl.list_subshell())["content"]["subshell_id"])
+    for sid in (sid1,sid2): await kc.ctl.delete_subshell(subshell_id=sid)
 
     # Send execute_request without 'code' field
     reply = await kc.shell_request("execute_request")  # no code field

@@ -8,79 +8,14 @@ async def kc():
     async with mini_kernel() as (_, kc): yield kc
 
 
-# Mimics solveit's `load_dialog` re-entrancy: a cell calls unlock() then awaits a response that can
-# only arrive once later execute_requests on the same channel have run (ipyku_launcher/UnlockKernel
-# semantics, but opt-in per cell). The event dependency is the proof: cell 1 can only complete if
-# cell 2 ran during its await.
-_unlocker = """import asyncio
-ev = asyncio.Event()
-get_ipython().kernel.unlock()
-await asyncio.wait_for(ev.wait(), 5)
-"""
-
-
-async def test_execute_processed_while_unlocked_cell_awaits(kc):
-    c1 = kc.reply(_unlocker, timeout=10)
-    c2 = kc.reply("ev.set()", timeout=10)
-    for r in await asyncio.gather(c1, c2): assert r["content"]["status"] == "ok", r["content"]
-
-
 async def test_dependent_async_cells_serialized_by_default(kc):
-    "Without unlock(), pipelined dependent cells keep FIFO completion order (stock ipykernel parity)."
+    "Pipelined dependent cells keep FIFO completion order (stock ipykernel parity)."
     c1 = kc.reply("import asyncio; a = await asyncio.sleep(0.1, 1)", timeout=10)
     c2 = kc.reply("assert a == 1", timeout=10)
     for r in await asyncio.gather(c1, c2): assert r["content"]["status"] == "ok", r["content"]
 
 
-_unlocked_await = """import asyncio
-from ipymini import unlock
-unlock()
-b = await asyncio.sleep(0.3, 1)
-"""
-
-
-async def test_unlock_trades_away_dependency_ordering(kc):
-    "Documented semantics: after unlock(), a pipelined dependent cell runs during the await and fails."
-    # the NameError reply lands while the first cell is still pending; the default
-    # fail_pending=False means it doesn't fail that cell's routed reply queue client-side
-    c1 = kc.reply(_unlocked_await, timeout=10)
-    c2 = kc.reply("print(b)", timeout=10)
-    r1, r2 = await asyncio.gather(c1, c2)
-    assert r1["content"]["status"] == "ok", r1["content"]
-    assert r2["content"]["status"] == "error", r2["content"]
-    assert r2["content"]["ename"] == "NameError", r2["content"]
-
-
-# The interrupt window: an interrupted cell reports KeyboardInterrupt, and stays "dying" until it
-# reports. An execute arriving inside that window (possible after unlock()) is stopped with it,
-# with the same label; the old bug let it through, and its arrival mislabeled the dying cell's
-# reply as CancelledError. The shield-sleep holds the window open long enough for the second
-# execute to land inside it.
-_unlocked_interrupt = """import asyncio
-from ipymini import unlock
-unlock()
-print('hanging', flush=True)
-try: await asyncio.Event().wait()
-except asyncio.CancelledError:
-    await asyncio.shield(asyncio.sleep(1))
-    raise
-"""
-
-
-async def test_interrupt_window_covers_interleaved_execute(kc):
-    mid1 = str(uuid4())
-    c1 = kc.reply(_unlocked_interrupt, timeout=10, msg_id=mid1)
-    await wait_iopub(kc, lambda m: parent_id(m) == mid1 and m["msg_type"] == "stream" and "hanging" in m["content"]["text"],
-        timeout=10, err="cell never started its await")
-    await kc.interrupt()
-    c2 = kc.reply("1+1", timeout=10)
-    r1, r2 = await asyncio.gather(c1, c2)
-    assert r1["content"]["ename"] == "KeyboardInterrupt", r1["content"]
-    assert r2["content"]["ename"] == "KeyboardInterrupt", r2["content"]
-    await kc.exec_ok("1+1", timeout=5)
-
-
-# Mimics solveit's load_dialog with a subshell instead of unlock(): the caller cell opens
+# Mimics solveit's load_dialog: the caller cell opens
 # subshell() then awaits; untagged executes from the *same client session* are routed to the
 # subshell and run (in order, on their own lane) while the caller is busy. Routing happens at
 # arrival time, so the client must send the cells only after the CM is entered - hence the
@@ -126,7 +61,7 @@ async def test_subshell_routing_ignores_other_sessions(kc):
 
 
 async def test_non_execute_replies_while_async_cell_busy(kc):
-    "Info/completion requests are answered while an async cell is busy - no unlock needed."
+    "Info and completion requests are answered while an async cell is busy."
     await aflush(kc)
     c = kc.reply("import asyncio; await asyncio.sleep(1.2)", timeout=10)
     await wait_status(kc, "busy")
@@ -138,8 +73,7 @@ async def test_non_execute_replies_while_async_cell_busy(kc):
 
 
 async def test_sync_cells_still_run_in_order(kc):
-    cs = [kc.reply(code, timeout=10)
-        for code in ("order = []", "order.append(1)", "order.append(2)", "order.append(3)")]
+    cs = [kc.reply(code, timeout=10) for code in ("order = []", "order.append(1)", "order.append(2)", "order.append(3)")]
     for r in await asyncio.gather(*cs): assert r["content"]["status"] == "ok", r["content"]
     assert (o := await kc.eval_expr("order")) == [1, 2, 3], o
 
@@ -152,24 +86,23 @@ def _rt(comm, open_msg):
 get_comm_manager().register_target('reentrant', _rt)
 """
 
-_reentrant_unlocker = """import asyncio
-get_ipython().kernel.unlock()
+_reentrant_waiter = """import asyncio
 await asyncio.wait_for(rev.wait(), 5)
 print('cell-b-after')
 """
 
 
-async def test_comm_capture_reentrant_during_unlock(kc):
-    "A comm callback firing during an unlocked cell's await captures stdout to iopub parented to the comm_msg, without disturbing the awaiting cell's own output parent."
+async def test_comm_capture_while_cell_awaits(kc):
+    "A comm callback firing while a cell awaits captures stdout to its comm_msg parent without disturbing the cell's output parent."
     assert (await kc.exec_drain(_reentrant_setup))[0]["content"]["status"] == "ok"
-    c1 = kc.reply(_reentrant_unlocker, timeout=10)
+    c1 = kc.reply(_reentrant_waiter, timeout=10)
     kc.comm_open("reentrant", "re-1")
     mid = kc.comm_msg("re-1")
     s = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "reentrant-print" in m["content"].get("text", ""),
-        err="comm callback stdout during unlock never reached iopub")
+        err="comm callback stdout never reached iopub")
     assert parent_id(s) == mid, "comm-callback stream must be parented to the comm_msg, not the unlocked cell"
     r1 = await c1
     assert r1["content"]["status"] == "ok", r1["content"]
     b = await wait_iopub(kc, lambda m: m["msg_type"] == "stream" and "cell-b-after" in m["content"].get("text", ""),
-        err="unlocked cell's own stdout after resume never reached iopub")
+        err="cell's own stdout after resume never reached iopub")
     assert parent_id(b) == parent_id(r1), "resumed cell's stream must be parented to its own execute"

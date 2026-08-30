@@ -65,6 +65,10 @@ async def test_subshell_basics():
         assert "kernel subshells" in features
 
         assert await _alist_subshells(kc) == []
+        assert await kc.eval("40 + 2", call_=False, sidecar_=True) == 42
+        assert await _alist_subshells(kc) == ["sidecar"]
+        await _adelete_subshell(kc, "sidecar")
+
         subshell_id = await _acreate_subshell(kc)
         assert await _alist_subshells(kc) == [subshell_id]
 
@@ -105,10 +109,10 @@ async def test_subshell_basics():
         assert _last_history_input(child_hist) == "child_only = 456"
 
         reply = await kc.cmd.execute(code="1+1", subshell_id="missing")
-        assert reply["content"]["status"] == "error"
-        assert reply["content"].get("ename") == "SubshellNotFound"
+        assert reply["content"]["status"] == "ok"
+        assert "missing" in await _alist_subshells(kc)
 
-        await _adelete_subshell(kc, subshell_id)
+        for sid in (subshell_id,"missing"): await _adelete_subshell(kc, sid)
         assert await _alist_subshells(kc) == []
 
 
@@ -316,9 +320,10 @@ async def test_delete_busy_subshell_interrupts_before_removing(kc):
     assert reply["content"]["status"] == "ok"
     r1, r2 = await asyncio.gather(c, c_late)
     assert r1["content"]["status"] == "error"
-    assert r2["content"]["status"] == "error"
+    assert r2["content"]["status"] == "ok"
     list_reply = await kc.ctl.list_subshell()
-    assert subshell_id not in list_reply["content"]["subshell_id"]
+    assert subshell_id in list_reply["content"]["subshell_id"]
+    await _adelete_subshell(kc, subshell_id)
 
 
 async def test_subshell_fuzzes():

@@ -46,7 +46,7 @@ async def test_execute_features():
         assert expr["bad"]["status"] == "error"
 
         await kc.exec_drain("persist_eval = 42")
-        assert await kc.eval("persist_eval", _call=False) == 42
+        assert await kc.eval("persist_eval", call_=False) == 42
 
         reply, output_msgs = await kc.exec_drain("1/0", store_history=False)
         assert reply["content"]["status"] == "error"
