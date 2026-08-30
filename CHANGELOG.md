@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.1.21
+
+### New Features
+
+- Adopt persistent sidecar execution for reentrant work ([#47](https://github.com/AnswerDotAI/ipymini/pull/47)), thanks to [@jph00](https://github.com/jph00)
+- Move debugpy DAP transport to kernmini Rust DapClient ([#46](https://github.com/AnswerDotAI/ipymini/issues/46))
+
+
 
 ## 0.1.19
 
