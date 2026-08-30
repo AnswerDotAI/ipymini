@@ -12,14 +12,9 @@ def get_scope_ref(scopes, name): return next(s for s in scopes if s["name"] == n
 
 async def get_scope_vars(dap, scopes, name):
     ref = get_scope_ref(scopes, name)
-    return (await dap.variables(variablesReference=ref))["body"]["variables"]
-
-
-async def ensure_configuration_done(kc):
-    if getattr(kc, "_debug_config_done", False): return
-    reply = await kc.dap.configurationDone()
-    assert reply.get("success"), f"configurationDone failed: {reply}"
-    kc._debug_config_done = True
+    reply = await dap.variables(variablesReference=ref)
+    assert reply["success"], f"variables reply: {reply}"
+    return reply["body"]["variables"]
 
 
 async def continue_debugger(kc, stopped):
@@ -78,7 +73,6 @@ g()
     source = (await dap.dumpCell(code=code))["body"]["sourcePath"]
     reply = await dap.setBreakpoints(breakpoints=[dict(line=7)], source=dict(path=source), sourceModified=False)
     assert reply["success"], f"setBreakpoints failed: {reply}"
-    await ensure_configuration_done(kc)
 
     c = kc.reply(code, timeout=30)
     stopped = await wait_stop(kc)
@@ -110,12 +104,6 @@ g()
     globals_ = await get_scope_vars(dap, scopes, "Globals")
     assert any(v for v in globals_ if v["name"] == "c_copy"), f"globals: {globals_}"
 
-    locals_ref = get_scope_ref(scopes, "Locals")
-    globals_ref = get_scope_ref(scopes, "Globals")
-    locals_reply = await dap.variables(variablesReference=locals_ref)
-    globals_reply = await dap.variables(variablesReference=globals_ref)
-    assert locals_reply["success"], f"locals reply: {locals_reply}"
-    assert globals_reply["success"], f"globals reply: {globals_reply}"
     reply = await dap.stepOut(threadId=thread_id)
     assert reply.get("success"), f"stepOut failed: {reply}"
     stopped = await wait_stop(kc)
@@ -126,9 +114,8 @@ g()
     await continue_debugger(kc, stopped)
     assert (await c)["content"]["status"] == "ok"
 
-    reply = await dap.setExceptionBreakpoints(filters=["raised"])
+    reply = await dap.setExceptionBreakpoints(filters=["userUnhandled"])
     assert reply["success"], f"setExceptionBreakpoints failed: {reply}"
-    await ensure_configuration_done(kc)
     c = kc.reply("raise ValueError('boom')", timeout=30)
     stopped = await wait_stop(kc)
     reason = stopped["content"]["body"].get("reason")

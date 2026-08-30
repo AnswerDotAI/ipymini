@@ -40,6 +40,17 @@ async def test_iopub_display_and_ordering():
         assert reply["content"]["status"] == "ok"
 
 
+async def test_pil_image_execute_result():
+    "A PIL rich representation completes normally, including its image MIME data."
+    pytest.importorskip("PIL")
+    async with mini_kernel() as (_, kc):
+        reply, outputs = await kc.exec_drain('from PIL import Image\nImage.new("RGB", (1000, 800), "red")', store_history=False)
+        assert reply["content"]["status"] == "ok"
+        results = iopub_msgs(outputs, "execute_result")
+        assert results
+        assert "image/png" in results[0]["content"]["data"]
+
+
 async def test_iopub_status_not_dropped_when_output_queue_is_full():
     async with mini_kernel(extra_env={"KERNMINI_IOPUB_QMAX": "1"}) as (_, kc):
         reply, outputs = await kc.exec_drain("for i in range(200): print(i)", store_history=False, timeout=default_timeout)
