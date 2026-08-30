@@ -34,7 +34,7 @@ class MiniDisplayPublisher(DisplayPublisher):
 class MiniDisplayHook(DisplayHook):
     "DisplayHook that captures last result metadata, isolated per execution context."
 
-    # ContextVars so concurrent (unlocked) executions cannot read or clobber each other's result
+    # ContextVars so concurrent callbacks cannot read or clobber an execution's result
     _last = contextvars.ContextVar("ipymini.dh_last", default=None)
     _last_metadata = contextvars.ContextVar("ipymini.dh_last_metadata", default=None)
     _last_execution_count = contextvars.ContextVar("ipymini.dh_last_execution_count", default=None)

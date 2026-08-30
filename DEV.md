@@ -48,11 +48,9 @@ The adapter's input callback crosses into Rust, which sends `input_request` to t
 
 Each language session executes one cell at a time. Completion, inspection, history, comms, debugging, and control requests remain responsive while it runs.
 
-`unlock()` releases the cell's queue baton while the current await continues. Later cells run on the same event loop, and ContextVars keep their output separate.
-
 `subshell()` temporarily routes subsequent execute requests from the same client session to a child shell. The child has its own thread and IPython instance but shares the namespace. This allows genuinely concurrent synchronous work without requiring frontend JEP 91 support.
 
-Both helpers are available through `from ipymini import unlock, subshell` and `get_ipython().kernel`.
+`sidecar()` uses the same routing mechanism but retains the named kernel-wide `sidecar` subshell for reuse. Both helpers are available through `from ipymini import sidecar, subshell` and `get_ipython().kernel`.
 
 Kernmini also recognizes `priority` and `hold` execute metadata. These are Answer.AI extensions; normal Jupyter clients are unaffected.
 
