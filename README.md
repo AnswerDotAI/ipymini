@@ -53,8 +53,7 @@ After either option, you should see it in:
 jupyter kernelspec list
 ```
 
-Alternatively, use the repo’s `JUPYTER_PATH` during development.
-Set `JUPYTER_PATH` to include the repo’s `share/jupyter`:
+Alternatively, use the repo’s `JUPYTER_PATH` during development. Set `JUPYTER_PATH` to include the repo’s `share/jupyter`:
 
 ```
 export JUPYTER_PATH=/path/to/ipymini/share/jupyter:$JUPYTER_PATH
