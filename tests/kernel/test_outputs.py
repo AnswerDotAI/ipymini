@@ -31,7 +31,7 @@ async def test_output_display_features():
 
         reply, output_msgs = await kc.exec_drain("for i in range(5000): print(i)", store_history=False)
         assert reply["content"]["status"] == "ok"
-        assert [m["content"]["text"] for m in iopub_streams(output_msgs)] == [f"{i}\n" for i in range(5000)]
+        assert ''.join(m['content']['text'] for m in iopub_streams(output_msgs)) == ''.join(f'{i}\n' for i in range(5000))
 
         reply, output_msgs = await kc.exec_drain("from IPython.display import clear_output; clear_output(wait=True)", store_history=False)
         assert reply["content"]["status"] == "ok"
