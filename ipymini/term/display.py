@@ -1,4 +1,4 @@
-import contextvars
+import contextvars, sys
 
 from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
@@ -32,7 +32,9 @@ class MiniDisplayPublisher(DisplayPublisher):
 
 
 class MiniDisplayHook(DisplayHook):
-    "DisplayHook that captures last result metadata, isolated per execution context."
+    "Publish each result when bound to a kernel; retain the last result for standalone capture."
+
+    sender = None
 
     # ContextVars so concurrent callbacks cannot read or clobber an execution's result
     _last = contextvars.ContextVar("ipymini.dh_last", default=None)
@@ -54,11 +56,16 @@ class MiniDisplayHook(DisplayHook):
     @last_execution_count.setter
     def last_execution_count(self, v): self._last_execution_count.set(v)
 
-    def write_output_prompt(self): self.last_execution_count = self.prompt_count
+    def write_output_prompt(self):
+        self.last_execution_count = self.exec_result.execution_count if self.exec_result is not None else self.prompt_count
 
     def write_format_data(self, format_dict, md_dict=None):
         "Capture formatted output from displayhook."
         self.last = format_dict
         self.last_metadata = md_dict or {}
+        if self.sender is not None:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            self.sender("execute_result", content=dict(data=format_dict, metadata=self.last_metadata, execution_count=self.last_execution_count))
 
     def finish_displayhook(self): self._is_active = False

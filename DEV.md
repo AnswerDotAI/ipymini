@@ -32,7 +32,7 @@ The executable requests process-group ownership. On POSIX this isolates the kern
 
 The Rust engine validates and queues the request, publishes `busy` and `execute_input`, then calls `MiniShell.execute` with an execution-scoped context. The PyO3 adapter installs live stream, display, and input senders on each shell and stores the current Rust `ExecutionContext` in a Python ContextVar.
 
-`MiniShell.execute` runs the cell through IPython's `run_cell_async`. Its execution context resets capture state and binds this shell's IPython instance, stdout, stderr, input, and display hooks. The result is returned as a MIME bundle, error, user expressions, and payload; kernmini publishes the corresponding Jupyter events and reply before `idle`.
+`MiniShell.execute` runs the cell through IPython's `run_cell_async`. Its execution context resets capture state and binds this shell's IPython instance, stdout, stderr, input, and display hooks. The display hook publishes each expression result through kernmini as it occurs, including multiple results with `ast_node_interactivity='all'`. The returned snapshot supplies errors, user expressions, and payload; kernmini publishes the reply before `idle`. Standalone shells without a bound kernel retain the last result in their snapshot.
 
 Synchronous Python records its thread ID while running. Async cells remain ordinary loopmini tasks. Kernmini uses those two facts to inject `KeyboardInterrupt` into synchronous Python or cancel an async task without allowing SIGINT to escape the host loop.
 
@@ -40,7 +40,7 @@ Synchronous Python records its thread ID while running. Async cells remain ordin
 
 `term/io.py` installs process-wide dispatchers for `sys.stdout`, `sys.stderr`, `input`, `getpass`, and `get_ipython`. Their targets come from execution ContextVars. `threading.Thread.start` and `ThreadPoolExecutor.submit` copy the current context, so output from user-created threads remains attributed to the cell that created them.
 
-`MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; bare-shell unit tests can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` do the same for rich display and final expression values.
+`MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; bare-shell unit tests can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` publish rich displays and expression values. The display hook flushes pending stream text before publishing a result.
 
 The adapter's input callback crosses into Rust, which sends `input_request` to the correct client and blocks only the calling Python thread until `input_reply`. An interrupt completes the request with `KeyboardInterrupt`.
 

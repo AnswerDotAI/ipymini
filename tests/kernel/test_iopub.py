@@ -21,14 +21,20 @@ async def test_iopub_display_and_ordering():
         data = displays[0]["content"].get("data", {})
         assert "image/png" in data
 
-        code = "print('hi')\nfrom IPython.display import display\n\ndisplay({'x': 1})\n"
+        await kc.exec_drain("get_ipython().ast_node_interactivity = 'all'")
+        code = r'''1+1
+None
+def f(): ...
+display({'x': 1})
+print('hi', end='')
+4-3'''
         reply, output_msgs = await kc.exec_drain(code, store_history=False)
         assert reply["content"]["status"] == "ok"
-        msg_types = [msg.get("msg_type") for msg in output_msgs]
-        assert "execute_input" in msg_types, f"missing execute_input: {msg_types}"
-        idx_input = msg_types.index("execute_input")
-        if "stream" in msg_types: assert idx_input < msg_types.index("stream")
-        if "display_data" in msg_types: assert idx_input < msg_types.index("display_data")
+        msg_types = [m["msg_type"] for m in output_msgs if m["msg_type"] != "status"]
+        assert msg_types == ["execute_input", "execute_result", "display_data", "stream", "execute_result"]
+        results = iopub_msgs(output_msgs, "execute_result")
+        assert [m["content"]["data"]["text/plain"] for m in results] == ['2', '1']
+        assert all(m["content"]["execution_count"] == reply["content"]["execution_count"] for m in results)
 
         pytest.importorskip("matplotlib")
         code = (

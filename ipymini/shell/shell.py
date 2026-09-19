@@ -245,6 +245,7 @@ class MiniShell:
     def bind_kernel(self, kernel):
         "Attach the running kernel: `get_ipython().kernel` works (ipywidgets expects it), and the global comm layer publishes through it."
         self.ipy.kernel = kernel
+        self.ipy.displayhook.sender = kernel.iopub.send
         set_kernel(kernel)
 
     @property

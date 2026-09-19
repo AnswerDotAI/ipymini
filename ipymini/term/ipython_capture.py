@@ -69,6 +69,7 @@ class IPythonCapture:
         if result is None: result = self.shell.displayhook.last
         if result_metadata is None: result_metadata = self.shell.displayhook.last_metadata or {}
         if execution_count is None: execution_count = self.shell.displayhook.last_execution_count
+        if self.shell.displayhook.sender is not None: result = None
         return dict(streams=streams, display=display_events, result=result, result_metadata=result_metadata, execution_count=execution_count)
 
     def _emit_stream(self, name: str, text: str):
