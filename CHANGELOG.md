@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.22
+
+### New Features
+
+- Publish `execute_result` per expression through iopub as results occur, flushing pending stream output first ([#48](https://github.com/AnswerDotAI/ipymini/issues/48))
+
+
 ## 0.1.21
 
 ### New Features
