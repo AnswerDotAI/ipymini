@@ -4,7 +4,7 @@ from ..kernel_utils import *
 
 
 def test_kernelspec_features():
-    spec_path = root / "share" / "jupyter" / "kernels" / "ipymini" / "kernel.json"
+    spec_path = root / "share" / "jupyter" / "kernels" / "py" / "kernel.json"
     assert spec_path.exists()
     data = json.loads(spec_path.read_text(encoding="utf-8"))
     argv = data["argv"]
@@ -20,7 +20,7 @@ def test_kernelspec_features():
     env = build_env()
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     ksm = KernelSpecManager()
-    spec = ksm.get_kernel_spec("ipymini")
+    spec = ksm.get_kernel_spec("py")
     assert spec.argv[0] == "python"
     assert "-Xfrozen_modules=off" in spec.argv
     assert "-m" in spec.argv

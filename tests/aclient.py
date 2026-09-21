@@ -34,7 +34,7 @@ async def mini_kernel(extra_env=None, **kw):
     "Start an ipymini kernel with the repo kernelspec/env; yield `(km, kc)`."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    async with run_kernel(kernel_name="ipymini", env=env, **kw) as (km, kc):
+    async with run_kernel(kernel_name="py", env=env, **kw) as (km, kc):
         ensure_separate_process(km)
         JmsgQueues(kc)
         yield km, kc

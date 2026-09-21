@@ -84,7 +84,7 @@ async def test_graceful_shutdown_kills_nested_ipymini_kernel():
             code = (
                 "import json, os\n"
                 "from jupyter_client import KernelManager\n"
-                "nested_km = KernelManager(kernel_name='ipymini')\n"
+                "nested_km = KernelManager(kernel_name='py')\n"
                 "nested_km.start_kernel()\n"
                 "nested_kc = nested_km.client()\n"
                 "nested_kc.start_channels()\n"

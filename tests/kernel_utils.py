@@ -83,7 +83,7 @@ def vanilla_kernel(extra_env: dict|None=None, ready_timeout: float|None=None, **
     "Start a kernel with an *unpatched* jupyter_client client: for tests whose subject is the vanilla client shape (tests/compat, raw-transport fixtures)."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
+    km = KernelManager(kernel_name="py")
     km.start_kernel(env=env, **kwargs)
     ensure_separate_process(km)
     kc = km.client()
@@ -100,7 +100,7 @@ async def vanilla_kernel_async(extra_env: dict|None=None, ready_timeout: float|N
     "Async twin of `vanilla_kernel`."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="ipymini")
+    km = KernelManager(kernel_name="py")
     km.start_kernel(env=env, **kwargs)
     ensure_separate_process(km)
     kc = AsyncKernelClient(**km.get_connection_info(session=True))

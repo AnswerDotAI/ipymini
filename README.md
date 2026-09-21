@@ -31,11 +31,11 @@ From PyPI:
 pip install ipymini
 ```
 
-Wheel installs include a kernelspec in the environment, so Jupyter from that environment should discover `ipymini` without a separate install step.
+The install puts a kernelspec in the environment. Jupyter from that environment lists it as the `py` kernel, with no separate install step. An editable install (`pip install -e .`) does the same, with a copy of `kernel.json` taken at install time.
 
 ## Installing the kernel spec
 
-For editable installs, use the built-in installer. It copies the repo kernelspec into a Jupyter kernels directory.
+An install already puts the kernelspec in its own environment. From a source checkout, the built-in installer copies the kernelspec into another Jupyter kernels directory. Install it for the current user:
 
 ```
 python -m ipymini install --user
@@ -94,14 +94,14 @@ The same helpers are also available as `from ipymini import sidecar, subshell`.
 For per-launch configuration, rely on the kernel launcher:
 
 - **KernelManager**: pass `env` and `cwd` to `start_kernel(...)`.
-- **Kernelspec**: add an `"env"` dict to `share/jupyter/kernels/ipymini/kernel.json` for static defaults.
+- **Kernelspec**: add an `"env"` dict to `share/jupyter/kernels/py/kernel.json` for static defaults.
 
 Example (KernelManager):
 
 ```
 from jupyter_client import KernelManager
 
-km = KernelManager(kernel_name="ipymini")
+km = KernelManager(kernel_name="py")
 km.start_kernel(env={"MY_FLAG": "1"}, cwd="/path/to/workdir")
 ```
 

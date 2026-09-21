@@ -24,8 +24,8 @@ def _install_kernelspec(argv: list[str]):
     if args.sys_prefix and args.prefix: raise SystemExit("--sys-prefix and --prefix are mutually exclusive")
     prefix = args.prefix or (sys.prefix if args.sys_prefix else None)
 
-    kernel_dir = Path(__file__).resolve().parents[1] / "share" / "jupyter" / "kernels" / "ipymini"
-    install_kernelspec_dir(kernel_dir, "ipymini", user=bool(args.user), prefix=prefix)
+    kernel_dir = Path(__file__).resolve().parents[1] / "share" / "jupyter" / "kernels" / "py"
+    install_kernelspec_dir(kernel_dir, "py", user=bool(args.user), prefix=prefix)
 
 
 def main():
