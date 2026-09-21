@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.23
+
+### New Features
+
+- Change kernelspec default name to `py` and auto install a kernelspec ([#49](https://github.com/AnswerDotAI/ipymini/issues/49))
+
+
 ## 0.1.22
 
 ### New Features
