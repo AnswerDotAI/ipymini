@@ -63,14 +63,13 @@ class IPythonCapture:
         self.shell.payload_manager.clear_payload()
         return self._dedupe_set_next_input(payload)
 
-    def snapshot(self, *, result=None, result_metadata=None, execution_count=None) -> dict:
+    def snapshot(self, *, result=None, result_metadata=None) -> dict:
         streams = [] if self.stream_sender is not None else coalesce_streams(self.stream_events)
         display_events = [] if self.display_sender is not None else list(self.shell.display_pub.events)
         if result is None: result = self.shell.displayhook.last
         if result_metadata is None: result_metadata = self.shell.displayhook.last_metadata or {}
-        if execution_count is None: execution_count = self.shell.displayhook.last_execution_count
         if self.shell.displayhook.sender is not None: result = None
-        return dict(streams=streams, display=display_events, result=result, result_metadata=result_metadata, execution_count=execution_count)
+        return dict(streams=streams, display=display_events, result=result, result_metadata=result_metadata)
 
     def _emit_stream(self, name: str, text: str):
         if self.stream_live.get() and self.stream_sender is not None and text: self.stream_sender(name, text)

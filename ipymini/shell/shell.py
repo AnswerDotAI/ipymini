@@ -191,11 +191,12 @@ class MiniShell:
         return dict(ename=type(exc).__name__, evalue=str(exc), traceback=tb)
 
     async def execute(self, code: str, silent: bool = False, store_history: bool = True, user_expressions=None,
-        allow_stdin: bool = False) -> dict:
-        "Execute `code` in IPython and return captured outputs/errors (never raises)."
+        allow_stdin: bool = False, execution_count: int | None = None) -> dict:
+        "Execute `code` in IPython and return captured outputs/errors (never raises). `execution_count` sets IPython's counter for this cell."
         _dbg(f"execute start: {code[:30]!r}...")
         result = None
         raised = None
+        if execution_count is not None: self.ipy.execution_count = execution_count
         try:
             self.debugger.trace_current_thread()
             _dbg("execute: calling _run_cell")
@@ -212,7 +213,7 @@ class MiniShell:
         payload = self.capture.consume_payload()
 
         if raised is not None:
-            snapshot = self.capture.snapshot(result=None, result_metadata={}, execution_count=self.ipy.execution_count)
+            snapshot = self.capture.snapshot(result=None, result_metadata={})
             return dict(**snapshot, error=self._exc_to_error(raised), user_expressions={}, payload=payload)
 
         error = None
@@ -225,13 +226,9 @@ class MiniShell:
         user_expressions = _maybe_json(user_expressions) or {}
         user_expr = self.ipy.user_expressions(user_expressions) if error is None else {}
 
-        exec_count = getattr(result, "execution_count", self.ipy.execution_count)
         result_meta = self.ipy.displayhook.last_metadata or {}
-        snapshot = self.capture.snapshot(result=self.ipy.displayhook.last, result_metadata=result_meta, execution_count=exec_count)
+        snapshot = self.capture.snapshot(result=self.ipy.displayhook.last, result_metadata=result_meta)
         return dict(**snapshot, error=error, user_expressions=user_expr, payload=payload)
-
-    @property
-    def execution_count(self) -> int: return self.ipy.execution_count
 
     def kernel_info(self) -> dict:
         "ipymini's contribution to kernel_info_reply: implementation identity and Python language_info."

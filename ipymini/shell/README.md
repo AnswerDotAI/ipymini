@@ -39,7 +39,7 @@ Key methods:
 - `complete(code, cursor_pos=None)`, `inspect(code, cursor_pos=None, detail_level=0)`, `is_complete(code)`, `history(...)`
 - `comm_info(target_name=None)`, `message(msg_type, content, buffers)` — comm discovery and inbound dispatch
 - `set_stream_sender(...)`, `set_display_sender(...)`
-- `execution_count`, `bind_kernel(kernel)` — kernmini contract members (`bind_kernel` sets `get_ipython().kernel` and binds the comm layer)
+- `bind_kernel(kernel)` — kernmini contract member (`bind_kernel` sets `get_ipython().kernel` and binds the comm layer)
 - `debug_request(request)` — DAP request handler
 
 ### `set_kernel`
