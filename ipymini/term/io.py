@@ -5,9 +5,7 @@ from typing import Callable
 
 import IPython
 from IPython.core import getipython as _getipython_mod
-
-
-class StdinNotImplementedError(RuntimeError): pass
+from IPython.core.error import StdinNotImplementedError
 
 class _ThreadLocalStream:
     def __init__(self, name: str, default): self.name, self.default = name, default
