@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.1.24
+
+### New Features
+
+- Use IPython StdinNotImplementedError instead of a local redefinition ([#51](https://github.com/AnswerDotAI/ipymini/issues/51))
+- Move `execution_count` ownership to caller: execute() accepts `execution_count` to set IPython counter, drop it from snapshot and shell property ([#50](https://github.com/AnswerDotAI/ipymini/issues/50))
+
+
 ## 0.1.23
 
 ### New Features
