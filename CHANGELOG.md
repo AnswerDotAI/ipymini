@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.25
+
+### New Features
+
+- Add schemas/call/eval kernel ops, completion ranks and signature help, filter debugger vars, use kernmini `user_code`, switch to setuptools ([#52](https://github.com/AnswerDotAI/ipymini/issues/52))
+
+
 ## 0.1.24
 
 ### New Features
