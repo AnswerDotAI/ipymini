@@ -35,7 +35,7 @@ MiniShell(
 Key methods:
 
 - `execution_context(allow_stdin, silent)` — binds per-request IO capture.
-- `execute(code, silent=False, store_history=True, user_expressions=None, allow_stdin=False)` — runs code and returns a snapshot dict.
+- `execute(code, silent=False, store_history=True, user_expressions=None, allow_stdin=False)` — runs code, or the kernel operation that the request's metadata names, and returns a snapshot dict.
 - `complete(code, cursor_pos=None)`, `inspect(code, cursor_pos=None, detail_level=0)`, `is_complete(code)`, `history(...)`
 - `comm_info(target_name=None)`, `message(msg_type, content, buffers)` — comm discovery and inbound dispatch
 - `set_stream_sender(...)`, `set_display_sender(...)`

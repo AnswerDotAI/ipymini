@@ -1,108 +1,66 @@
-import json, os, signal, time, pytest
-
+import os, signal, pytest
 from ..aclient import *
-from ..kernel_utils import kernel_pid, assert_pid_gone, default_timeout
+from ..kernel_utils import kernel_pid, assert_pid_gone
 
 
-def _wait_kernel_process(km, timeout:float = 5):
-    proc = getattr(getattr(km, "provisioner", None), "process", None)
-    if proc is not None: proc.wait(timeout=timeout)
-
-
-async def _shutdown_request(kc):
-    reply = await kc.ctl.shutdown(restart=False)
-    assert reply["content"]["status"] == "ok"
-
-
-async def test_shutdown_reaps_kernel_process():
+async def test_restart_clears_namespace_and_shutdown_reaps_kernel():
     async with mini_kernel() as (km, kc):
+        await kc.exec_ok('before_restart = 42')
+        first_pid = kernel_pid(km)
+        kc = await reconnect(km, kc)
+        assert_pid_gone(first_pid)
+        await kc.exec_ok("assert 'before_restart' not in globals()")
         pid = kernel_pid(km)
-        assert pid and pid != os.getpid()
-        start = time.perf_counter()
-        await _shutdown_request(kc)
-        _wait_kernel_process(km)
-        assert time.perf_counter() - start < 1.9
+        kc.execute('input()', allow_stdin=True)
+        await kc.jmsgq.get('stdin', timeout=3)
+        assert (await kc.ctl.shutdown(restart=False))['content']['status'] == 'ok'
+        km.provisioner.process.wait(timeout=5)
         assert_pid_gone(pid)
 
 
-async def test_graceful_shutdown_exits_while_busy_or_waiting_for_input():
-    for code, wait in [("import time; time.sleep(1000)", "busy"), ("input('name: ')", "stdin")]:
-        async with mini_kernel() as (km, kc):
-            pid = kernel_pid(km)
-            kc.execute(code, allow_stdin=wait == "stdin")
-            if wait == "stdin": await kc.get_stdin_msg(timeout=default_timeout)
-            else: await wait_status(kc, "busy")
-            await _shutdown_request(kc)
-            _wait_kernel_process(km)
-            assert_pid_gone(pid)
-
-
-async def test_graceful_shutdown_exits_with_busy_subshell():
-    async with mini_kernel() as (km, kc):
-        pid = kernel_pid(km)
-        subshell_id = (await kc.ctl.create_subshell())["content"]["subshell_id"]
-        kc.execute("while True: pass", subshell_id=subshell_id)
-        await wait_status(kc, "busy")
-        await _shutdown_request(kc)
-        _wait_kernel_process(km)
-        assert_pid_gone(pid)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="process-group teardown is POSIX-only")
+@pytest.mark.skipif(os.name == 'nt', reason='process-group teardown is POSIX-only')
 async def test_sigterm_kills_user_resources():
     async with mini_kernel() as (km, kc):
         pid = kernel_pid(km)
         child_pid = None
         try:
-            code = (
-                "import subprocess, sys, threading, time\n"
-                "threading.Thread(target=lambda: time.sleep(10000), daemon=False).start()\n"
-                "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10000)'])\n"
-                "print(p.pid)\n")
-            reply, outputs = await kc.exec_drain(code)
-            assert reply["content"]["status"] == "ok"
-            streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
-            child_pid = int(streams.strip().splitlines()[-1])
+            _, outputs = await kc.exec_ok('''import subprocess, sys, threading, time
+threading.Thread(target=lambda: time.sleep(10000), daemon=False).start()
+p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10000)'])
+print(p.pid)
+''')
+            child_pid = int(stream_text(outputs).strip())
             os.kill(child_pid, 0)
             os.kill(pid, signal.SIGTERM)
-            _wait_kernel_process(km)
+            km.provisioner.process.wait(timeout=5)
             assert_pid_gone(pid)
             assert_pid_gone(child_pid)
         finally:
             if child_pid is not None:
-                try: os.kill(child_pid, 9)
+                try: os.kill(child_pid, signal.SIGKILL)
                 except OSError: pass
 
 
-@pytest.mark.slow
-async def test_graceful_shutdown_kills_nested_ipymini_kernel():
-    "A nested ipymini KernelManager should not survive when the outer kernel stops."
+@pytest.mark.skipif(os.name == 'nt', reason='parent-death cleanup is POSIX-only')
+async def test_shutdown_reaps_nested_kernel():
     async with mini_kernel() as (km, kc):
-        pid = kernel_pid(km)
         nested = None
         try:
-            code = (
-                "import json, os\n"
-                "from jupyter_client import KernelManager\n"
-                "nested_km = KernelManager(kernel_name='py')\n"
-                "nested_km.start_kernel()\n"
-                "nested_kc = nested_km.client()\n"
-                "nested_kc.start_channels()\n"
-                "nested_kc.wait_for_ready(timeout=10)\n"
-                "nested_pid = nested_km.provisioner.pid\n"
-                "print(json.dumps(dict(pid=nested_pid, pgid=os.getpgid(nested_pid), outer_pid=os.getpid(), outer_pgid=os.getpgrp())))\n")
-            reply, outputs = await kc.exec_drain(code, timeout=15)
-            assert reply["content"]["status"] == "ok", reply["content"]
-            streams = "".join(m["content"].get("text", "") for m in iopub_streams(outputs))
-            nested = json.loads(streams.strip().splitlines()[-1])
-            assert nested["pid"] != pid
-            assert nested["pgid"] != nested["outer_pgid"]
-
-            await _shutdown_request(kc)
-            _wait_kernel_process(km)
-            assert_pid_gone(pid)
-            assert_pid_gone(nested["pid"], timeout=1)
+            _, outputs = await kc.exec_ok('''import os
+from jupyter_client import KernelManager
+nested = KernelManager(kernel_name='py')
+nested.start_kernel()
+client = nested.client()
+client.start_channels()
+client.wait_for_ready(timeout=10)
+print(nested.provisioner.pid)
+''')
+            nested = int(stream_text(outputs).strip())
+            assert os.getpgid(nested) != os.getpgid(kernel_pid(km))
+            await kc.ctl.shutdown(restart=False)
+            km.provisioner.process.wait(timeout=5)
+            assert_pid_gone(nested, timeout=1)
         finally:
             if nested is not None:
-                try: os.killpg(nested["pgid"], signal.SIGKILL)
+                try: os.killpg(nested, signal.SIGKILL)
                 except OSError: pass

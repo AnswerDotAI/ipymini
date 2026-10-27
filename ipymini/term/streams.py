@@ -30,20 +30,16 @@ class MiniStream:
         return total
 
     def flush(self):
-        "Flush buffered text to the sink."
-        if self.sink is None: return None
-        if self.buffer:
-            self.sink(self.name, "".join(self.buffer))
-            self.buffer = []
-        return None
+        "Empty the buffer, then send its text to the sink"
+        if self.sink is None or not self.buffer: return
+        text, self.buffer = "".join(self.buffer), []
+        self.sink(self.name, text)
 
     def isatty(self) -> bool: return False
 
     def _emit_live(self, text: str):
         self.buffer.append(text)
-        if text.endswith("\n"):
-            self.sink(self.name, "".join(self.buffer))
-            self.buffer = []
+        if text.endswith("\n"): self.flush()
 
 
 def coalesce_streams(events: list[dict]) -> list[dict]:

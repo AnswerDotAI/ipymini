@@ -1,19 +1,19 @@
-import json, os, time
-from contextlib import asynccontextmanager, contextmanager
+import os, time
+from contextlib import contextmanager
 from pathlib import Path
 from queue import Empty
-from jupyter_client import AsyncKernelClient, KernelClient, KernelManager
+from jupyter_client import KernelClient, KernelManager
 from fastcore.basics import nested_idx, patch
 from fastcore.meta import delegates
-from jupywire.ops import parent_id, iopub_msgs
+from jupywire.ops import parent_id
 from conkernelclient.ops import iter_timeout, iopub_streams  # importing is side-effect free (no Session patch)
 
 default_timeout = 10
 root = Path(__file__).resolve().parents[1]
 
-__all__ = ["default_timeout", "root", "build_env", "load_connection", "kernel_pid", "assert_pid_gone",
-    "ensure_separate_process", "vanilla_kernel", "vanilla_kernel_async", "wait_for_msg", "iter_timeout",
-    "parent_id", "wait_for_status", "iopub_msgs", "iopub_streams"]
+def stream_text(msgs, name=None)->str:
+    "The joined text of the stream messages in `msgs`, optionally only stream `name` ('stdout'/'stderr')"
+    return "".join(m["content"]["text"] for m in iopub_streams(msgs, name))
 
 
 def _ensure_jupyter_path()->str:
@@ -44,17 +44,9 @@ def wait_for_msg(get_msg, match, timeout:float|None=None, poll:float = 0.5, err:
     raise AssertionError(err)
 
 
-def load_connection(km)->dict:
-    with open(km.connection_file, encoding="utf-8") as f: return json.load(f)
-
-
 def kernel_pid(km)->int|None:
-    "Return the kernel process id when the provisioner exposes it."
-    provisioner = getattr(km, "provisioner", None)
-    pid = getattr(provisioner, "pid", None)
-    if pid is not None: return pid
-    proc = getattr(provisioner, "process", None)
-    return getattr(proc, "pid", None) if proc is not None else None
+    "The local kernel process id."
+    return km.provisioner.pid
 
 
 def assert_pid_gone(pid:int, timeout:float = 5):
@@ -67,50 +59,27 @@ def assert_pid_gone(pid:int, timeout:float = 5):
     raise AssertionError(f"kernel pid still alive: {pid}")
 
 
-def ensure_separate_process(km: KernelManager):
-    "Ensure separate process."
-    pid = kernel_pid(km)
-    if pid is None or pid == os.getpid(): raise RuntimeError("kernel must run in a separate process")
-
-
-
-
-# The vanilla jupyter_client harness below (starters and KernelClient helpers) exists for tests/compat and
-# raw-transport fixtures, where the unpatched client IS the subject. Everything else uses tests/aclient.py.
 @delegates(KernelManager.start_kernel, but="env")
 @contextmanager
-def vanilla_kernel(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
-    "Start a kernel with an *unpatched* jupyter_client client: for tests whose subject is the vanilla client shape (tests/compat, raw-transport fixtures)."
+def vanilla_manager(extra_env: dict|None=None, **kwargs):
+    "Start a kernel for an unpatched Jupyter client."
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     km = KernelManager(kernel_name="py")
     km.start_kernel(env=env, **kwargs)
-    ensure_separate_process(km)
-    kc = km.client()
-    kc.start_channels()
-    kc.wait_for_ready(timeout=ready_timeout or default_timeout)
-    try: yield km, kc
-    finally:
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)
+    try: yield km
+    finally: km.shutdown_kernel(now=True)
 
 
-@asynccontextmanager
-async def vanilla_kernel_async(extra_env: dict|None=None, ready_timeout: float|None=None, **kwargs):
-    "Async twin of `vanilla_kernel`."
-    env = build_env(extra_env)
-    os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
-    km = KernelManager(kernel_name="py")
-    km.start_kernel(env=env, **kwargs)
-    ensure_separate_process(km)
-    kc = AsyncKernelClient(**km.get_connection_info(session=True))
-    kc.parent = km
-    kc.start_channels()
-    await kc.wait_for_ready(timeout=ready_timeout or default_timeout)
-    try: yield km, kc
-    finally:
-        kc.stop_channels()
-        km.shutdown_kernel(now=True)
+@contextmanager
+def vanilla_kernel(extra_env=None):
+    "The synchronous client used by ordinary Jupyter applications."
+    with vanilla_manager(extra_env) as km:
+        kc = km.client()
+        kc.start_channels()
+        kc.wait_for_ready(timeout=default_timeout)
+        try: yield km, kc
+        finally: kc.stop_channels()
 
 
 @patch
@@ -152,25 +121,6 @@ def interrupt_request(self: KernelClient, timeout:float = 2)->dict:
         poll=0.2, err="missing interrupt_reply")
     assert reply["header"]["msg_type"] == "interrupt_reply"
     return reply
-
-
-@patch
-async def interrupt_request_async(self: AsyncKernelClient, timeout:float = 2)->dict:
-    "Send interrupt_request and return interrupt_reply (async)."
-    msg = self.session.msg("interrupt_request", {})
-    self.control_channel.send(msg)
-    for rem in iter_timeout(timeout, default=timeout):
-        try: reply = await self.control_channel.get_msg(timeout=min(timeout, rem))
-        except Empty: continue
-        if parent_id(reply) == msg["header"]["msg_id"]:
-            assert reply["header"]["msg_type"] == "interrupt_reply"
-            return reply
-    raise AssertionError("timeout waiting for interrupt_reply")
-
-
-
-
-
 
 
 def wait_for_status(kc, state:str, timeout:float|None=None)->dict:

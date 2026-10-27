@@ -14,7 +14,7 @@ The user-facing installation and kernelspec instructions are in `README.md`. Ker
 ## Source layout
 
 - `ipymini/kernel.py`: a shell factory passed to the synchronous Rust-backed `kernmini.run_kernel`.
-- `ipymini/shell/`: the IPython language adapter: execution, completion, inspection, history, comm binding, and debugging.
+- `ipymini/shell/`: the IPython language adapter: execution, kernel operations, completion, inspection, history, comm binding, and debugging.
 - `ipymini/term/`: Python stdout/stderr, input, display, and `get_ipython()` capture.
 - `ipymini/debug/`: DAP/debugpy integration and ipykernel-compatible cell filenames.
 - `ipymini/__main__.py`: CLI entry and kernelspec installation.
@@ -34,13 +34,29 @@ The Rust engine validates and queues the request, publishes `busy` and `execute_
 
 `MiniShell.execute` runs the cell through IPython's `run_cell_async`. Its execution context resets capture state and binds this shell's IPython instance, stdout, stderr, input, and display hooks. The display hook publishes each expression result through kernmini as it occurs, including multiple results with `ast_node_interactivity='all'`. The returned snapshot supplies errors, user expressions, and payload; kernmini publishes the reply before `idle`. Standalone shells without a bound kernel retain the last result in their snapshot.
 
-Synchronous Python records its thread ID while running. Async cells remain ordinary loopmini tasks. Kernmini uses those two facts to inject `KeyboardInterrupt` into synchronous Python or cancel an async task without allowing SIGINT to escape the host loop.
+Every shell enables fastcore's `enable_async_magics` when it's created, so IPython awaits a coroutine that a line or cell magic returns.
+
+A synchronous cell runs `run_cell` inside `kernmini.user_code()`. kernmini interrupts code there by raising `KeyboardInterrupt`. An interrupt cancels an async cell's task at its next `await`. ipymini reports the `CancelledError` as `KeyboardInterrupt`.
+
+## Kernel operations
+
+kernmini's `DEV.md` specifies three kernel operations: `schemas`, `call` and `eval`. A client sends one as an execute with empty `code` and names the operation in the execute's metadata. `MiniShell.execute` reads the metadata from `get_ipython().kernel.get_parent()` and runs the operation in place of the cell. `kernel_info()` lists the three operations in `supported_features`.
+
+`shell/ops.py` implements them with `fastcore.funccall`:
+
+- `schemas` builds each named tool's JSON schema with `get_schema_nm`. Names stay as written, such as `calc.add`.
+- `call` runs a tool with `call_func`, then awaits the result if it's awaitable. The tool's prints and displays go out as usual.
+- `eval` evaluates each expression in the user namespace, without awaiting, and returns one `user_expressions` record per expression.
+
+ipymini formats a `call` or `eval` result with IPython's display formatter, with two exceptions. A `str` is its own text rather than its repr. A `bytes` value that `fastcore.xtras.detect_mime` recognises, such as a PNG image or a PDF, becomes data of that MIME type. ipymini base64-encodes every `bytes` value in the bundle, such as a PIL image's `image/png`. It adds `full: true` to the metadata of a result whose class sets `full = True`, as fastcore's `Safe` and `PrettyString` and aidialog's `FullResponse` do. Clients don't truncate such results. Each `eval` record's metadata also gives the value's type name as `type`.
+
+Operations run their synchronous user code inside `kernmini.user_code()`. An interrupt stops a blocking tool there as it stops a synchronous cell.
 
 ## Output, input, and context
 
 `term/io.py` installs process-wide dispatchers for `sys.stdout`, `sys.stderr`, `input`, `getpass`, and `get_ipython`. Their targets come from execution ContextVars. `threading.Thread.start` and `ThreadPoolExecutor.submit` copy the current context, so output from user-created threads remains attributed to the cell that created them.
 
-`MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; bare-shell unit tests can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` publish rich displays and expression values. The display hook flushes pending stream text before publishing a result.
+`MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; standalone shells can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` publish rich displays and expression values. The display hook flushes pending stream text before publishing a result.
 
 The adapter's input callback crosses into Rust, which sends `input_request` to the correct client and blocks only the calling Python thread until `input_reply`. An interrupt completes the request with `KeyboardInterrupt`.
 
@@ -60,13 +76,19 @@ Kernmini also recognizes `priority` and `hold` execute metadata. These are Answe
 
 ## Completion, inspection, history, and configuration
 
-These delegate directly to IPython: `HistoryManager`, `object_inspect_mime`, the IPython completer, and the input transformer's completeness checker. `IPYMINI_USE_JEDI` overrides the completer's Jedi setting.
+These delegate to IPython: `HistoryManager`, `object_inspect_mime`, the IPython completer, and the input transformer's completeness checker. `IPYMINI_USE_JEDI` overrides the completer's Jedi setting.
+
+Completion adds a `rank` to each `_jupyter_types_experimental` item for clients to sort by: 1 for parameters, 2 for names defined in `__main__`, 3 for the rest, plus 0.1 for a private name. It leaves out dunder names unless the code contains `__`.
+
+Inspection adds signature help for the call at the cursor as `application/json`: the callable's label, type, module, docstring and parameters, and `idx`, the index of the argument being typed. `shell/sighelp.py` gets it from the live object, or from jedi for a call that the namespace can't resolve, such as one to a function defined in the same cell.
 
 A small `InteractiveShellApp` loads `ipython_kernel_config.py`, configured extensions, and `profile_default/startup/*.py` during first shell construction. `tests/kernel/test_ipython_startup_integration.py` covers both paths.
 
 ## Debugging
 
 `debug/dap.py` implements Python-specific Jupyter DAP requests in front of debugpy. Kernmini's Rust `DapClient` owns byte-framed TCP, request correlation, timeouts, events, and connection failure. ipymini owns debugpy startup, Python tracing, cell sources, variable inspection, and IPython integration.
+
+`inspectVariables` lists the user namespace without IPython's hidden names, such as `In` and `Out`, and without names that start with `_`. Each value is its `repr`, cut to 200 characters.
 
 `debug/cells.py` hashes cell source with the same Murmur2 algorithm and seed as ipykernel, allowing debugger frontends to map notebook cells to temporary Python files. `KERNMINI_CELL_NAME` overrides that filename.
 

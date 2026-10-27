@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ipymini"
@@ -10,9 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "comm>=0.2.3",
-  "fastcore>=2.2.16",
+  "fastcore>=2.2.34",
   "ipython>=8.18",
-  "kernmini>=0.1.19",
+  "kernmini>=0.1.23",
 ]
 
 [project.optional-dependencies]
@@ -35,11 +35,14 @@ dev = [
 [project.scripts]
 ipymini = "ipymini.__main__:main"
 
-[tool.hatch.version]
-path = "ipymini/__init__.py"
+[tool.setuptools.dynamic]
+version = { attr = "ipymini.__version__" }
 
-[tool.hatch.build.targets.wheel.shared-data]
-"share/jupyter/kernels/py/kernel.json" = "share/jupyter/kernels/py/kernel.json"
+[tool.setuptools.packages.find]
+include = ["ipymini", "ipymini.*"]
+
+[tool.setuptools.data-files]
+"share/jupyter/kernels/py" = ["share/jupyter/kernels/py/kernel.json"]
 
 [tool.chkstyle]
 skip-folder-re = "meta"

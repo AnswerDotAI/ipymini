@@ -1,10 +1,17 @@
 import logging, os, socket, sys, threading
 
 from fastcore.basics import nested_idx
+from fastcore.xtras import truncstr
 from IPython.core import getipython as _getipython_mod
 from kernmini._native import DapClient
 
 from .cells import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory
+
+
+def _safe_repr(o, max_len=200):
+    "`repr(o)`, truncated to `max_len` characters, or the error that `repr` raised"
+    try: return truncstr(repr(o), max_len)
+    except Exception as e: return f"<repr error: {e}>"
 
 log = logging.getLogger("ipymini.debug")
 
@@ -190,13 +197,11 @@ class Debugger:
         return self._fail(request, "source unavailable")
 
     def _inspect_variables(self, request: dict) -> dict:
-        "Return a variables response from the user namespace."
+        "Return a variables response from the user namespace, without IPython's hidden names or private names."
         ip = _getipython_mod.get_ipython()
         if ip is None: return self._fail(request, "no ipython", body={"variables": []})
-        variables = []
-        for name, value in ip.user_ns.items():
-            if name.startswith("__") and name.endswith("__"): continue
-            variables.append(dict(name=name, value=repr(value), type=type(value).__name__, evaluateName=name, variablesReference=0))
+        variables = [dict(name=k, value=_safe_repr(v), type=type(v).__name__, evaluateName=k, variablesReference=0)
+            for k, v in ip.user_ns.items() if not k.startswith("_") and k not in ip.user_ns_hidden]
         return self._ok(request, variables=variables)
 
     def _rich_inspect_variables(self, request: dict) -> dict:

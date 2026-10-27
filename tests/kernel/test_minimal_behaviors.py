@@ -1,67 +1,25 @@
-import time, zmq
+import zmq
 from jupyter_client.session import Session
-
-from ..aclient import *
 from ..kernel_utils import vanilla_kernel, iter_timeout
 
-def _shell_addr(conn: dict)->str:
-    transport = conn["transport"]
-    ip = conn["ip"]
-    port = conn["shell_port"]
-    return f"{transport}://{ip}:{port}"
+
+def _kernel_info(session, sock):
+    session.send(sock, 'kernel_info_request', {})
+    for _ in iter_timeout(1):
+        if not sock.poll(10): continue
+        _, message = session.recv(sock)
+        if message and message['msg_type'] == 'kernel_info_reply': return message
+    raise AssertionError('kernel_info reply missing after socket handover')
 
 
-def _send_kernel_info(session: Session, sock: zmq.Socket): session.send(sock, "kernel_info_request", {})
-
-
-def _recv_kernel_info(session: Session, sock: zmq.Socket, timeout:float)->dict|None:
-    for _ in iter_timeout(timeout, default=timeout):
-        if not sock.poll(50): continue
-        try: _, msg = session.recv(sock, mode=0)
-        except (ValueError, zmq.ZMQError): return None
-        if msg and msg.get("msg_type") == "kernel_info_reply": return msg
-    return None
-
-
-def test_router_handover_same_identity():
-    "Raw ZMQ DEALER-socket identity handover: transport-level, not kernel semantics, so left on the sync harness."
+def test_same_identity_router_handover():
     with vanilla_kernel() as (km, kc):
         kc.stop_channels()
-        ctx = zmq.Context()
-        sock1 = ctx.socket(zmq.DEALER)
-        sock2 = ctx.socket(zmq.DEALER)
-        sock1.linger = 0
-        sock2.linger = 0
-        identity = b"ipymini-handover"
-        sock1.setsockopt(zmq.IDENTITY, identity)
-        sock2.setsockopt(zmq.IDENTITY, identity)
-        try:
-            conn = km.get_connection_info(session=False)
-            key = conn["key"]
-            if isinstance(key, str): key = key.encode()
-            session = Session(key=key, signature_scheme=conn["signature_scheme"])
-            addr = _shell_addr(conn)
-            sock1.connect(addr)
-            time.sleep(0.05)
-
-            _send_kernel_info(session, sock1)
-            msg1 = _recv_kernel_info(session, sock1, timeout=0.5)
-            assert msg1 is not None, "no kernel_info_reply on initial socket"
-
-            sock2.connect(addr)
-            time.sleep(0.05)
-            _send_kernel_info(session, sock2)
-            msg2 = _recv_kernel_info(session, sock2, timeout=0.5)
-            assert msg2 is not None, "no kernel_info_reply on new socket"
-        finally:
-            sock1.close(0)
-            sock2.close(0)
-            ctx.term()
-
-
-async def test_uncollected_execute_requests_do_not_wedge_iopub():
-    async with mini_kernel() as (_, kc):
-        for _ in range(3):
-            for i in range(30): kc.execute(f"__u{i}={i}")
-            reply, _ = await kc.exec_drain("1+1", timeout=5)
-            assert reply["content"]["status"] == "ok", f"reply: {reply.get('content')}"
+        connection = km.get_connection_info()
+        session = Session(key=connection['key'], signature_scheme=connection['signature_scheme'])
+        with zmq.Context() as ctx, ctx.socket(zmq.DEALER) as first, ctx.socket(zmq.DEALER) as second:
+            for sock in (first, second):
+                sock.linger = 0
+                sock.setsockopt(zmq.IDENTITY, b'ipymini-handover')
+                sock.connect(f"{connection['transport']}://{connection['ip']}:{connection['shell_port']}")
+                assert _kernel_info(session, sock)['content']['implementation'] == 'ipymini'

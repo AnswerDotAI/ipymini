@@ -1,15 +1,4 @@
-"""Async test client helpers: ConKernelClient + conkernelclient.ops against an ipymini kernel.
-
-Migrated test modules use this instead of the sync helpers in `kernel_utils`. Async tests
-and fixtures run via pytest-asyncio in auto mode (see pytest.ini) on a module-scoped event
-loop - the client is bound to its loop, so the loop must live as long as the kernel
-connection, which is why `asyncio_default_fixture_loop_scope`/`asyncio_default_test_loop_scope`
-are both `module`. A shared kernel is just:
-
-    @pytest.fixture(scope="module")
-    async def kc():
-        async with mini_kernel() as (_, kc): yield kc
-"""
+"Async kernel stories use ConKernelClient; tests/compat keeps the unpatched Jupyter client."
 import asyncio, os
 from contextlib import asynccontextmanager
 from queue import Empty
@@ -19,11 +8,11 @@ from conkernelclient import reconnect as _reconnect
 from jupywire.ops import parent_id, iopub_msgs
 from conkernelclient.ops import iter_timeout, iopub_streams
 
-from .kernel_utils import build_env, ensure_separate_process
+from .kernel_utils import build_env, stream_text
 
-__all__ = ["mini_kernel", "clone", "wait_iopub", "wait_status", "aflush", "collect_iopub", "input_reply",
+__all__ = ["mini_kernel", "clone", "wait_iopub", "wait_status", "collect_iopub", "gather_outputs", "profile_env",
     "wait_debug_event", "wait_stop", "debug_init_args", "parent_id", "iter_timeout", "iopub_msgs",
-    "iopub_streams", "reconnect", "ConKernelClient", "ConKernelManager", "DeadKernelError"]
+    "iopub_streams", "stream_text", "reconnect"]
 
 debug_init_args = dict(clientID="test-client", clientName="testClient", adapterID="", pathFormat="path", linesStartAt1=True,
     columnsStartAt1=True, supportsVariableType=True, supportsVariablePaging=True, supportsRunInTerminalRequest=True, locale="en")
@@ -35,7 +24,6 @@ async def mini_kernel(extra_env=None, **kw):
     env = build_env(extra_env)
     os.environ["JUPYTER_PATH"] = env["JUPYTER_PATH"]
     async with run_kernel(kernel_name="py", env=env, **kw) as (km, kc):
-        ensure_separate_process(km)
         JmsgQueues(kc)
         yield km, kc
 
@@ -73,11 +61,6 @@ async def wait_status(kc, state, timeout=10):
         timeout, err=f"timeout waiting for status: {state}")
 
 
-async def aflush(kc, timeout=0.1):
-    "Discard pending iopub messages (for tests sharing a kernel)."
-    await kc.iopub_flush(timeout=timeout)
-
-
 async def collect_iopub(kc, msg_ids, timeout=10):
     "Collect iopub messages for several concurrent requests at once, until each has published idle. Returns {msg_id: [msgs]}."
     outputs = {m: [] for m in msg_ids}
@@ -93,9 +76,20 @@ async def collect_iopub(kc, msg_ids, timeout=10):
     return outputs
 
 
-async def input_reply(kc, value):
-    "Answer an input_request."
-    await kc.input_reply(value)
+async def gather_outputs(kc, *calls):
+    "Await concurrent replies and collect their corresponding output messages."
+    replies = await asyncio.gather(*calls)
+    outputs = await collect_iopub(kc, [parent_id(r) for r in replies])
+    return [(r, outputs[parent_id(r)]) for r in replies]
+
+
+def profile_env(path, config):
+    "Write an IPython profile and make modules beside it importable by the kernel."
+    ipdir = path/'ipython'
+    profile = ipdir/'profile_default'
+    profile.mkdir(parents=True)
+    (profile/'ipython_kernel_config.py').write_text(config)
+    return dict(IPYTHONDIR=str(ipdir), PYTHONPATH=f'{path}{os.pathsep}{build_env()["PYTHONPATH"]}')
 
 
 async def wait_debug_event(kc, event, timeout=10):
@@ -105,13 +99,5 @@ async def wait_debug_event(kc, event, timeout=10):
 
 
 async def wait_stop(kc, timeout=10):
-    "Wait for the debugger to stop at a breakpoint: the stopped debug_event, with a stackTrace fallback."
-    try: return await wait_debug_event(kc, "stopped", timeout=timeout/2)
-    except AssertionError:
-        last = None
-        for _ in iter_timeout(timeout):
-            reply = await kc.dap.stackTrace(threadId=1)
-            if reply.get("success"): return dict(content=dict(body=dict(reason="breakpoint", threadId=1)))
-            last = reply
-            await asyncio.sleep(0.1)
-        raise AssertionError(f"stopped debug_event not received: {last}")
+    "The debugger's actual stopped event."
+    return await wait_debug_event(kc, "stopped", timeout=timeout)

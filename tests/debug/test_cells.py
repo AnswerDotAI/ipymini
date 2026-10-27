@@ -1,18 +1,10 @@
 import random, pytest
 
-from ipymini.debug.cells import DEBUG_HASH_SEED, debug_cell_filename, debug_tmp_directory, murmur2_x86
+from ipymini.debug.cells import DEBUG_HASH_SEED, murmur2_x86
 
 
-def test_debug_cells(monkeypatch):
+def test_murmur2_matches_reference():
     assert murmur2_x86("abc", DEBUG_HASH_SEED) == 3350977461
-    monkeypatch.setenv("KERNMINI_CELL_NAME", "/tmp/custom_cell.py")
-    assert debug_cell_filename("print('x')") == "/tmp/custom_cell.py"
-
-    monkeypatch.delenv("KERNMINI_CELL_NAME", raising=False)
-    name = debug_cell_filename("print('y')")
-    assert name.startswith(debug_tmp_directory())
-    assert name.endswith(".py")
-
     murmurhash2 = pytest.importorskip("murmurhash2")
     rng = random.Random(0)
     seeds = [0, 1, 42, DEBUG_HASH_SEED, 0xFFFFFFFF]

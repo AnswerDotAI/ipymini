@@ -1,69 +1,49 @@
-import asyncio
 from ..aclient import *
-from ..kernel_utils import iopub_streams
-
-def _stream_text(outputs: list[dict])->str: return "".join(m["content"].get("text", "") for m in iopub_streams(outputs, "stdout"))
 
 
-async def test_thread_stdout_stays_with_launch_cell():
+async def test_background_output_keeps_its_execution_context():
     async with mini_kernel() as (_, kc):
-        code_launch = (
-            "import threading\n"
-            "thread_ready = threading.Event()\n"
-            "thread_go = threading.Event()\n"
-            "def _bg_worker():\n"
-            "    thread_ready.set()\n"
-            "    thread_go.wait(5)\n"
-            "    print('THREAD-LINE', flush=True)\n"
-            "bg = threading.Thread(target=_bg_worker)\n"
-            "bg.start()\n"
-            "thread_ready.wait(5)\n"
-            "print('CELL1-LINE', flush=True)\n")
-        code_next = "thread_go.set(); bg.join(timeout=5); print('CELL2-LINE', flush=True)"
-
-        c_launch = kc.reply(code_launch, timeout=10, store_history=False)
-        c_next = kc.reply(code_next, timeout=10, store_history=False)
-        reply_launch, reply_next = await asyncio.gather(c_launch, c_next)
-        mid_launch, mid_next = parent_id(reply_launch), parent_id(reply_next)
-
-        assert reply_launch["content"]["status"] == "ok"
-        assert reply_next["content"]["status"] == "ok"
-
-        outputs = await collect_iopub(kc, {mid_launch, mid_next})
-        launch_text = _stream_text(outputs[mid_launch])
-        next_text = _stream_text(outputs[mid_next])
-        assert "CELL1-LINE\n" in launch_text
-        assert "CELL2-LINE\n" in next_text
-        assert "THREAD-LINE\n" in launch_text
-        assert "THREAD-LINE\n" not in next_text
-
-        code_launch = (
-            "import threading\n"
-            "thread_ready = threading.Event()\n"
-            "thread_go = threading.Event()\n"
-            "class MyThread(threading.Thread):\n"
-            "    def run(self):\n"
-            "        thread_ready.set()\n"
-            "        thread_go.wait(5)\n"
-            "        print('THREAD-SUB-LINE', flush=True)\n"
-            "bg = MyThread()\n"
-            "bg.start()\n"
-            "thread_ready.wait(5)\n"
-            "print('CELL1-SUB-LINE', flush=True)\n")
-        code_next = "thread_go.set(); bg.join(timeout=5); print('CELL2-SUB-LINE', flush=True)"
-
-        c_launch = kc.reply(code_launch, timeout=10, store_history=False)
-        c_next = kc.reply(code_next, timeout=10, store_history=False)
-        reply_launch, reply_next = await asyncio.gather(c_launch, c_next)
-        mid_launch, mid_next = parent_id(reply_launch), parent_id(reply_next)
-
-        assert reply_launch["content"]["status"] == "ok"
-        assert reply_next["content"]["status"] == "ok"
-
-        outputs = await collect_iopub(kc, {mid_launch, mid_next})
-        launch_text = _stream_text(outputs[mid_launch])
-        next_text = _stream_text(outputs[mid_next])
-        assert "CELL1-SUB-LINE\n" in launch_text
-        assert "CELL2-SUB-LINE\n" in next_text
-        assert "THREAD-SUB-LINE\n" in launch_text
-        assert "THREAD-SUB-LINE\n" not in next_text
+        launch = '''import asyncio, threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
+tag = ContextVar('story-tag', default=None)
+token = tag.set('first')
+go = threading.Event()
+task_gate = asyncio.Event()
+async def later():
+    await task_gate.wait()
+    print('task-from-first-cell', flush=True)
+task = asyncio.create_task(later())
+def work():
+    go.wait(5)
+    assert tag.get() == 'first'
+    print('thread-from-first-cell', flush=True)
+class MyThread(threading.Thread):
+    def run(self): work()
+threads = [threading.Thread(target=work), MyThread()]
+for thread in threads: thread.start()
+pool = ThreadPoolExecutor(max_workers=1)
+pool.submit(lambda: None).result()
+tag.reset(token)
+print('first-cell', flush=True)
+'''
+        next_cell = '''go.set()
+for thread in threads: thread.join(timeout=5)
+task_gate.set()
+await task
+assert pool.submit(tag.get).result() is None
+token = tag.set('second')
+assert pool.submit(tag.get).result() == 'second'
+tag.reset(token)
+pool.submit(print, 'pool-from-second-cell').result()
+pool.shutdown()
+print('second-cell', flush=True)
+'''
+        first, second = await gather_outputs(kc, kc.reply(launch), kc.reply(next_cell))
+        assert first[0]['content']['status'] == second[0]['content']['status'] == 'ok'
+        first_text, second_text = (stream_text(out) for _, out in (first, second))
+        assert 'first-cell' in first_text and first_text.count('thread-from-first-cell') == 2
+        assert 'thread-from-first-cell' not in second_text
+        assert 'task-from-first-cell' in first_text and 'task-from-first-cell' not in second_text
+        assert 'pool-from-second-cell' in second_text and 'second-cell' in second_text
+        assert 'pool-from-second-cell' not in first_text

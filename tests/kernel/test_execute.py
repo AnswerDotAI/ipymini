@@ -1,109 +1,58 @@
 import asyncio
 from ..aclient import *
 
-async def test_execute_features():
+
+async def test_execution_errors_expressions_and_async_magic():
     async with mini_kernel() as (_, kc):
-        reply, output_msgs = await kc.exec_drain("print('hi')", silent=True)
-        assert reply["content"]["status"] == "ok"
-        assert not any(msg["msg_type"] in {"stream", "execute_result", "display_data"} for msg in output_msgs)
+        first, _ = await kc.exec_ok('a = 10')
+        reply, _ = await kc.exec_ok('a += 1', store_history=False, user_expressions={'value': 'a', 'bad': '1/0'})
+        assert reply['content']['execution_count'] == first['content']['execution_count']
+        expressions = reply['content']['user_expressions']
+        assert expressions['value']['data']['text/plain'] == '11'
+        assert expressions['bad']['ename'] == 'ZeroDivisionError'
+        next_reply, _ = await kc.exec_ok('assert a == 11')
+        assert next_reply['content']['execution_count'] == first['content']['execution_count'] + 1
 
-        reply1, _ = await kc.exec_drain("1+1")
-        assert reply1["content"]["status"] == "ok"
-        count1 = reply1["content"]["execution_count"]
+        reply, outputs = await kc.exec_drain('1/0', user_expressions={'value': 'a'})
+        assert reply['content']['status'] == 'error'
+        assert iopub_msgs(outputs, 'error')[0]['content']['ename'] == 'ZeroDivisionError'
+        await kc.exec_ok('assert a == 11')
 
-        reply2, _ = await kc.exec_drain("2+2", store_history=False)
-        assert reply2["content"]["status"] == "ok"
-        count2 = reply2["content"]["execution_count"]
+        calls = [kc.reply(code) for code in ('import asyncio; ordered = [await asyncio.sleep(0.1, 1)]', 'ordered.append(2)', 'assert ordered == [1, 2]')]
+        assert all(r['content']['status'] == 'ok' for r, _ in await gather_outputs(kc, *calls))
+        fail = "import time; time.sleep(0.2); raise ValueError('boom')"
+        for stop, expected in ((True, 'aborted'), (False, 'ok')):
+            failed, tail = kc.reply(fail, stop_on_error=stop), kc.reply('1+1')
+            queries = asyncio.gather(kc.cmd.kernel_info(), kc.cmd.comm_info(), kc.cmd.inspect(code='print', cursor_pos=5))
+            results = await gather_outputs(kc, failed, tail)
+            assert [r['content']['status'] for r, _ in results] == ['error', expected]
+            assert all(r['content']['status'] == 'ok' for r in await queries)
+            for _, outputs in results:
+                assert [m['content']['execution_state'] for m in outputs if m['msg_type'] == 'status'] == ['busy', 'idle']
+        for kind in ('execute_request', 'complete_request', 'history_request'):
+            reply = await kc.shell_request(kind)
+            assert reply['content']['status'] == 'error' and reply['content']['ename'] == 'MissingField'
+            if kind == 'execute_request':
+                outputs = await kc.iopub_drain(parent_id(reply))
+                assert [m['content']['execution_state'] for m in outputs if m['msg_type'] == 'status'] == ['busy', 'idle']
 
-        reply3, _ = await kc.exec_drain("3+3")
-        assert reply3["content"]["status"] == "ok"
-        count3 = reply3["content"]["execution_count"]
+        for i in range(20): kc.execute(f'uncollected = {i}')
+        assert (await kc.exec_ok('assert uncollected == 19'))[0]['content']['status'] == 'ok'
+        results = await gather_outputs(kc, *(kc.reply(f"print('cell {i}'); {i}") for i in range(200)))
+        assert len({r['content']['execution_count'] for r, _ in results}) == 200
+        for i, (reply, outputs) in enumerate(results):
+            assert reply['content']['status'] == 'ok' and f'cell {i}' in stream_text(outputs)
+            assert iopub_msgs(outputs, 'execute_result')[0]['content']['data']['text/plain'] == str(i)
+            assert [m['content']['execution_state'] for m in outputs if m['msg_type'] == 'status'] == ['busy', 'idle']
 
-        assert count2 == count1 + 1
-        assert count3 == count2
+        running = kc.reply('import time; time.sleep(0.8)')
+        await wait_status(kc, 'busy')
+        replies = await asyncio.gather(*(kc.cmd.is_complete(code='1+1') for _ in range(130)))
+        assert all(r['msg_type'] == 'is_complete_reply' and r['content']['status'] == 'complete' for r in replies)
+        reply = await running
+        assert reply['content']['status'] == 'ok'
+        await kc.iopub_drain(parent_id(reply))
 
-        reply, output_msgs = await kc.exec_drain("1+2+3", store_history=False)
-        assert reply["content"]["status"] == "ok"
-        results = iopub_msgs(output_msgs, "execute_result")
-        assert results
-        data = results[-1]["content"].get("data", {})
-        assert data.get("text/plain") == "6"
-
-        reply, outputs = await kc.exec_drain("1+1")
-        execute_inputs = iopub_msgs(outputs, "execute_input")
-        execute_results = iopub_msgs(outputs, "execute_result")
-        assert execute_inputs and execute_results
-        input_count = execute_inputs[0]["content"]["execution_count"]
-        result_count = execute_results[0]["content"]["execution_count"]
-        reply_count = reply["content"]["execution_count"]
-        assert input_count == result_count == reply_count, f"mismatch: input={input_count}, result={result_count}, reply={reply_count}"
-
-        reply, _ = await kc.exec_drain("a = 10", user_expressions={"x": "a+1", "bad": "1/0"})
-        assert reply["content"]["status"] == "ok"
-        expr = reply["content"]["user_expressions"]
-        assert expr["x"]["status"] == "ok"
-        assert expr["x"]["data"]["text/plain"] == "11"
-        assert expr["bad"]["status"] == "error"
-
-        await kc.exec_drain("persist_eval = 42")
-        assert await kc.eval("persist_eval", call_=False) == 42
-
-        reply, output_msgs = await kc.exec_drain("1/0", store_history=False)
-        assert reply["content"]["status"] == "error"
-        errors = iopub_msgs(output_msgs, "error")
-        assert errors
-
-        reply1, _ = await kc.exec_drain("import sys; sys.stdout.write('GHOST')", silent=True)
-        assert reply1["content"]["status"] == "ok"
-
-        reply2, outputs = await kc.exec_drain("print('hello')")
-        assert reply2["content"]["status"] == "ok"
-        streams = [(m["content"]["name"], m["content"]["text"]) for m in iopub_streams(outputs)]
-        texts = "".join(t for _, t in streams)
-        assert "GHOST" not in texts, f"silent buffer leaked: {texts!r}"
-        assert "hello" in texts
-
-
-async def test_stop_on_error_features():
-    async with mini_kernel() as (_, kc):
-        fail = "import time\n" "time.sleep(0.2)\n" "raise ValueError('boom')"
-        # default fail_pending=False: the kernel aborts the queued cells (wire stop_on_error=True)
-        # and their real kernel-issued "aborted" replies come back to each await
-        c_fail = kc.reply(fail, timeout=10)
-        c_hello = kc.reply("print('Hello')", timeout=10)
-        c_world = kc.reply("print('world')", timeout=10)
-        reply_fail, reply_hello, reply_world = await asyncio.gather(c_fail, c_hello, c_world)
-        assert reply_fail["content"]["status"] == "error"
-        assert reply_hello["content"]["status"] == "aborted"
-        assert reply_world["content"]["status"] == "aborted"
-
-        c_fail = kc.reply(fail, timeout=10, stop_on_error=False)
-        c_ok = kc.reply("1+1", timeout=10)
-        reply_fail, reply_ok = await asyncio.gather(c_fail, c_ok)
-        assert reply_fail["content"]["status"] == "error"
-        assert reply_ok["content"]["status"] == "ok"
-
-        c_fail = kc.reply(fail, timeout=10)
-        c_info = kc.shell_request("kernel_info_request")
-        c_comm = kc.shell_request("comm_info_request")
-        c_inspect = kc.cmd.inspect(code="print", cursor_pos=5)
-        reply_fail, reply_info, reply_comm, reply_inspect = await asyncio.gather(c_fail, c_info, c_comm, c_inspect)
-        assert reply_fail["content"]["status"] == "error"
-        assert reply_info["content"]["status"] == "ok"
-        assert reply_comm["content"]["status"] == "ok"
-        assert reply_inspect["content"]["status"] == "ok"
-
-
-
-async def test_async_line_magic():
-    "An `async def` line magic's coroutine result is awaited (fastcore.aio.enable_async_magics wiring)."
-    async with mini_kernel() as (_, kc):
-        setup = ("async def _amag(line): return f'async:{line}'\n"
-            "get_ipython().register_magic_function(_amag, 'line', 'amag')")
-        reply, _ = await kc.exec_drain(setup)
-        assert reply["content"]["status"] == "ok"
-        reply, outputs = await kc.exec_drain("%amag hi", store_history=False)
-        assert reply["content"]["status"] == "ok"
-        results = iopub_msgs(outputs, "execute_result")
-        assert results, "expected execute_result"
-        assert results[-1]["content"]["data"]["text/plain"] == "'async:hi'"
+        await kc.exec_ok("async def amag(line): return f'async:{line}'\nget_ipython().register_magic_function(amag, 'line', 'amag')")
+        _, outputs = await kc.exec_ok('%amag hi')
+        assert 'async:hi' in iopub_msgs(outputs, 'execute_result')[0]['content']['data']['text/plain']

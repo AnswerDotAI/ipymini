@@ -1,4 +1,4 @@
-import asyncio, json, logging, os, sys, threading, traceback
+import asyncio, json, logging, os, sys, threading, traceback, warnings
 from importlib.metadata import PackageNotFoundError, version
 from contextlib import contextmanager
 from typing import Callable
@@ -10,15 +10,19 @@ from fastcore.basics import str2bool
 from fastcore.aio import enable_async_magics
 from IPython.core.async_helpers import _asyncio_runner
 from IPython.core.application import BaseIPythonApplication
-from IPython.core.completer import provisionalcompleter as _provisionalcompleter
+from IPython.core.completer import ProvisionalCompleterWarning
 from IPython.core.completer import rectify_completions as _rectify_completions
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.shellapp import InteractiveShellApp
+from IPython.utils.tokenutil import token_at_cursor
+from kernmini import user_code
 
 
 from ..debug.cells import debug_cell_filename
 from ipymini.debug import Debugger
 from .comms import get_comm_manager, set_kernel
+from .ops import ops, run_op
+from .sighelp import sig_help
 from ipymini.term import IPythonCapture
 
 _debug = os.environ.get("KERNMINI_DEBUG", "").lower() in ("1", "true", "yes")
@@ -33,6 +37,12 @@ experimental_completions_key = "_jupyter_types_experimental"
 log = logging.getLogger("ipymini.startup")
 startup_done = False
 startup_lock = threading.Lock()
+
+
+def _rank(c, ns):
+    "Sort key for completion `c`: parameters, then names defined in `__main__`, then the rest, with private names last in each group"
+    r = 1 if c.type == "param" else 2 if getattr(ns.get(c.text), "__module__", None) == "__main__" else 3
+    return r + 0.1 if c.text.startswith("_") else r
 
 
 def _maybe_json(value):
@@ -102,13 +112,14 @@ class MiniShell:
         enable_async_magics(self.ipy)
         use_jedi = _env_flag("IPYMINI_USE_JEDI")
         if use_jedi is not None: self.ipy.Completer.use_jedi = use_jedi
+        # IPython's `provisionalcompleter()` swaps the process's warning filters. Completions on two subshell threads would race.
+        warnings.filterwarnings("ignore", category=ProvisionalCompleterWarning)
 
         def _code_name(raw_code: str, transformed_code: str, number: int) -> str: return debug_cell_filename(raw_code)
 
         self.ipy.compile.get_code_name = _code_name
         self.request_input = request_input
         self.capture = IPythonCapture(self.ipy, request_input=request_input)
-        self._sync_thread_id = None
 
         self.ipy.set_hook("show_in_pager", page.as_hook(self._show_in_pager), 99)
         self.ipy._last_traceback = None
@@ -128,12 +139,6 @@ class MiniShell:
         kernel_modules = [module.__file__ for module in sys.modules.values() if getattr(module, "__file__", None)]
         self.debugger = Debugger(debug_event_callback, kernel_modules=kernel_modules,
             debug_just_my_code=False, filter_internal_frames=True)
-
-    @contextmanager
-    def _sync_execution(self):
-        self._sync_thread_id = threading.get_ident()
-        try: yield
-        finally: self._sync_thread_id = None
 
     @contextmanager
     def execution_context(self, *, allow_stdin: bool, silent: bool):
@@ -159,9 +164,6 @@ class MiniShell:
 
     async def _run_cell(self, code: str, silent: bool, store_history: bool):
         shell = self.ipy
-        if not (hasattr(shell, "run_cell_async") and hasattr(shell, "should_run_async")):
-            _dbg("_run_cell: using sync run_cell")
-            return shell.run_cell(code, store_history=store_history, silent=silent)
         try:
             transformed = shell.transform_cell(code)
             exc_tuple = None
@@ -184,24 +186,35 @@ class MiniShell:
                 if not silent: shell.events.trigger("post_run_cell", res)
             _dbg("_run_cell: async task done")
             return res
-        with self._sync_execution(): return shell.run_cell(code, store_history=store_history, silent=silent)
+        with user_code(): return shell.run_cell(code, store_history=store_history, silent=silent)
 
     def _exc_to_error(self, exc: BaseException) -> dict:
         tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
         return dict(ename=type(exc).__name__, evalue=str(exc), traceback=tb)
 
+    def _op(self):
+        "The operation in this execute's metadata, as `(name, params)`, or None for ordinary code"
+        kernel = getattr(self.ipy, "kernel", None)
+        md = kernel.get_parent().get("metadata", {}) if kernel else {}
+        return next(((k, md[k]) for k in ops if k in md), None)
+
+    async def _run_op(self, name, params):
+        "Run operation `name`, publishing its result as this execute's `execute_result`"
+        if (res := await run_op(self.ipy, name, params)) is None: return
+        self.ipy.displayhook.last_execution_count = self.ipy.execution_count
+        self.ipy.displayhook.write_format_data(*res)
+
     async def execute(self, code: str, silent: bool = False, store_history: bool = True, user_expressions=None,
         allow_stdin: bool = False, execution_count: int | None = None) -> dict:
-        "Execute `code` in IPython and return captured outputs/errors (never raises). `execution_count` sets IPython's counter for this cell."
+        "Execute `code` in IPython and return captured outputs/errors (never raises). `execution_count` sets IPython's counter for this cell. An operation in the request's metadata runs instead of `code`."
         _dbg(f"execute start: {code[:30]!r}...")
         result = None
         raised = None
         if execution_count is not None: self.ipy.execution_count = execution_count
         try:
             self.debugger.trace_current_thread()
-            _dbg("execute: calling _run_cell")
-            result = await self._run_cell(code, silent=silent, store_history=store_history)
-            _dbg("execute: _run_cell done")
+            if op := self._op(): await self._run_op(*op)
+            else: result = await self._run_cell(code, silent=silent, store_history=store_history)
         # Only execution-level errors become execute_reply errors; process/task lifecycle BaseExceptions should propagate.
         except KeyboardInterrupt as exc:
             _dbg(f"execute: exception {type(exc).__name__}: {exc}")
@@ -231,11 +244,11 @@ class MiniShell:
         return dict(**snapshot, error=error, user_expressions=user_expr, payload=payload)
 
     def kernel_info(self) -> dict:
-        "ipymini's contribution to kernel_info_reply: implementation identity and Python language_info."
+        "ipymini's contribution to kernel_info_reply: implementation identity, supported operations and Python language_info."
         try: impl_version = version("ipymini")
         except PackageNotFoundError: impl_version = "0.0.0+local"
         pyver = ".".join(str(x) for x in sys.version_info[:3])
-        return dict(implementation="ipymini", implementation_version=impl_version, banner="ipymini",
+        return dict(implementation="ipymini", implementation_version=impl_version, banner="ipymini", supported_features=list(ops),
             language_info=dict(name="python", version=pyver, mimetype="text/x-python", file_extension=".py",
                 pygments_lexer="python", codemirror_mode={"name": "ipython", "version": 3}, nbconvert_exporter="python"))
 
@@ -269,32 +282,27 @@ class MiniShell:
         self.capture.set_input_sender(sender)
 
     def complete(self, code: str, cursor_pos: int | None = None) -> dict:
-        "Return completion matches for `code` at `cursor_pos`."
+        "Return completion matches for `code` at `cursor_pos`. Each experimental completion has a `rank` to sort by."
         if cursor_pos is None: cursor_pos = len(code)
-        with _provisionalcompleter(): completions = list(_rectify_completions(code, self.ipy.Completer.completions(code, cursor_pos)))
-        if completions:
-            cursor_start = completions[0].start
-            cursor_end = completions[0].end
-            matches = [c.text for c in completions]
-        else:
-            cursor_start = cursor_pos
-            cursor_end = cursor_pos
-            matches = []
-        exp = [dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature) for c in completions]
-        return dict(matches=matches, cursor_start=cursor_start, cursor_end=cursor_end,
+        completions = [c for c in _rectify_completions(code, self.ipy.Completer.completions(code, cursor_pos))
+            if not c.text.startswith("__") or "__" in code]
+        start, end = (completions[0].start, completions[0].end) if completions else (cursor_pos, cursor_pos)
+        exp = [dict(start=c.start, end=c.end, text=c.text, type=c.type, signature=c.signature, rank=_rank(c, self.ipy.user_ns))
+            for c in completions]
+        return dict(matches=[c.text for c in completions], cursor_start=start, cursor_end=end,
             metadata={experimental_completions_key: exp}, status="ok")
 
     def inspect(self, code: str, cursor_pos: int | None = None, detail_level: int = 0) -> dict:
-        "Return inspection data for `code` at `cursor_pos`."
+        "Return IPython's inspection bundle for the name at `cursor_pos`, plus signature help as `application/json`."
         if cursor_pos is None: cursor_pos = len(code)
-        from IPython.utils.tokenutil import token_at_cursor
-
         name = token_at_cursor(code, cursor_pos)
-        if not name: return dict(status="ok", found=False, data={}, metadata={})
-        try: bundle = self.ipy.object_inspect_mime(name, detail_level=detail_level)
-        except KeyError: return dict(status="ok", found=False, data={}, metadata={})  # unknown name: a normal reply, as ipykernel
+        try: bundle = self.ipy.object_inspect_mime(name, detail_level=detail_level) if name else {}
+        except KeyError: bundle = {}  # unknown name: a normal reply, as ipykernel
         if not self.ipy.enable_html_pager: bundle.pop("text/html", None)
-        return dict(status="ok", found=True, data=bundle, metadata={})
+        if sigs := sig_help(self.ipy, code, cursor_pos):
+            bundle["application/json"] = sigs
+            bundle.setdefault("text/plain", "\n".join(s["label"] for s in sigs))
+        return dict(status="ok", found=bool(bundle), data=bundle, metadata={})
 
     def is_complete(self, code: str) -> dict:
         "Report completeness status and indentation for `code`."

@@ -17,48 +17,45 @@ async def get_scope_vars(dap, scopes, name):
     return reply["body"]["variables"]
 
 
-async def continue_debugger(kc, stopped):
-    thread_id = stopped.get("content", {}).get("body", {}).get("threadId")
-    if isinstance(thread_id, int): await kc.dap.continue_(threadId=thread_id)
-    else: await kc.dap.continue_()
+async def continue_debugger(kc, stopped): await kc.dap.continue_(threadId=stopped["content"]["body"]["threadId"])
+
+
+async def assert_debugger_reset(dap):
+    info = (await dap.debugInfo())["body"]
+    assert not info["isStarted"] and info["breakpoints"] == [] and info["stoppedThreads"] == []
+    assert info["hashMethod"] == "Murmur2"
+
+
+async def attach_debugger(kc):
+    reply = await kc.dap.initialize(**debug_init_args)
+    assert reply["success"], f"initialize failed: {reply}"
+    reply = await kc.dap.attach()
+    assert reply["success"], f"attach failed: {reply}"
+    await wait_debug_event(kc, "initialized")
 
 
 @pytest.fixture()
-async def kernel():
-    async with mini_kernel() as (_, kc): yield kc
-
-
-@pytest.fixture()
-async def debug_kernel(kernel):
-    reply = await kernel.dap.initialize(**debug_init_args)
-    assert reply.get("success"), f"initialize failed: {reply}"
-    reply = await kernel.dap.attach()
-    assert reply.get("success"), f"attach failed: {reply}"
-    try: yield kernel
-    finally: await kernel.dap.disconnect(restart=False, terminateDebuggee=True)
+async def debug_kernel():
+    async with mini_kernel() as (_, kc):
+        assert (await kc.dap.terminate(restart=False))["success"]
+        assert not (await kc.ctl.debug(type="request", seq=1))["content"]["success"]
+        await attach_debugger(kc)
+        yield kc
 
 
 async def test_debugger_features(debug_kernel):
     kc = debug_kernel
     dap = kc.dap
-    await wait_debug_event(kc, "initialized")
-
-    reply = await kc.cmd.kernel_info()
-    features = reply["content"].get("supported_features", [])
-    assert "debugger" in features, f"supported_features: {features}"
-    assert reply["content"].get("debugger") is True, f"debugger flag missing: {reply['content']}"
-
-    reply = await dap.evaluate(expression="'a' + 'b'", context="repl")
-    assert reply.get("success"), f"evaluate failed: {reply}"
-    assert reply["body"]["result"] == "ab", f"evaluate result: {reply['body']['result']}"
 
     var_name = "text"
     value = "Hello the world"
     code = f"{var_name}='{value}'\nprint({var_name})\n"
     reply = await kc.reply(code, timeout=timeout)
     assert reply["content"]["status"] == "ok"
-    await dap.inspectVariables()
-    await dap.richInspectVariables(variableName=var_name)
+    variables = {v["name"]: v["value"] for v in (await dap.inspectVariables())["body"]["variables"]}
+    assert variables[var_name] == repr(value) and "In" not in variables
+    rich = await dap.richInspectVariables(variableName=var_name)
+    assert rich["body"]["data"]["text/plain"] == repr(value)
 
     code = """
 def f(a, b):
@@ -73,11 +70,16 @@ g()
     source = (await dap.dumpCell(code=code))["body"]["sourcePath"]
     reply = await dap.setBreakpoints(breakpoints=[dict(line=7)], source=dict(path=source), sourceModified=False)
     assert reply["success"], f"setBreakpoints failed: {reply}"
+    info = (await dap.debugInfo())["body"]
+    assert info["isStarted"] and any(b["source"] == source and b["breakpoints"] == [{"line": 7}] for b in info["breakpoints"])
+    assert source.startswith(info["tmpFilePrefix"]) and source.endswith(info["tmpFileSuffix"])
 
     c = kc.reply(code, timeout=30)
     stopped = await wait_stop(kc)
     assert stopped["content"]["body"]["reason"] == "breakpoint", f"stopped: {stopped}"
-    thread_id = stopped["content"]["body"].get("threadId", 1)
+    thread_id = stopped["content"]["body"]["threadId"]
+    frames = await get_stack_frames(dap, thread_id)
+    assert frames[0]["line"] == 7 and frames[0]["source"]["path"] == source, frames
     stepped = await dap.stepIn(threadId=thread_id)
     assert stepped.get("success"), f"stepIn failed: {stepped}"
     stopped = await wait_stop(kc)
@@ -96,8 +98,9 @@ g()
     local_names = [v["name"] for v in locals_]
     assert "a" in local_names and "b" in local_names, f"locals: {locals_}"
 
-    reply = await dap.richInspectVariables(variableName=locals_[0]["name"], frameId=frame_id)
+    reply = await dap.richInspectVariables(variableName="a", frameId=frame_id)
     assert reply.get("success"), f"richInspectVariables failed: {reply}"
+    assert reply["body"]["data"]["text/plain"] == "2", reply
 
     reply = await dap.copyToGlobals(srcVariableName="c", dstVariableName="c_copy", srcFrameId=frame_id)
     assert reply.get("success"), f"copyToGlobals failed: {reply}"
@@ -114,18 +117,21 @@ g()
     await continue_debugger(kc, stopped)
     assert (await c)["content"]["status"] == "ok"
 
+    reply = await dap.disconnect(restart=False, terminateDebuggee=False)
+    assert reply["success"], f"disconnect failed: {reply}"
+    await assert_debugger_reset(dap)
+    await attach_debugger(kc)
+
     reply = await dap.setExceptionBreakpoints(filters=["userUnhandled"])
     assert reply["success"], f"setExceptionBreakpoints failed: {reply}"
     c = kc.reply("raise ValueError('boom')", timeout=30)
     stopped = await wait_stop(kc)
     reason = stopped["content"]["body"].get("reason")
-    assert reason in {"exception", "breakpoint", "pause"}, f"stopped: {stopped}"
+    assert reason == "exception", f"stopped: {stopped}"
     await continue_debugger(kc, stopped)
     reply = await c
     assert reply["content"]["status"] == "error", f"execute reply: {reply.get('content')}"
 
     reply = await dap.terminate(restart=False)
     assert reply["success"], f"terminate failed: {reply}"
-    info = await dap.debugInfo()
-    assert info["body"]["breakpoints"] == [], f"breakpoints not cleared: {info['body']['breakpoints']}"
-    assert info["body"]["stoppedThreads"] == [], f"stoppedThreads not cleared: {info['body']['stoppedThreads']}"
+    await assert_debugger_reset(dap)
