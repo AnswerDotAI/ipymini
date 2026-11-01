@@ -58,6 +58,10 @@ Operations run their synchronous user code inside `kernmini.user_code()`. An int
 
 `MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; standalone shells can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` publish rich displays and expression values. The display hook flushes pending stream text before publishing a result.
 
+Expression results, `display(obj)` and display updates carry `full: true` in their output metadata when `obj.full` is truthy. This includes `doc()` results, which are fastcore `PrettyString` values. The formatter retains the object's MIME data and other metadata. Plain values keep their existing metadata.
+
+`term.display.enable_full_metadata` installs this formatter hook once. Clikernel's Python startup uses the same hook for ordinary ipykernel.
+
 The adapter's input callback crosses into Rust, which sends `input_request` to the correct client and blocks only the calling Python thread until `input_reply`. An interrupt completes the request with `KeyboardInterrupt`.
 
 ## Concurrent execution

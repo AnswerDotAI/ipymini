@@ -7,7 +7,8 @@ async def test_rich_output_and_payloads(tmp_path):
     env['KERNMINI_IOPUB_QMAX'] = '1'
     async with mini_kernel(extra_env=env) as (_, kc):
         await kc.exec_ok("from IPython.display import display, HTML, clear_output\nget_ipython().ast_node_interactivity = 'all'")
-        code = '''1+1
+        code = '''from fastcore.basics import PrettyString
+PrettyString(str(1+1))
 None
 def f(): ...
 display(HTML('<b>hello</b>'))
@@ -18,6 +19,7 @@ print('out', end='')
         assert kinds == ['execute_input', 'execute_result', 'display_data', 'stream', 'execute_result']
         results = iopub_msgs(outputs, 'execute_result')
         assert [m['content']['data']['text/plain'] for m in results] == ['2', '1']
+        assert [m['content']['metadata'].get('full', False) for m in results] == [True, False]
         assert all(m['content']['execution_count'] == reply['content']['execution_count'] for m in results)
         assert 'hello' in iopub_msgs(outputs, 'display_data')[0]['content']['data']['text/html']
         assert stream_text(outputs) == 'out'
@@ -31,11 +33,12 @@ print('out', end='')
         _, outputs = await kc.exec_ok("print('next cell')")
         assert 'next cell' in stream_text(outputs) and 'GHOST' not in stream_text(outputs)
 
-        _, outputs = await kc.exec_ok("clear_output(wait=True)\nh = display('first', display_id=True)\nh.update('second')")
+        _, outputs = await kc.exec_ok("clear_output(wait=True)\nh = display(PrettyString('first'), display_id=True)\nh.update(PrettyString('second'))")
         assert iopub_msgs(outputs, 'clear_output')[0]['content']['wait']
         first = iopub_msgs(outputs, 'display_data')[0]['content']
         second = iopub_msgs(outputs, 'update_display_data')[0]['content']
         assert first['transient']['display_id'] == second['transient']['display_id']
+        assert first['metadata']['full'] and second['metadata']['full']
         assert 'second' in second['data']['text/plain']
         code = "display({'text/latex': r'\\frac{1}{2}'}, raw=True, metadata={'foo': 'bar'}, transient={'display_id': 'xyz'})"
         _, outputs = await kc.exec_ok(code)

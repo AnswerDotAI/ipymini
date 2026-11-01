@@ -4,6 +4,21 @@ from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
 
 
+def full_metadata(obj, metadata):
+    return {**metadata, "full": True} if getattr(obj, "full", False) else metadata
+
+
+def enable_full_metadata(formatter):
+    "Preserve `obj.full` in IPython expression and display metadata."
+    format_obj = formatter.format
+    if getattr(format_obj, '_full_metadata', False): return
+    def format_full(obj, include=None, exclude=None):
+        data, metadata = format_obj(obj, include=include, exclude=exclude)
+        return data, full_metadata(obj, metadata)
+    format_full._full_metadata = True
+    formatter.format = format_full
+
+
 class MiniDisplayPublisher(DisplayPublisher):
     def __init__(self, sender=None, live_var=None):
         "Collect display_pub events for IOPub."

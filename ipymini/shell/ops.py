@@ -7,6 +7,8 @@ from fastcore.funccall import call_func, get_schema_nm
 from fastcore.xtras import detect_mime
 from kernmini import user_code
 
+from ..term.display import full_metadata
+
 ops = ("schemas", "call", "eval")
 
 
@@ -16,8 +18,7 @@ def fmt_result(ipy, obj):
     elif isinstance(obj, bytes) and (mime := detect_mime(obj)): data, md = {mime: obj}, {}
     else: data, md = ipy.display_formatter.format(obj)
     data = {k: b2a_base64(v, newline=False).decode() if isinstance(v, bytes) else v for k, v in data.items()}
-    if getattr(obj, "full", False): md = {**md, "full": True}
-    return data, md
+    return data, full_metadata(obj, md)
 
 
 def _schema(ns, name):

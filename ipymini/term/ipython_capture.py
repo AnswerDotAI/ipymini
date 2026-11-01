@@ -2,7 +2,7 @@ import contextvars, logging
 from contextlib import contextmanager
 from typing import Callable
 
-from .display import MiniDisplayHook, MiniDisplayPublisher
+from .display import MiniDisplayHook, MiniDisplayPublisher, enable_full_metadata
 from .io import thread_local_io
 from .streams import MiniStream, coalesce_streams
 
@@ -12,6 +12,7 @@ log = logging.getLogger("ipymini.term")
 class IPythonCapture:
     def __init__(self, shell, request_input: Callable[[str, bool], str]):
         self.shell = shell
+        enable_full_metadata(shell.display_formatter)
         self.request_input = request_input
         self.display_sender = None
         self.display_live = contextvars.ContextVar("ipymini.display_live", default=False)
