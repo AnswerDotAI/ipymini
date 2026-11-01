@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.26
+
+### New Features
+
+- Preserve obj.full as full metadata for expression results, display() and display updates via shared IPython formatter hook ([#53](https://github.com/AnswerDotAI/ipymini/issues/53))
+
+
 ## 0.1.25
 
 ### New Features
