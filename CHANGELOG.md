@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.27
+
+### New Features
+
+- Use fastcore FullString for full output metadata so PrettyString stays compactable ([#54](https://github.com/AnswerDotAI/ipymini/issues/54))
+
+
 ## 0.1.26
 
 ### New Features
