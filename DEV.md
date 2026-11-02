@@ -48,7 +48,7 @@ kernmini's `DEV.md` specifies three kernel operations: `schemas`, `call` and `ev
 - `call` runs a tool with `call_func`, then awaits the result if it's awaitable. The tool's prints and displays go out as usual.
 - `eval` evaluates each expression in the user namespace, without awaiting, and returns one `user_expressions` record per expression.
 
-ipymini formats a `call` or `eval` result with IPython's display formatter, with two exceptions. A `str` is its own text rather than its repr. A `bytes` value that `fastcore.xtras.detect_mime` recognises, such as a PNG image or a PDF, becomes data of that MIME type. ipymini base64-encodes every `bytes` value in the bundle, such as a PIL image's `image/png`. It adds `full: true` to the metadata of a result whose class sets `full = True`, as fastcore's `Safe` and `PrettyString` and aidialog's `FullResponse` do. Clients don't truncate such results. Each `eval` record's metadata also gives the value's type name as `type`.
+ipymini formats a `call` or `eval` result with IPython's display formatter, with two exceptions. A `str` is its own text rather than its repr. A `bytes` value that `fastcore.xtras.detect_mime` recognises, such as a PNG image or a PDF, becomes data of that MIME type. ipymini base64-encodes every `bytes` value in the bundle, such as a PIL image's `image/png`. It adds `full: true` to the metadata of a result whose class sets `full = True`, as fastcore's `Safe` and `FullString` and aidialog's `FullResponse` do. Clients don't truncate such results. Each `eval` record's metadata also gives the value's type name as `type`.
 
 Operations run their synchronous user code inside `kernmini.user_code()`. An interrupt stops a blocking tool there as it stops a synchronous cell.
 
@@ -58,7 +58,7 @@ Operations run their synchronous user code inside `kernmini.user_code()`. An int
 
 `MiniStream` is a file-like stdout/stderr sink. During kernel execution it sends complete lines through kernmini's live stream callback; standalone shells can instead retain and coalesce events. `MiniDisplayPublisher` and `MiniDisplayHook` publish rich displays and expression values. The display hook flushes pending stream text before publishing a result.
 
-Expression results, `display(obj)` and display updates carry `full: true` in their output metadata when `obj.full` is truthy. This includes `doc()` results, which are fastcore `PrettyString` values. The formatter retains the object's MIME data and other metadata. Plain values keep their existing metadata.
+Expression results, `display(obj)` and display updates carry `full: true` in their output metadata when `obj.full` is truthy. This includes `doc()` results, which are fastcore `FullString` values. `PrettyString` changes display only and remains compactable. The formatter retains the object's MIME data and other metadata. Plain values keep their existing metadata.
 
 `term.display.enable_full_metadata` installs this formatter hook once. Clikernel's Python startup uses the same hook for ordinary ipykernel.
 

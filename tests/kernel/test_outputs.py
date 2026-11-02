@@ -7,13 +7,13 @@ async def test_rich_output_and_payloads(tmp_path):
     env['KERNMINI_IOPUB_QMAX'] = '1'
     async with mini_kernel(extra_env=env) as (_, kc):
         await kc.exec_ok("from IPython.display import display, HTML, clear_output\nget_ipython().ast_node_interactivity = 'all'")
-        code = '''from fastcore.basics import PrettyString
-PrettyString(str(1+1))
+        code = '''from fastcore.basics import FullString, PrettyString
+FullString(str(1+1))
 None
 def f(): ...
 display(HTML('<b>hello</b>'))
 print('out', end='')
-4-3'''
+PrettyString(str(4-3))'''
         reply, outputs = await kc.exec_ok(code)
         kinds = [m['msg_type'] for m in outputs if m['msg_type'] != 'status']
         assert kinds == ['execute_input', 'execute_result', 'display_data', 'stream', 'execute_result']
@@ -33,7 +33,7 @@ print('out', end='')
         _, outputs = await kc.exec_ok("print('next cell')")
         assert 'next cell' in stream_text(outputs) and 'GHOST' not in stream_text(outputs)
 
-        _, outputs = await kc.exec_ok("clear_output(wait=True)\nh = display(PrettyString('first'), display_id=True)\nh.update(PrettyString('second'))")
+        _, outputs = await kc.exec_ok("clear_output(wait=True)\nh = display(FullString('first'), display_id=True)\nh.update(FullString('second'))")
         assert iopub_msgs(outputs, 'clear_output')[0]['content']['wait']
         first = iopub_msgs(outputs, 'display_data')[0]['content']
         second = iopub_msgs(outputs, 'update_display_data')[0]['content']

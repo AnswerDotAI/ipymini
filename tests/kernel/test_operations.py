@@ -1,7 +1,7 @@
 from ..aclient import *
 
 setup = '''
-from fastcore.basics import PrettyString
+from fastcore.basics import FullString, PrettyString
 from PIL import Image
 class Calc:
     def add(self, a:int, b:int) -> int:
@@ -49,10 +49,11 @@ async def test_schemas_call_and_eval():
         assert reply["status"] == "error"
 
         # `eval` gives a `user_expressions` record per expression, with the value's type in its metadata. `full` marks results not to truncate. Images and media bytes are base64.
-        _, out = await _op(kc, eval=["shout('x')", "PrettyString('p')", "Image.new('RGB', (1, 1))", "pdf", "b'hi'", "undefined_name"])
+        _, out = await _op(kc, eval=["shout('x')", "FullString('f')", "PrettyString('p')", "Image.new('RGB', (1, 1))", "pdf", "b'hi'", "undefined_name"])
         recs = _result(out)["application/json"]
         assert recs["shout('x')"] == dict(status="ok", data={"text/plain": "X"}, metadata={"type": "str"})
-        assert recs["PrettyString('p')"]["metadata"] == {"full": True, "type": "PrettyString"}
+        assert recs["FullString('f')"]["metadata"] == {"full": True, "type": "FullString"}
+        assert recs["PrettyString('p')"]["metadata"] == {"type": "PrettyString"}
         assert isinstance(recs["Image.new('RGB', (1, 1))"]["data"]["image/png"], str)
         assert list(recs["pdf"]["data"]) == ["application/pdf"]
         assert recs["b'hi'"]["data"]["text/plain"] == "b'hi'"
