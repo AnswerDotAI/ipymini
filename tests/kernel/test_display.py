@@ -7,7 +7,7 @@ async def test_text_displays(tmp_path):
     path.write_text('loaded from file')
     env = profile_env(tmp_path, 'c = get_config()\nc.InteractiveShellApp.extensions = []\n')
     async with mini_kernel(extra_env=env) as (_, kc):
-        # Positional sources stay literal; filename= still loads content. Reprs keep the text.
+        # Positional sources stay literal; explicit sources load content. Reprs keep the text.
         _, outputs = await kc.exec_ok(rf'''from IPython.display import HTML, Markdown, display
 path = {str(path)!r}
 assert Markdown(path).data == path
@@ -15,6 +15,7 @@ url = 'https://example.invalid'
 assert HTML(url).data == url
 loaded = Markdown(filename=path, metadata={{'source': 'file'}})
 assert loaded.data == 'loaded from file' and loaded.metadata == {{'source': 'file'}}
+assert 'Example Domain' in HTML(url='https://example.com').data
 assert 'loaded from file' in repr(loaded)
 assert 'x' * 100 in repr(Markdown('x' * 100))
 html = HTML('<b>hello</b>', metadata={{'source': 'example'}})
