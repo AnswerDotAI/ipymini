@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.28
+
+### New Features
+
+- Patch IPython display on import: preserve full metadata, content-bearing DisplayObject reprs, treat positional text display strings as literal ([#56](https://github.com/AnswerDotAI/ipymini/issues/56))
+
+
 ## 0.1.27
 
 ### New Features
