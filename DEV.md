@@ -60,7 +60,7 @@ Operations run their synchronous user code inside `kernmini.user_code()`. An int
 
 Expression results, `display(obj)` and display updates carry `full: true` in their output metadata when `obj.full` is truthy. This includes `doc()` results, which are fastcore `FullString` values. `PrettyString` changes display only and remains compactable. The formatter retains the object's MIME data and other metadata. Plain values keep their existing metadata.
 
-`term.display.enable_full_metadata` installs this formatter hook once. Clikernel's Python startup uses the same hook for ordinary ipykernel.
+Importing `term.display` installs these defaults on IPython's formatter. It also gives display objects content-bearing reprs and treats positional strings in text displays as literal data; use `url=` or `filename=` to load content. Clikernel imports this module for ordinary ipykernel too.
 
 The adapter's input callback crosses into Rust, which sends `input_request` to the correct client and blocks only the calling Python thread until `input_reply`. An interrupt completes the request with `KeyboardInterrupt`.
 

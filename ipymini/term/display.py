@@ -1,22 +1,40 @@
 import contextvars, sys
 
+from pathlib import PurePath
 from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
+from IPython.core.formatters import DisplayFormatter
+from IPython.display import DisplayObject, TextDisplayObject
+from fastcore.basics import patch
+from fastcore.xtras import truncstr
 
 
 def full_metadata(obj, metadata):
     return {**metadata, "full": True} if getattr(obj, "full", False) else metadata
 
 
-def enable_full_metadata(formatter):
-    "Preserve `obj.full` in IPython expression and display metadata."
-    format_obj = formatter.format
-    if getattr(format_obj, '_full_metadata', False): return
-    def format_full(obj, include=None, exclude=None):
-        data, metadata = format_obj(obj, include=include, exclude=exclude)
-        return data, full_metadata(obj, metadata)
-    format_full._full_metadata = True
-    formatter.format = format_full
+_previous_format = DisplayFormatter.format
+
+@patch
+def format(self:DisplayFormatter, obj, include=None, exclude=None):
+    data,meta = _previous_format(self, obj, include=include, exclude=exclude)
+    return data,full_metadata(obj, meta)
+
+@patch
+def __repr__(self:DisplayObject):
+    s = self.data or self.url or self.filename
+    if s is None: return object.__repr__(self)
+    return f"{type(self).__name__}({s if isinstance(s, str) else truncstr(str(s), 30)})"
+
+# IPython's `DisplayObject.__init__` fetches `data` as a URL when it starts with `http`, and loads it as a file when one of that name exists
+@patch
+def __init__(self:TextDisplayObject, data=None, url=None, filename=None, metadata=None):
+    if isinstance(data, PurePath): data = str(data)
+    self.url,self.filename,self.data = url,filename,data
+    if metadata is not None: self.metadata = metadata
+    elif self.metadata is None: self.metadata = {}
+    self.reload()
+    self._check_data()
 
 
 class MiniDisplayPublisher(DisplayPublisher):

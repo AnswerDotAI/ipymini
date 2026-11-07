@@ -24,6 +24,16 @@ PrettyString(str(4-3))'''
         assert 'hello' in iopub_msgs(outputs, 'display_data')[0]['content']['data']['text/html']
         assert stream_text(outputs) == 'out'
 
+        await kc.exec_ok(f'''from pathlib import Path
+from IPython.display import Markdown
+p = Path({str(tmp_path/'display.md')!r})
+p.write_text('file content')
+assert 'literal' in repr(Markdown('literal'))
+assert Markdown(str(p)).data == str(p) and Markdown(p).data == str(p)
+assert Markdown(filename=p).data == 'file content'
+assert Markdown('https://example.invalid').data == 'https://example.invalid'
+''')
+
         _, outputs = await kc.exec_ok("import sys; print('stdout'); print('stderr', file=sys.stderr)")
         assert stream_text(outputs, 'stdout') == 'stdout\n' and stream_text(outputs, 'stderr') == 'stderr\n'
         _, outputs = await kc.exec_ok('for i in range(5000): print(i)')
