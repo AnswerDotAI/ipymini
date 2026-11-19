@@ -10,14 +10,19 @@ async def test_configured_ipython_session(tmp_path):
 
     async with mini_kernel(extra_env=env) as (_, kc):
         await kc.exec_ok("assert EXT_LOADED == 'ok' and EXEC_LINE == 123 and STARTUP_OK == 456")
-        await kc.exec_ok("def range_ex(a, b): 'Add'\nprobe = 123")
+        await kc.exec_ok("def range_ex(a: int, b: int) -> int: 'Add'\nprobe = 123")
         reply = await kc.cmd.complete(code='rang', cursor_pos=4)
         ranks = {c['text']: c['rank'] for c in reply['content']['metadata']['_jupyter_types_experimental']}
         assert ranks['range_ex'] < ranks['range']
         reply = await kc.cmd.inspect(code='range_ex(1, ', cursor_pos=12)
         assert reply['content']['found'] and 'text/plain' in reply['content']['data']
-        sig = reply['content']['data']['application/json'][0]
-        assert sig['label'] == 'range_ex' and sig['idx'] == 1
+        sigs = reply['content']['data']['application/json']
+        sig = sigs['signatures'][0]
+        assert sig['label'] == 'range_ex(a: int, b: int) -> int' and sigs['activeParameter'] == 1
+        assert sig['parameters'][1]['label'] == 'b: int' and sig['documentation']['value'] == 'Add'
+        code = 'def local(a: int, b: int) -> int: return a+b\nlocal(1, '
+        sigs = (await kc.cmd.inspect(code=code, cursor_pos=len(code)))['content']['data']['application/json']
+        assert sigs['signatures'][0]['label'].endswith(' -> int') and sigs['activeParameter'] == 1
         reply = await kc.cmd.inspect(code='no_such_name_xyz', cursor_pos=16)
         assert reply['content']['status'] == 'ok' and not reply['content']['found']
         reply = await kc.cmd.history(hist_access_type='tail', n=1, output=False, raw=True)

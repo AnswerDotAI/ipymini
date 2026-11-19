@@ -301,7 +301,7 @@ class MiniShell:
         if not self.ipy.enable_html_pager: bundle.pop("text/html", None)
         if sigs := sig_help(self.ipy, code, cursor_pos):
             bundle["application/json"] = sigs
-            bundle.setdefault("text/plain", "\n".join(s["label"] for s in sigs))
+            bundle.setdefault("text/plain", "\n".join(s["label"] for s in sigs['signatures']))
         return dict(status="ok", found=bool(bundle), data=bundle, metadata={})
 
     def is_complete(self, code: str) -> dict:

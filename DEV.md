@@ -84,7 +84,7 @@ These delegate to IPython: `HistoryManager`, `object_inspect_mime`, the IPython 
 
 Completion adds a `rank` to each `_jupyter_types_experimental` item for clients to sort by: 1 for parameters, 2 for names defined in `__main__`, 3 for the rest, plus 0.1 for a private name. It leaves out dunder names unless the code contains `__`.
 
-Inspection adds signature help for the call at the cursor as `application/json`: the callable's label, type, module, docstring and parameters, and `idx`, the index of the argument being typed. `shell/sighelp.py` gets it from the live object, or from jedi for a call that the namespace can't resolve, such as one to a function defined in the same cell.
+Inspection adds Monaco-compatible signature help as `application/json`: `signatures`, `activeSignature` and `activeParameter`. Each signature retains its full `label`, Markdown `documentation` and `parameters`. `shell/sighelp.py` gets it from the live object, or from jedi for a call that the namespace can't resolve, such as one to a function defined in the same cell.
 
 A small `InteractiveShellApp` loads `ipython_kernel_config.py`, configured extensions, and `profile_default/startup/*.py` during first shell construction. `tests/kernel/test_ipython_startup_integration.py` covers both paths.
 

@@ -28,23 +28,25 @@ def _sig_dyn(ipy, code, cursor_pos):
     name = token_at_cursor(code, cursor_pos)
     info = ipy._object_find(name)
     if not (info.found and callable(info.obj)): return []
-    try: ps = list(inspect.signature(info.obj).parameters.values())
+    try: sig = inspect.signature(info.obj)
     except (ValueError, TypeError): return []
+    ps = list(sig.parameters.values())
     idx = _param_idx(code, cursor_pos)
     vp = next((i for i, p in enumerate(ps) if p.kind is p.VAR_POSITIONAL), None)
     if vp is not None and idx > vp: idx = vp  # *args takes every positional argument after it
-    return [dict(label=name, typ=type(info.obj).__name__, mod=getattr(info.obj, "__module__", ""), idx=idx,
-        doc=info.obj.__doc__ or "", params=[dict(name=p.name, desc=str(p)) for p in ps])]
+    return [dict(label=f'{name}{sig}', documentation=dict(value=inspect.getdoc(info.obj) or ''), activeParameter=idx,
+        parameters=[dict(label=str(p)) for p in ps])]
 
 
 def _sig_jedi(ipy, code, cursor_pos):
     "Signature help from jedi's static analysis, for calls that the namespace can't resolve, such as to a function defined in the same cell"
     line, col = code.count("\n", 0, cursor_pos) + 1, cursor_pos - code.rfind("\n", 0, cursor_pos) - 1
     sigs = jedi.Interpreter(code, [ipy.user_ns]).get_signatures(line, col) or jedi.Script(code).get_signatures(line, col)
-    return [dict(label=s.description, typ=s.type, mod=s.module_name, doc=s.docstring(), idx=s.index,
-        params=[dict(name=p.name, desc=p.description) for p in s.params]) for s in sigs]
+    return [dict(label=s.to_string(), documentation=dict(value=s.docstring()), activeParameter=s.index or 0,
+        parameters=[dict(label=p.to_string()) for p in s.params]) for s in sigs]
 
 
 def sig_help(ipy, code, cursor_pos):
     "Signature help for the call at `cursor_pos` in `code`"
-    return _sig_dyn(ipy, code, cursor_pos) or _sig_jedi(ipy, code, cursor_pos)
+    sigs = _sig_dyn(ipy, code, cursor_pos) or _sig_jedi(ipy, code, cursor_pos)
+    return dict(signatures=sigs, activeSignature=0, activeParameter=sigs[0]['activeParameter']) if sigs else {}

@@ -37,6 +37,17 @@ def test_vanilla_jupyter_session():
         assert all(m['parent_header']['msg_id'] == mid for m in (reply, *outputs))
         assert [m['content']['execution_state'] for m in outputs if m['msg_type'] == 'status'] == ['busy', 'idle']
 
+        kc.exec_drain('def double(value):\n    "Double the value."\n    return value * 2')
+        for detail in (0, 1):
+            inspected = kc.shell_reply(kc.inspect('double', cursor_pos=6, detail_level=detail))['content']
+            assert inspected['status'] == 'ok' and inspected['found']
+            text = inspected['data']['text/plain']
+            assert 'Double the value.' in text
+            if detail: assert 'return' in text
+        completed = kc.shell_reply(kc.complete('dou', cursor_pos=3))['content']
+        assert completed['status'] == 'ok' and 'double' in completed['matches']
+        assert (completed['cursor_start'], completed['cursor_end']) == (0, 3)
+
         _, reply, _ = kc.exec_drain('1/0')
         assert reply['content']['ename'] == 'ZeroDivisionError'
         mid = kc.execute("name = input('name? ')", allow_stdin=True)
