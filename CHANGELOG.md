@@ -2,6 +2,17 @@
 
 <!-- do not remove -->
 
+## 0.1.29
+
+### New Features
+
+- Return Monaco-compatible signature help from inspect with full signature labels, Markdown documentation and activeParameter ([#57](https://github.com/AnswerDotAI/ipymini/issues/57))
+
+### Bugs Squashed
+
+- add dialoghelper DisplayObject patches ([#55](https://github.com/AnswerDotAI/ipymini/pull/55)), thanks to [@ncoop57](https://github.com/ncoop57)
+
+
 ## 0.1.28
 
 ### New Features
