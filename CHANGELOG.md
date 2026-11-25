@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.30
+
+### New Features
+
+- add `set_env` ([#58](https://github.com/AnswerDotAI/ipymini/issues/58))
+
+
 ## 0.1.29
 
 ### New Features
