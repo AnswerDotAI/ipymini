@@ -103,6 +103,8 @@ A small `InteractiveShellApp` loads `ipython_kernel_config.py`, configured exten
 - `KERNMINI_HOLD_TIMEOUT`: held-execution backstop in seconds, default 3600.
 - `KERNMINI_IOPUB_QMAX`: Rust IOPub queue capacity, default 10000.
 
+`MiniShell.set_env` handles kernmini's control `set_env_request` by updating `os.environ` in place (`None` removes the variable).
+
 ## Tests
 
 Run non-slow tests:

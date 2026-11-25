@@ -326,3 +326,9 @@ class MiniShell:
         "Handle a debug_request DAP message."
         response, events = self.debugger.process_request(request)
         return {"response": response, "events": events}
+
+    def set_env(self, env: dict[str, str | None]):
+        "Update process environment variables; None values remove the key."
+        for k, v in env.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
